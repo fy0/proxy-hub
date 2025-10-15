@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v2"
@@ -43,6 +44,8 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 	app.Use(compress.New())
 
 	humaAPI, v1 := h.NewAPI(app, cfg)
+	humaTypesRegister()
+
 	registerHealthRoutes(app, humaAPI)
 	registerExampleUserRoutes(v1)
 	mountStatic(app, cfg, assets, logger)
@@ -114,5 +117,26 @@ func exposeOpenAPI(app *fiber.App, api huma.API, cfg *utils.AppConfig, logger *z
 
 		c.Type("json", "utf-8")
 		return c.Send(body)
+	})
+}
+
+func humaTypesRegister() {
+	// 注册 any 接口类型的 Schema，使其在文档中表现为任意对象
+	huma.RegisterTypeSchema(reflect.TypeOf((*any)(nil)).Elem(), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type:                 "object",
+			AdditionalProperties: map[string]*huma.Schema{},
+		}
+	})
+
+	// 处理 []any
+	huma.RegisterTypeSchema(reflect.TypeOf([]any{}), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type: "array",
+			Items: &huma.Schema{
+				Type:                 "object",
+				AdditionalProperties: map[string]*huma.Schema{},
+			},
+		}
 	})
 }

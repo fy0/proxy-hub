@@ -11,7 +11,7 @@ export default defineConfig({
        * 1. openapi json file url
        * 2. local file
        */
-      input: 'http://localhost:3211/openapi.json',
+      input: 'http://localhost:3005/openapi.json',
 
       /**
        * input file platform. Currently only swagger is supported.
@@ -54,9 +54,28 @@ export default defineConfig({
       /**
        * filter or convert the generated api information, return an apiDescriptor, if this function is not specified, the apiDescriptor object is not converted
        */
-      // handleApi: apiDescriptor => {
-      //  return apiDescriptor;
-      // }
+      handleApi: apiDescriptor => {
+        // 去除重复的前缀，例如将 attachments2Delete 改为 delete
+        if (apiDescriptor.operationId) {
+          const tag = apiDescriptor.tags?.[0] || '';
+          const operationId = apiDescriptor.operationId;
+
+          // 如果 operationId 以 tag 开头，则去除这个前缀
+          if (tag && operationId.toLowerCase().startsWith(tag.toLowerCase())) {
+            // 去除前缀并将首字母小写
+            const withoutPrefix = operationId.substring(tag.length);
+            apiDescriptor.operationId = withoutPrefix.charAt(0).toLowerCase() + withoutPrefix.slice(1);
+          }
+        }
+
+        // NOTE: 原始数据有问题，已经从后端修复，留档一个版本后删除
+        // if (apiDescriptor.responses?.properties) {
+        //   // console.log('info', JSON.stringify(apiDescriptor, null, 2));
+        //   fixPropertiesEmptyObjects(apiDescriptor.responses.properties);
+        // }
+
+        return apiDescriptor;
+      }
     }
   ]
 

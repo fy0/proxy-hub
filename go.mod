@@ -63,3 +63,5 @@ require (
 	modernc.org/memory v1.5.0 // indirect
 	modernc.org/sqlite v1.23.1 // indirect
 )
+
+replace github.com/danielgtaylor/huma/v2 => github.com/fy0/huma/v2 v2.0.0-20250928113553-954c3a7f416c
