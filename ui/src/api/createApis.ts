@@ -1,7 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Sealdice New API - version 1.0.0
+ * Go Template API - version 1.0.0
  *
  *
  *
@@ -53,9 +53,18 @@ const createFunctionalProxy = (array: (string | symbol)[], alovaInstance: Alova<
         let hasBlobData = false;
         const formData = new FormData();
         for (const key in data) {
-          formData.append(key, data[key]);
-          if (data[key] instanceof Blob) {
-            hasBlobData = true;
+          if (Array.isArray(data[key])) {
+            for (const ele of data[key]) {
+              formData.append(key, ele);
+              if (ele instanceof Blob) {
+                hasBlobData = true;
+              }
+            }
+          } else {
+            formData.append(key, data[key]);
+            if (data[key] instanceof Blob) {
+              hasBlobData = true;
+            }
           }
         }
         data = hasBlobData ? formData : data;
@@ -75,10 +84,12 @@ export const createApis = (alovaInstance: Alova<AlovaGenerics>, configMap: any) 
   });
   return Apis;
 };
+
 export const mountApis = (Apis: Apis) => {
   // define global variable `Apis`
   (globalThis as any).Apis = Apis;
 };
+
 type MethodConfig<T> = AlovaMethodCreateConfig<
   (typeof import('./index'))['alovaInstance'] extends Alova<infer AG> ? AG : any,
   any,

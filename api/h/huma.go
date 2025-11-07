@@ -1,9 +1,12 @@
 package h
 
 import (
+	"reflect"
+
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"go-template/utils"
 )
@@ -34,5 +37,55 @@ func NewAPI(app *fiber.App, cfg *utils.AppConfig) (huma.API, *huma.Group) {
 	api := humafiber.New(app, apiConfig)
 	group := huma.NewGroup(api, "/api/v1")
 
+	// 默认比较严格，根据情况开启吧
+	// 允许接口提交额外参数，不至于多提一个就会报错
+	// humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, func(oapi *huma.OpenAPI, op *huma.Operation) {
+	// 	for _, schema := range oapi.Components.Schemas.Map() {
+	// 		schema.AdditionalProperties = true
+	// 	}
+	// })
+
 	return api, group
+}
+
+func HumaTypesRegister() {
+	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Text{}), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type:     "string",
+			Nullable: true,
+		}
+	})
+
+	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Bool{}), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type:     "boolean",
+			Nullable: true,
+		}
+	})
+
+	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Int8{}), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type:     "integer",
+			Nullable: true,
+		}
+	})
+
+	// 注册 any 接口类型的 Schema，使其在文档中表现为任意对象
+	huma.RegisterTypeSchema(reflect.TypeOf((*any)(nil)).Elem(), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type:                 "object",
+			AdditionalProperties: map[string]*huma.Schema{},
+		}
+	})
+
+	// 处理 []any
+	huma.RegisterTypeSchema(reflect.TypeOf([]any{}), func(huma.Registry) *huma.Schema {
+		return &huma.Schema{
+			Type: "array",
+			Items: &huma.Schema{
+				Type:                 "object",
+				AdditionalProperties: map[string]*huma.Schema{},
+			},
+		}
+	})
 }

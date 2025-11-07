@@ -3,26 +3,30 @@ package api
 import (
 	"context"
 	"embed"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 
-	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"go.uber.org/zap"
 
 	"go-template/api/h"
+	"go-template/api/user"
 	"go-template/utils"
 )
 
 // Init 初始化 Fiber + Huma 的初始化，启动 HTTP 服务
 func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
-	logger := utils.LoggerFromContext(ctx)
+	theLogger := utils.LoggerFromContext(ctx)
 
 	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
 	if bodyLimit < 1*1024*1024 {
@@ -40,37 +44,21 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowCredentials: cfg.CorsAllowOrigins != "*",
 	}))
+	app.Use(getLinePrint())
+
 	app.Use(recover.New(recover.Config{EnableStackTrace: true}))
 	app.Use(compress.New())
 
-	humaAPI, v1 := h.NewAPI(app, cfg)
-	humaTypesRegister()
+	api, v1 := h.NewAPI(app, cfg)
+	api.UseMiddleware(h.HumaTraceMiddleware)
+	h.HumaTypesRegister()
+	h.HumaValidatePatch()
 
-	registerHealthRoutes(app, humaAPI)
-	registerExampleUserRoutes(v1)
-	mountStatic(app, cfg, assets, logger)
-	exposeOpenAPI(app, humaAPI, cfg, logger)
+	user.Register(v1)
+	registerHealthRoutes(v1)
+	mountStatic(app, cfg, assets, theLogger)
 
-	logger.Info("HTTP 服务启动", zap.String("addr", cfg.ServeAt))
 	return app.Listen(cfg.ServeAt)
-}
-
-// registerHealthRoutes 注册健康探测接口，用于服务监控
-func registerHealthRoutes(app *fiber.App, api huma.API) {
-	huma.Register(api, huma.Operation{
-		OperationID: "health",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/health",
-		Summary:     "健康探测",
-	}, func(ctx context.Context, _ *struct{}) (*h.MessageResponse, error) {
-		resp := h.NewMessageResponse("ok")
-		resp.Status = http.StatusOK
-		return resp, nil
-	})
-
-	app.Get("/healthz", func(c *fiber.Ctx) error {
-		return c.Status(http.StatusOK).JSON(fiber.Map{"status": "ok"})
-	})
 }
 
 // mountStatic 将内置静态资源或自定义目录挂载到 Fiber 上
@@ -101,42 +89,56 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 	}))
 }
 
-// exposeOpenAPI 在需要时暴露 openapi 文档，提供调试访问
-func exposeOpenAPI(app *fiber.App, api huma.API, cfg *utils.AppConfig, logger *zap.Logger) {
-	if !cfg.OpenAPIEnabled {
-		return
+func getLinePrint() fiber.Handler {
+	isSrcPath := false
+	if _, err := os.Stat("./main.go"); err == nil {
+		isSrcPath = true
 	}
 
-	app.Get("/openapi.json", func(c *fiber.Ctx) error {
-		spec := api.OpenAPI()
-		body, err := json.MarshalIndent(spec, "", "  ")
-		if err != nil {
-			logger.Warn("生成 OpenAPI 文档失败", zap.Error(err))
-			return fiber.NewError(http.StatusInternalServerError, "OpenAPI 文档生成失败")
-		}
+	return logger.New(logger.Config{
+		Format: "${time} | ${status} | ${latency} | ${ip} | ${method} | ${path} | ${file_link}\n",
+		CustomTags: map[string]logger.LogFunc{
+			"file_link": func(output logger.Buffer, c *fiber.Ctx, data *logger.Data, extraParam string) (int, error) {
+				if !isSrcPath {
+					return output.WriteString("-")
+				}
 
-		c.Type("json", "utf-8")
-		return c.Send(body)
-	})
-}
+				// 获取当前请求的路由信息
+				route := c.Route()
+				if route == nil {
+					return output.WriteString("-")
+				}
 
-func humaTypesRegister() {
-	// 注册 any 接口类型的 Schema，使其在文档中表现为任意对象
-	huma.RegisterTypeSchema(reflect.TypeOf((*any)(nil)).Elem(), func(huma.Registry) *huma.Schema {
-		return &huma.Schema{
-			Type:                 "object",
-			AdditionalProperties: map[string]*huma.Schema{},
-		}
-	})
+				var outputStr string
+				handler := route.Handlers[len(route.Handlers)-1]
+				v := reflect.ValueOf(handler)
 
-	// 处理 []any
-	huma.RegisterTypeSchema(reflect.TypeOf([]any{}), func(huma.Registry) *huma.Schema {
-		return &huma.Schema{
-			Type: "array",
-			Items: &huma.Schema{
-				Type:                 "object",
-				AdditionalProperties: map[string]*huma.Schema{},
+				if v.Kind() == reflect.Func {
+					srcPath, _ := runtime.FuncForPC(v.Pointer()).FileLine(v.Pointer())
+					if strings.HasSuffix(srcPath, "humafiber.go") {
+						hInfo := c.Locals("humaHandlerInfo")
+						if hInfo != nil {
+							hInfo := hInfo.(*h.HandlerInfo)
+							outputStr = fmt.Sprintf("%s:%d", hInfo.FilePath, hInfo.Line)
+						}
+					}
+				}
+
+				if outputStr == "" && v.Kind() == reflect.Func {
+					srcPath, line := runtime.FuncForPC(v.Pointer()).FileLine(v.Pointer())
+
+					// 使用相对路径
+					wd, _ := os.Getwd()
+					relPath, err := filepath.Rel(wd, srcPath)
+					if err != nil {
+						return output.WriteString("-")
+					}
+
+					outputStr = fmt.Sprintf("%s:%d", relPath, line)
+				}
+
+				return output.WriteString(outputStr)
 			},
-		}
+		},
 	})
 }

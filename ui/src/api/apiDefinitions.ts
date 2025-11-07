@@ -2,7 +2,7 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Sealdice New API - version 1.0.0
+ * Go Template API - version 1.0.0
  *
  *
  *
@@ -15,4 +15,12 @@
  *
  * **Do not edit the file manually.**
  */
-export default {};
+export default {
+  'health.get': ['GET', '/api/v1/health'],
+  'user.changePassword': ['POST', '/api/v1/user/change-password'],
+  'user.info': ['GET', '/api/v1/user/info'],
+  'user.infoUpdate': ['POST', '/api/v1/user/info-update'],
+  'user.list': ['GET', '/api/v1/user/list'],
+  'user.signin': ['POST', '/api/v1/user/signin'],
+  'user.signup': ['POST', '/api/v1/user/signup']
+};

@@ -6,7 +6,8 @@ import (
 
 func GetAllModels() []any {
 	return []any{
-		&tables.ExampleUserTable{},
+		&tables.UserTable{},
+		&tables.UserAccessTokenTable{},
 	}
 }
 

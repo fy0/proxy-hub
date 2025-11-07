@@ -27,7 +27,7 @@
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
-    "@alova/wormhole": "^1.2.0",
+    "@alova/wormhole": "^1.4.5",
     "@prettier/plugin-oxc": "^0.0.4",
     "@tailwindcss/vite": "^4.1.13",
     "@tsconfig/node22": "^22.0.2",

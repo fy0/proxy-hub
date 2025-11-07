@@ -23,7 +23,7 @@ func InitLogger(cfg *AppConfig) (*zap.Logger, func(), error) {
 
 	encoderCfg := zap.NewProductionEncoderConfig()
 	encoderCfg.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-		enc.AppendString(t.Local().Format("2006-01-02 15:04:05.000"))
+		enc.AppendString(t.Local().Format("2006-01-02 15:04:05.000\t"))
 	}
 	encoderCfg.TimeKey = "timestamp"
 

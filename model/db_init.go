@@ -1,14 +1,24 @@
 package model
 
 import (
-	sqlite_tools "go-template/utils/db_tools/sqlite"
+	"context"
+	"database/sql"
+	"errors"
+
 	"go-template/utils/model_base"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-var db *gorm.DB
+var (
+	db             *gorm.DB
+	sqlDB          *sql.DB
+	defaultQueries *Queries
+
+	// ErrSQLCNotReady indicates sqlc helpers have not been initialized.
+	ErrSQLCNotReady = errors.New("model: sql queries are not initialized")
+)
 
 func InitWithDSN(dsn string, logLevel int, autoMigrate bool) error {
 	var err error
@@ -17,8 +27,11 @@ func InitWithDSN(dsn string, logLevel int, autoMigrate bool) error {
 		return err
 	}
 
+	if err := initQueries(); err != nil {
+		return err
+	}
+
 	DBMigrate(autoMigrate)
-	sqlcInit(dsn)
 	return nil
 }
 
@@ -26,16 +39,74 @@ func DBClose() {
 	if db != nil {
 		model_base.DBClose(db)
 	}
+	sqlDB = nil
+	defaultQueries = nil
 }
 
 func GetDB() *gorm.DB {
 	return db
 }
 
-var _sqlInfo = sqlite_tools.TransactionCreateFactory(func(tx any) *Queries {
-	return New(tx.(DBTX))
-})
+func initQueries() error {
+	if db == nil {
+		return ErrSQLCNotReady
+	}
 
-var Transaction = _sqlInfo.TransactionCreate
-var GetQ = _sqlInfo.GetQ
-var sqlcInit = _sqlInfo.InitFunc
+	sqlConn, err := db.DB()
+	if err != nil {
+		return err
+	}
+
+	sqlDB = sqlConn
+	defaultQueries = New(sqlConn)
+	return nil
+}
+
+func ensureQueriesReady() error {
+	if sqlDB == nil || defaultQueries == nil {
+		return ErrSQLCNotReady
+	}
+	return nil
+}
+
+func Transaction(ctx context.Context, fn func(q *Queries) error) error {
+	if fn == nil {
+		return nil
+	}
+
+	if err := ensureQueriesReady(); err != nil {
+		return err
+	}
+
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	q := New(tx)
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	if err := fn(q); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func GetQ(q *Queries) *Queries {
+	if q != nil {
+		return q
+	}
+
+	if defaultQueries == nil {
+		panic("model: sql queries are not initialized")
+	}
+
+	return defaultQueries
+}
