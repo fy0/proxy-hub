@@ -2,13 +2,14 @@ package user
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/blake2s"
+	"golang.org/x/crypto/argon2"
 )
 
 type TokenResult struct {
@@ -43,6 +44,14 @@ func TokenCheck(tokenString string) *TokenResult {
 	}
 }
 
+// Argon2id 参数 (OWASP 推荐)
+const (
+	argonMemory      = 64 * 1024 // 64 MB
+	argonIterations  = 3         // 迭代次数
+	argonParallelism = 4         // 并行度
+	argonKeyLength   = 32        // 输出密钥长度
+)
+
 func generateSalt() (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -56,6 +65,19 @@ func hashPassword(password string, salt string) (string, error) {
 		return "", ErrInvalidCredentials
 	}
 
-	hashBytes := blake2s.Sum256([]byte(password + salt))
-	return base64.RawStdEncoding.EncodeToString(hashBytes[:]), nil
+	saltBytes, err := base64.RawStdEncoding.DecodeString(salt)
+	if err != nil {
+		return "", err
+	}
+
+	hash := argon2.IDKey([]byte(password), saltBytes, argonIterations, argonMemory, argonParallelism, argonKeyLength)
+	return base64.RawStdEncoding.EncodeToString(hash), nil
+}
+
+func verifyPassword(password, salt, hashedPassword string) bool {
+	hash, err := hashPassword(password, salt)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(hash), []byte(hashedPassword)) == 1
 }

@@ -116,11 +116,7 @@ func UserAuthenticate(ctx context.Context, q *model.Queries, username, password 
 		return nil, err
 	}
 
-	hashed, err := hashPassword(password, user.Salt)
-	if err != nil {
-		return nil, err
-	}
-	if hashed != user.Password {
+	if !verifyPassword(password, user.Salt, user.Password) {
 		return nil, ErrInvalidCredentials
 	}
 

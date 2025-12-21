@@ -3,21 +3,22 @@ package api
 import (
 	"context"
 	"embed"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
-	"runtime"
 	"strings"
+	"time"
 
+	"github.com/gofiber/contrib/fiberzap/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
-	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/yaml.v3"
 
 	"go-template/api/h"
 	"go-template/api/user"
@@ -36,6 +37,7 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 	app := fiber.New(fiber.Config{
 		BodyLimit:             bodyLimit,
 		DisableStartupMessage: true,
+		Immutable:             true,
 	})
 
 	app.Use(cors.New(cors.Config{
@@ -44,9 +46,25 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowCredentials: cfg.CorsAllowOrigins != "*",
 	}))
-	app.Use(getLinePrint())
 
-	app.Use(recover.New(recover.Config{EnableStackTrace: true}))
+	// 使用 fiberzap 统一日志输出
+	app.Use(fiberzap.New(fiberzap.Config{
+		Logger: theLogger,
+		// 按状态码区分日志级别：500+ Error, 400+ Warn, 其他 Info
+		Levels: []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
+	}))
+
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+		StackTraceHandler: func(c *fiber.Ctx, e any) {
+			theLogger.Error("panic recovered",
+				zap.Any("error", e),
+				zap.String("method", c.Method()),
+				zap.String("path", c.Path()),
+				zap.Stack("stacktrace"),
+			)
+		},
+	}))
 	app.Use(compress.New())
 
 	api, v1 := h.NewAPI(app, cfg)
@@ -84,61 +102,69 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 
 	app.Use(mountPath, filesystem.New(filesystem.Config{
 		Root:       fs,
-		PathPrefix: "",
+		PathPrefix: "static",
 		MaxAge:     300,
 	}))
 }
 
-func getLinePrint() fiber.Handler {
-	isSrcPath := false
-	if _, err := os.Stat("./main.go"); err == nil {
-		isSrcPath = true
+// GenOpenAPI 生成 OpenAPI JSON/YAML 文件
+func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outputPath string) {
+	theLogger := utils.LoggerFromContext(ctx)
+
+	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
+	if bodyLimit < 1*1024*1024 {
+		bodyLimit = 1 * 1024 * 1024
 	}
 
-	return logger.New(logger.Config{
-		Format: "${time} | ${status} | ${latency} | ${ip} | ${method} | ${path} | ${file_link}\n",
-		CustomTags: map[string]logger.LogFunc{
-			"file_link": func(output logger.Buffer, c *fiber.Ctx, data *logger.Data, extraParam string) (int, error) {
-				if !isSrcPath {
-					return output.WriteString("-")
-				}
-
-				// 获取当前请求的路由信息
-				route := c.Route()
-				if route == nil {
-					return output.WriteString("-")
-				}
-
-				var outputStr string
-				handler := route.Handlers[len(route.Handlers)-1]
-				v := reflect.ValueOf(handler)
-
-				if v.Kind() == reflect.Func {
-					srcPath, _ := runtime.FuncForPC(v.Pointer()).FileLine(v.Pointer())
-					if strings.HasSuffix(srcPath, "humafiber.go") {
-						hInfo := c.Locals("humaHandlerInfo")
-						if hInfo != nil {
-							hInfo := hInfo.(*h.HandlerInfo)
-							outputStr = fmt.Sprintf("%s:%d", hInfo.FilePath, hInfo.Line)
-						}
-					}
-				}
-
-				if outputStr == "" && v.Kind() == reflect.Func {
-					srcPath, line := runtime.FuncForPC(v.Pointer()).FileLine(v.Pointer())
-
-					// 使用相对路径
-					wd, _ := os.Getwd()
-					relPath, err := filepath.Rel(wd, srcPath)
-					if err != nil {
-						return output.WriteString("-")
-					}
-
-					outputStr = fmt.Sprintf("%s:%d", relPath, line)
-				}
-
-				return output.WriteString(outputStr)
-			},
-		},
+	app := fiber.New(fiber.Config{
+		BodyLimit:             bodyLimit,
+		DisableStartupMessage: true,
+		Immutable:             true,
 	})
+
+	// 创建 Huma API 实例
+	api, v1 := h.NewAPI(app, cfg)
+	api.UseMiddleware(h.HumaTraceMiddleware)
+	h.HumaTypesRegister()
+	h.HumaValidatePatch()
+
+	// 注册所有路由
+	user.Register(v1)
+	registerHealthRoutes(v1)
+
+	// 获取 OpenAPI 规范
+	openapi := api.OpenAPI()
+
+	// 添加生成时间到扩展字段
+	if openapi.Info.Extensions == nil {
+		openapi.Info.Extensions = make(map[string]any)
+	}
+	openapi.Info.Extensions["x-generated-at"] = time.Now().Format("2006-01-02 15:04:05")
+
+	// 根据文件扩展名决定输出格式
+	var openapiBytes []byte
+	var err error
+
+	if strings.HasSuffix(outputPath, ".json") {
+		openapiBytes, err = json.MarshalIndent(openapi, "", "  ")
+		if err != nil {
+			theLogger.Fatal("生成 OpenAPI JSON 失败", zap.Error(err))
+		}
+	} else {
+		// 默认使用 YAML 格式
+		if !strings.HasSuffix(outputPath, ".yaml") && !strings.HasSuffix(outputPath, ".yml") {
+			outputPath = strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".yaml"
+		}
+		openapiBytes, err = yaml.Marshal(openapi)
+		if err != nil {
+			theLogger.Fatal("生成 OpenAPI YAML 失败", zap.Error(err))
+		}
+	}
+
+	err = os.WriteFile(outputPath, openapiBytes, 0644)
+	if err != nil {
+		theLogger.Fatal("写入 OpenAPI 文件失败", zap.Error(err), zap.String("path", outputPath))
+	}
+
+	theLogger.Info("OpenAPI 规范已保存", zap.String("path", outputPath))
 }
