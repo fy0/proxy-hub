@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -43,8 +44,9 @@ type AppConfig struct {
 }
 
 var configStore = koanf.New(".")
+var configPath = filepath.Join(".", "data", "config.yaml")
 
-// ReadConfig 会加载 config.yaml，若不存在则写入默认配置。
+// ReadConfig 会加载 data/config.yaml，若不存在则写入默认配置。
 func ReadConfig() *AppConfig {
 	defaults := AppConfig{
 		ServeAt:             ":9005",
@@ -54,7 +56,7 @@ func ReadConfig() *AppConfig {
 		AttachmentSizeLimit: 8192,
 		ImageCompress:       true,
 		LogFile:             "./data/service.log",
-		LogLevel:            string(LogLevelInfo),
+		LogLevel:            "info",
 		CorsAllowOrigins:    "*",
 		AutoMigrate:         true,
 		OpenAPIEnabled:      true,
@@ -70,7 +72,7 @@ func ReadConfig() *AppConfig {
 
 	lo.Must0(configStore.Load(structs.Provider(&defaults, "yaml"), nil))
 
-	provider := file.Provider("config.yaml")
+	provider := file.Provider(configPath)
 	if err := configStore.Load(provider, yaml.Parser()); err != nil {
 		fmt.Printf("读取配置失败: %v\n", err)
 		if os.IsNotExist(err) {
@@ -105,7 +107,11 @@ func WriteConfig(config *AppConfig) {
 		return
 	}
 
-	if err := os.WriteFile("./config.yaml", content, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		fmt.Println("写入配置失败: 无法创建目录")
+		return
+	}
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
 		fmt.Println("写入配置失败: 无法写入文件")
 	}
 }

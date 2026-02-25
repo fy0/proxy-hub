@@ -4,20 +4,19 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/gofiber/contrib/fiberzap/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 
 	"go-template/api/h"
@@ -27,7 +26,8 @@ import (
 
 // Init 初始化 Fiber + Huma 的初始化，启动 HTTP 服务
 func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
-	theLogger := utils.LoggerFromContext(ctx)
+	_ = ctx
+	theLogger := utils.Logger
 
 	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
 	if bodyLimit < 1*1024*1024 {
@@ -52,43 +52,52 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 		AllowCredentials: allowOrigins != "*" && !strings.Contains(allowOrigins, "*"),
 	}))
 
-	// 使用 fiberzap 统一日志输出
-	app.Use(fiberzap.New(fiberzap.Config{
-		Logger: theLogger,
-		// 按状态码区分日志级别：500+ Error, 400+ Warn, 其他 Info
-		Levels: []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
-		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
-			hInfo, ok := c.Locals("humaHandlerInfo").(*h.HandlerInfo)
-			if !ok || hInfo == nil {
-				return nil
-			}
+	// 自定义日志中间件
+	// 格式: 时间 | 级别 | 消息 | {JSON字段} | handler位置
+	app.Use(func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		latency := time.Since(start)
+		status := c.Response().StatusCode()
 
-			return []zap.Field{
-				zap.String("handler", hInfo.FuncName),
-				zap.String("handlerFile", hInfo.FilePath),
-				zap.Int("handlerLine", hInfo.Line),
-			}
-		},
-	}))
+		// 跳过静态资源
+		path := c.Path()
+		if path == "/hello" || path == "/favicon.ico" {
+			return err
+		}
+
+		// 获取 handler 位置
+		handlerInfo := "-"
+		if hInfo := c.Locals("humaHandlerInfo"); hInfo != nil {
+			info := hInfo.(*h.HandlerInfo)
+			handlerInfo = fmt.Sprintf("%s:%d", info.FilePath, info.Line)
+		}
+
+		// 构建 JSON 字段
+		jsonFields := fmt.Sprintf(`{"latency": "%v", "status": %d, "method": "%s", "url": "%s"}`,
+			latency, status, c.Method(), path)
+
+		// 根据状态码选择日志级别
+		switch {
+		case status >= 500:
+			theLogger.Error(fmt.Sprintf("%d | %s | %s", status, jsonFields, handlerInfo))
+		case status >= 400:
+			theLogger.Debug(fmt.Sprintf("%d | %s | %s", status, jsonFields, handlerInfo))
+		default:
+			theLogger.Info(fmt.Sprintf("%d | %s | %s", status, jsonFields, handlerInfo))
+		}
+
+		return err
+	})
 
 	app.Use(recover.New(recover.Config{
 		EnableStackTrace: true,
-		StackTraceHandler: func(c *fiber.Ctx, e any) {
-			theLogger.Error("panic recovered",
-				zap.Any("error", e),
-				zap.String("method", c.Method()),
-				zap.String("path", c.Path()),
-				zap.Stack("stacktrace"),
-			)
-		},
 	}))
 
 	app.Use(compress.New())
 
 	api, v1 := h.NewAPI(app, cfg)
 	registerHealthRoutes(api)
-
-	api.UseMiddleware(h.HumaTraceMiddleware)
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 
@@ -142,7 +151,8 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 
 // GenOpenAPI 生成 OpenAPI JSON/YAML 文件
 func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outputPath string) {
-	theLogger := utils.LoggerFromContext(ctx)
+	_ = ctx
+	theLogger := utils.Logger
 
 	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
 	if bodyLimit < 1*1024*1024 {
@@ -157,7 +167,6 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 
 	// 创建 Huma API 实例
 	api, v1 := h.NewAPI(app, cfg)
-	api.UseMiddleware(h.HumaTraceMiddleware)
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 

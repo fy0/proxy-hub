@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"embed"
-	"fmt"
 	"os"
 
 	"github.com/jessevdk/go-flags"
@@ -49,12 +48,8 @@ func run(forceMigrate, migrateOnly bool, genOpenAPI string) {
 		cfg.AutoMigrate = true
 	}
 
-	logger, cleanup, err := utils.InitLogger(cfg)
-	if err != nil {
-		fmt.Printf("初始化日志失败: %v\n", err)
-		os.Exit(1)
-	}
-	defer cleanup()
+	utils.InitLogger()
+	logger := utils.Logger
 
 	if err := model.InitWithDSN(cfg.DSN, cfg.DBLogLevel, cfg.AutoMigrate); err != nil {
 		logger.Fatal("初始化数据层失败", zap.Error(err))
@@ -73,16 +68,14 @@ func run(forceMigrate, migrateOnly bool, genOpenAPI string) {
 		if outputPath == "" {
 			outputPath = "./openapi.json"
 		}
-		ctx := utils.ContextWithLogger(context.Background(), logger)
-		api.GenOpenAPI(ctx, cfg, embedStatic, outputPath)
+		api.GenOpenAPI(context.Background(), cfg, embedStatic, outputPath)
 		logger.Info("OpenAPI JSON 生成完成", zap.String("path", outputPath))
 		return
 	}
 
 	logger.Info("服务启动中", zap.String("listen", cfg.ServeAt))
 
-	ctx := utils.ContextWithLogger(context.Background(), logger)
-	if err := api.Init(ctx, cfg, embedStatic); err != nil {
+	if err := api.Init(context.Background(), cfg, embedStatic); err != nil {
 		logger.Fatal("服务启动失败", zap.Error(err))
 	}
 }

@@ -3,7 +3,7 @@
 该模板集成了 GORM 数据层、zap 日志、koanf 配置以及 Fiber + Huma 的 API 框架，可直接拷贝用于新项目。
 
 ## 能力概览
-- **配置中心**：`utils/app_config.go` 读取 / 写入 `config.yaml`，并提供日志级别、OpenAPI、Huma 文档路径等开关。
+- **配置中心**：`utils/app_config.go` 读取 / 写入 `data/config.yaml`，并提供日志级别、OpenAPI、Huma 文档路径等开关。
 - **日志系统**：`utils/logger.go` 使用 zap，支持控制台与文件双输出。
 - **数据层**：
   - `model/tables` 存放 GORM 表声明（默认只有 `UserTable` / `UserAccessTokenTable` 示范）。
@@ -13,7 +13,7 @@
 
 ## 使用步骤
 1. 初始化依赖：`go mod tidy`
-2. 根据环境修改 `config.yaml`（数据库 DSN、日志输出等）。
+2. 根据环境修改 `data/config.yaml`（数据库 DSN、日志输出等）。
 3. 启动服务：`go run .`
    - 如需强制迁移，可追加 `-m` 或 `--migrate`。
 
