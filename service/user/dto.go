@@ -1,10 +1,12 @@
 package user
 
 import (
-	"database/sql"
+	"strings"
 	"time"
 
-	"go-template/model"
+	"go-template/model/tables"
+
+	"gorm.io/gorm"
 )
 
 type UserDTO struct {
@@ -19,24 +21,24 @@ type UserDTO struct {
 	Disabled  bool       `json:"disabled"`
 }
 
-func ToUserDTO(user *model.User) *UserDTO {
+func ToUserDTO(user *tables.UserTable) *UserDTO {
 	if user == nil {
 		return nil
 	}
 	return &UserDTO{
-		Id:        user.Id,
+		Id:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
-		DeletedAt: user.DeletedAt,
-		Nickname:  nullStringToPtr(user.Nickname),
-		Avatar:    nullStringToPtr(user.Avatar),
-		Brief:     nullStringToPtr(user.Brief),
+		DeletedAt: deletedAtToPtr(user.DeletedAt),
+		Nickname:  stringToPtr(user.Nickname),
+		Avatar:    stringToPtr(user.Avatar),
+		Brief:     stringToPtr(user.Brief),
 		Username:  user.Username,
 		Disabled:  user.Disabled,
 	}
 }
 
-func ToUserDTOs(users []*model.User) []*UserDTO {
+func ToUserDTOs(users []*tables.UserTable) []*UserDTO {
 	if len(users) == 0 {
 		return []*UserDTO{}
 	}
@@ -47,10 +49,18 @@ func ToUserDTOs(users []*model.User) []*UserDTO {
 	return result
 }
 
-func nullStringToPtr(v sql.NullString) *string {
-	if !v.Valid {
+func stringToPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return nil
 	}
-	value := v.String
 	return &value
+}
+
+func deletedAtToPtr(value gorm.DeletedAt) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	v := value.Time
+	return &v
 }

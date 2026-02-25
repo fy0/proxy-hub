@@ -3,7 +3,6 @@ module go-template
 go 1.24.6
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/danielgtaylor/huma/v2 v2.34.1
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gofiber/contrib/fiberzap/v2 v2.1.6
@@ -16,14 +15,12 @@ require (
 	github.com/knadh/koanf/providers/structs v1.0.0
 	github.com/knadh/koanf/v2 v2.3.0
 	github.com/matoous/go-nanoid/v2 v2.1.0
-	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/samber/lo v1.51.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
-	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.30.0
 )
 

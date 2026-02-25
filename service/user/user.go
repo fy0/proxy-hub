@@ -2,13 +2,15 @@ package user
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"time"
 
 	"go-template/model"
+	"go-template/model/tables"
 	"go-template/utils"
+
+	"gorm.io/gorm"
 )
 
 type UserListRequest struct {
@@ -16,17 +18,23 @@ type UserListRequest struct {
 	IncludeDisabled bool
 }
 
-func UserCreate(ctx context.Context, q *model.Queries, username, password, nickname, avatar, brief string, beforeInsert func(*model.Queries, *model.User) error) (*model.User, error) {
-	q = model.GetQ(q)
+func UserCreate(
+	ctx context.Context,
+	tx model.DBTx,
+	username, password, nickname, avatar, brief string,
+	beforeInsert func(model.DBTx, *tables.UserTable) error,
+) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
 
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		return nil, ErrInvalidCredentials
 	}
 
-	if existing, err := q.UserGetByUsername(ctx, username); err == nil && existing != nil {
+	var existing tables.UserTable
+	if err := tx.Where("username = ?", username).First(&existing).Error; err == nil {
 		return nil, ErrUsernameTaken
-	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
@@ -43,30 +51,28 @@ func UserCreate(ctx context.Context, q *model.Queries, username, password, nickn
 		return nil, err
 	}
 
-	now := time.Now()
-	params := &model.UserCreateParams{
-		Id:        utils.NewID(),
-		CreatedAt: now,
-		UpdatedAt: now,
-		Nickname:  makeNullString(nickname),
-		Avatar:    makeNullString(avatar),
-		Brief:     makeNullString(brief),
-		Username:  username,
-		Password:  hashedPassword,
-		Salt:      salt,
-		Disabled:  false,
+	user := &tables.UserTable{
+		Nickname: nickname,
+		Avatar:   avatar,
+		Brief:    brief,
+		Username: username,
+		Password: hashedPassword,
+		Salt:     salt,
+		Disabled: false,
 	}
+	user.ID = utils.NewID()
+	user.CreatedAt = time.Now()
+	user.UpdatedAt = user.CreatedAt
 
-	user, err := q.UserCreate(ctx, params)
-	if err != nil {
-		if isUniqueConstraintError(err) {
+	if err := tx.Create(user).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) || isUniqueConstraintError(err) {
 			return nil, ErrUsernameTaken
 		}
 		return nil, err
 	}
 
 	if beforeInsert != nil {
-		if err := beforeInsert(q, user); err != nil {
+		if err := beforeInsert(tx, user); err != nil {
 			return nil, err
 		}
 	}
@@ -74,14 +80,15 @@ func UserCreate(ctx context.Context, q *model.Queries, username, password, nickn
 	return user, nil
 }
 
-func UserUpdatePassword(ctx context.Context, q *model.Queries, userID string, newPassword string) error {
-	q = model.GetQ(q)
+func UserUpdatePassword(ctx context.Context, tx model.DBTx, userID string, newPassword string) error {
+	tx = model.GetTx(tx).WithContext(ctx)
 	if userID == "" || newPassword == "" {
 		return ErrInvalidCredentials
 	}
 
-	if _, err := q.UserGetById(ctx, userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	var user tables.UserTable
+	if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
 		return err
@@ -96,21 +103,21 @@ func UserUpdatePassword(ctx context.Context, q *model.Queries, userID string, ne
 		return err
 	}
 
-	params := &model.UserUpdatePasswordParams{
-		UpdatedAt: time.Now(),
-		Password:  hashedPassword,
-		Salt:      salt,
-		Id:        userID,
-	}
-
-	return q.UserUpdatePassword(ctx, params)
+	return tx.Model(&user).
+		Updates(map[string]any{
+			"password":   hashedPassword,
+			"salt":       salt,
+			"updated_at": time.Now(),
+		}).
+		Error
 }
 
-func UserAuthenticate(ctx context.Context, q *model.Queries, username, password string) (*model.User, error) {
-	q = model.GetQ(q)
-	user, err := q.UserGetByUsername(ctx, username)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserAuthenticate(ctx context.Context, tx model.DBTx, username, password string) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrInvalidCredentials
 		}
 		return nil, err
@@ -120,176 +127,163 @@ func UserAuthenticate(ctx context.Context, q *model.Queries, username, password 
 		return nil, ErrInvalidCredentials
 	}
 
-	return user, nil
+	return &user, nil
 }
 
-func UserGet(ctx context.Context, q *model.Queries, id string) (*model.User, error) {
-	q = model.GetQ(q)
-	user, err := q.UserGetById(ctx, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserGet(ctx context.Context, tx model.DBTx, id string) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.First(&user, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrUserNotFound
 		}
 		return nil, err
 	}
-	return user, nil
+	return &user, nil
 }
 
-func UserGetByUsername(ctx context.Context, q *model.Queries, username string) (*model.User, error) {
-	q = model.GetQ(q)
-	user, err := q.UserGetByUsername(ctx, username)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserGetByUsername(ctx context.Context, tx model.DBTx, username string) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return user, nil
+	return &user, nil
 }
 
-func UserUpdateInfo(ctx context.Context, q *model.Queries, userID string, nickname, brief, avatar string) (*model.User, error) {
-	q = model.GetQ(q)
-	if _, err := q.UserGetById(ctx, userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserUpdateInfo(ctx context.Context, tx model.DBTx, userID string, nickname, brief, avatar string) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrUserNotFound
 		}
 		return nil, err
 	}
 
-	params := &model.UserUpdateInfoParams{
-		UpdatedAt: time.Now(),
-		Nickname:  makeNullString(nickname),
-		Avatar:    makeNullString(avatar),
-		Brief:     makeNullString(brief),
-		Id:        userID,
+	updates := map[string]any{
+		"updated_at": time.Now(),
+	}
+	if value := strings.TrimSpace(nickname); value != "" {
+		updates["nickname"] = value
+	}
+	if value := strings.TrimSpace(avatar); value != "" {
+		updates["avatar"] = value
+	}
+	if value := strings.TrimSpace(brief); value != "" {
+		updates["brief"] = value
 	}
 
-	return q.UserUpdateInfo(ctx, params)
+	if len(updates) > 1 {
+		if err := tx.Model(&user).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	return UserGet(ctx, tx, userID)
 }
 
-func UserDelete(ctx context.Context, q *model.Queries, userID string) error {
-	q = model.GetQ(q)
-	if _, err := q.UserGetById(ctx, userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserDelete(ctx context.Context, tx model.DBTx, userID string) error {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
 		return err
 	}
 
-	deletedAt := time.Now()
-	params := &model.UserDeleteParams{
-		DeletedAt: &deletedAt,
-		UpdatedAt: deletedAt,
-		Id:        userID,
-	}
-
-	if err := q.UserDelete(ctx, params); err != nil {
+	if err := tx.Delete(&user).Error; err != nil {
 		return err
 	}
 
-	return AccessTokenDeleteAllByUserID(ctx, q, userID)
+	return AccessTokenDeleteAllByUserID(ctx, tx, userID)
 }
 
-func UserDisable(ctx context.Context, q *model.Queries, userID string, disabled bool) (*model.User, error) {
-	q = model.GetQ(q)
-	if _, err := q.UserGetById(ctx, userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+func UserDisable(ctx context.Context, tx model.DBTx, userID string, disabled bool) (*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var user tables.UserTable
+	if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrUserNotFound
 		}
 		return nil, err
 	}
 
-	params := &model.UserDisableParams{
-		UpdatedAt: time.Now(),
-		Disabled:  disabled,
-		Id:        userID,
-	}
-
-	if err := q.UserDisable(ctx, params); err != nil {
+	if err := tx.Model(&user).
+		Updates(map[string]any{
+			"disabled":   disabled,
+			"updated_at": time.Now(),
+		}).
+		Error; err != nil {
 		return nil, err
 	}
 
-	return q.UserGetById(ctx, userID)
+	return UserGet(ctx, tx, userID)
 }
 
-func UserList(ctx context.Context, q *model.Queries, req *UserListRequest, page, size int) ([]*model.User, int64, error) {
-	q = model.GetQ(q)
+func UserList(ctx context.Context, tx model.DBTx, req *UserListRequest, page, size int) ([]*tables.UserTable, int64, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
 	if req == nil {
 		req = &UserListRequest{}
 	}
 
-	offset := int64((page - 1) * size)
+	offset := (page - 1) * size
+	keyword := strings.TrimSpace(req.Keyword)
 
-	keyword := ""
-	if trimmed := strings.TrimSpace(req.Keyword); trimmed != "" {
-		keyword = trimmed + "%"
+	query := tx.Model(&tables.UserTable{})
+	if keyword != "" {
+		pattern := keyword + "%"
+		query = query.Where("(COALESCE(nickname, '') LIKE ? OR username LIKE ?)", pattern, pattern)
+	}
+	if !req.IncludeDisabled {
+		query = query.Where("disabled = ?", false)
 	}
 
-	count, err := q.UserListCount(ctx, &model.UserListCountParams{
-		Keyword:         keyword,
-		IncludeDisabled: req.IncludeDisabled,
-	})
-	if err != nil {
+	var count int64
+	if err := query.Session(&gorm.Session{}).Count(&count).Error; err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := q.UserList(ctx, &model.UserListParams{
-		Keyword:         keyword,
-		IncludeDisabled: req.IncludeDisabled,
-		Offset:          offset,
-		Limit:           int64(size),
-	})
-	if err != nil {
+	var users []*tables.UserTable
+	if err := query.
+		// 列表查询不读取 password/salt，避免敏感字段进入内存/日志
+		Select("id", "created_at", "updated_at", "deleted_at", "nickname", "avatar", "brief", "username", "disabled").
+		Order("created_at DESC").
+		Limit(size).
+		Offset(offset).
+		Find(&users).
+		Error; err != nil {
 		return nil, 0, err
-	}
-
-	users := make([]*model.User, len(rows))
-	for i, row := range rows {
-		users[i] = &model.User{
-			Id:        row.Id,
-			CreatedAt: row.CreatedAt,
-			UpdatedAt: row.UpdatedAt,
-			DeletedAt: row.DeletedAt,
-			Nickname:  row.Nickname,
-			Avatar:    row.Avatar,
-			Brief:     row.Brief,
-			Username:  row.Username,
-			Password:  "",
-			Salt:      "",
-			Disabled:  row.Disabled,
-		}
 	}
 
 	return users, count, nil
 }
 
-func UserListByIDs(ctx context.Context, q *model.Queries, ids []string) ([]*model.User, error) {
-	q = model.GetQ(q)
+func UserListByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.UserTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
 	if len(ids) == 0 {
-		return []*model.User{}, nil
+		return []*tables.UserTable{}, nil
 	}
 
-	users := make([]*model.User, 0, len(ids))
-	for _, id := range ids {
-		user, err := q.UserGetById(ctx, id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return nil, err
-		}
-		users = append(users, user)
+	var users []*tables.UserTable
+	if err := tx.
+		Select("id", "created_at", "updated_at", "deleted_at", "nickname", "avatar", "brief", "username", "disabled").
+		Where("id IN ?", ids).
+		Find(&users).
+		Error; err != nil {
+		return nil, err
 	}
 
 	return users, nil
-}
-
-func makeNullString(value string) sql.NullString {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: value, Valid: true}
 }
 
 func isUniqueConstraintError(err error) bool {

@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Request Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #ffffff;
+        --text: #0f172a;
+        --muted: #475569;
+        --border: #e2e8f0;
+        --panel: #f8fafc;
+        --primary: #2563eb;
+        --danger: #dc2626;
+      }
+
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      header {
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+
+      header h1 {
+        font-size: 16px;
+        margin: 0;
+      }
+
+      header p {
+        margin: 6px 0 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      header a {
+        color: var(--primary);
+        text-decoration: none;
+      }
+
+      main {
+        padding: 16px 20px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      @media (max-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      section {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        overflow: hidden;
+      }
+
+      section h2 {
+        margin: 0;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        font-size: 14px;
+        background: var(--panel);
+      }
+
+      .content {
+        padding: 14px;
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin: 10px 0 6px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 9px 10px;
+        font-size: 13px;
+        outline: none;
+        background: #fff;
+        color: var(--text);
+      }
+
+      textarea {
+        min-height: 110px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        resize: vertical;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 160px 1fr;
+        gap: 10px;
+      }
+
+      @media (max-width: 680px) {
+        .row {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .actions {
+        margin-top: 12px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+
+      button.danger {
+        background: #fff;
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .presets {
+        margin-top: 12px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .note {
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+      }
+
+      pre {
+        margin: 0;
+        padding: 14px;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.5;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        background: #0b1220;
+        color: #e5e7eb;
+      }
+
+      .meta {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        background: #fff;
+        font-size: 12px;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Request Demo</h1>
+      <p>
+        同源调用示例（fetch），配合
+        <a href="/docs" target="_blank" rel="noreferrer">/docs</a>
+        查看接口文档。
+      </p>
+    </header>
+
+    <main>
+      <div class="grid">
+        <section>
+          <h2>Request</h2>
+          <div class="content">
+            <label for="baseUrl">Base URL（一般不用改）</label>
+            <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3003" />
+
+            <div class="row">
+              <div>
+                <label for="method">Method</label>
+                <select id="method">
+                  <option>GET</option>
+                  <option>POST</option>
+                  <option>PUT</option>
+                  <option>PATCH</option>
+                  <option>DELETE</option>
+                </select>
+              </div>
+              <div>
+                <label for="path">Path / URL</label>
+                <input
+                  id="path"
+                  type="text"
+                  class="mono"
+                  placeholder="/api/v1/health"
+                />
+              </div>
+            </div>
+
+            <label for="token">Token（自动保存到 localStorage）</label>
+            <input id="token" type="text" class="mono" placeholder="Bearer ..." />
+
+            <label for="headers">Headers（JSON）</label>
+            <textarea id="headers" class="mono" spellcheck="false"></textarea>
+
+            <label for="body">Body（JSON 或纯文本）</label>
+            <textarea id="body" class="mono" spellcheck="false"></textarea>
+
+            <div class="actions">
+              <button id="send" class="primary">Send</button>
+              <button id="clear" class="danger">Clear Output</button>
+            </div>
+
+            <div class="presets">
+              <button data-preset="health">GET /api/v1/health</button>
+              <button data-preset="signup">POST /api/v1/user/signup</button>
+              <button data-preset="signin">POST /api/v1/user/signin</button>
+              <button data-preset="info">GET /api/v1/user/info</button>
+              <button data-preset="list">GET /api/v1/user/list</button>
+            </div>
+
+            <div class="note">
+              <div>会自动把 <span class="mono">Authorization</span> 设为 Bearer Token。</div>
+              <div>
+                若你用其它前端域名访问接口，需要在后端
+                <span class="mono">corsAllowOrigins</span> 放行。
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>Response</h2>
+          <div id="meta" class="meta">点击 Send 发送请求…</div>
+          <pre id="output">{}</pre>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const baseUrlEl = $("baseUrl");
+        const methodEl = $("method");
+        const pathEl = $("path");
+        const tokenEl = $("token");
+        const headersEl = $("headers");
+        const bodyEl = $("body");
+        const metaEl = $("meta");
+        const outputEl = $("output");
+
+        const STORAGE_TOKEN_KEY = "request_demo_token";
+        const demoRand = Math.random().toString(36).slice(2, 10);
+        const demoUsername = "demo_" + demoRand;
+        const demoPassword = "123456";
+        const demoNickname = "demo_" + demoRand;
+
+        function isAbsUrl(value) {
+          return /^https?:\\/\\//i.test(value);
+        }
+
+        function joinUrl(baseUrl, urlOrPath) {
+          if (isAbsUrl(urlOrPath)) return urlOrPath;
+          const base = baseUrl.replace(/\\/+$/, "");
+          const path = urlOrPath.startsWith("/") ? urlOrPath : "/" + urlOrPath;
+          return base + path;
+        }
+
+        function safeJsonParse(text) {
+          try {
+            return { ok: true, value: JSON.parse(text) };
+          } catch (e) {
+            return { ok: false, error: e };
+          }
+        }
+
+        function setMeta(lines) {
+          metaEl.textContent = lines.filter(Boolean).join("\\n");
+        }
+
+        function setOutput(text) {
+          outputEl.textContent = text === "" ? "(empty)" : text;
+        }
+
+        function setPreset(name) {
+          switch (name) {
+            case "health":
+              methodEl.value = "GET";
+              pathEl.value = "/api/v1/health";
+              bodyEl.value = "";
+              break;
+            case "signup":
+              methodEl.value = "POST";
+              pathEl.value = "/api/v1/user/signup";
+              bodyEl.value = JSON.stringify(
+                {
+                  username: demoUsername,
+                  password: demoPassword,
+                  nickname: demoNickname,
+                  avatar: "",
+                  brief: "signup from static request demo",
+                },
+                null,
+                2
+              );
+              break;
+            case "signin":
+              methodEl.value = "POST";
+              pathEl.value = "/api/v1/user/signin";
+              bodyEl.value = JSON.stringify(
+                {
+                  username: demoUsername,
+                  password: demoPassword,
+                },
+                null,
+                2
+              );
+              break;
+            case "info":
+              methodEl.value = "GET";
+              pathEl.value = "/api/v1/user/info";
+              bodyEl.value = "";
+              break;
+            case "list":
+              methodEl.value = "GET";
+              pathEl.value = "/api/v1/user/list?page=1&size=10";
+              bodyEl.value = "";
+              break;
+            default:
+              break;
+          }
+        }
+
+        async function send() {
+          const baseUrl = (baseUrlEl.value || "").trim() || location.origin;
+          const path = (pathEl.value || "").trim();
+
+          if (!path) {
+            setMeta(["Path / URL 不能为空"]);
+            return;
+          }
+
+          const url = joinUrl(baseUrl, path);
+
+          const headersParsed = safeJsonParse(headersEl.value || "{}");
+          if (!headersParsed.ok) {
+            setMeta(["Headers JSON 解析失败", String(headersParsed.error)]);
+            return;
+          }
+
+          const headers = headersParsed.value || {};
+          const token = (tokenEl.value || "").trim();
+          if (token && headers.Authorization === undefined) {
+            headers.Authorization = token.startsWith("Bearer ")
+              ? token
+              : "Bearer " + token;
+          }
+
+          const method = (methodEl.value || "GET").toUpperCase();
+          const init = { method, headers };
+
+          if (method !== "GET" && method !== "HEAD") {
+            const rawBody = bodyEl.value || "";
+            if (rawBody.trim() !== "") {
+              const guessJson = safeJsonParse(rawBody);
+              init.body = guessJson.ok ? JSON.stringify(guessJson.value) : rawBody;
+            }
+          }
+
+          setMeta(["Sending...", url]);
+          setOutput("");
+
+          const started = performance.now();
+          let res;
+          try {
+            res = await fetch(url, init);
+          } catch (e) {
+            setMeta(["请求失败（网络/跨域/服务未启动？）", String(e)]);
+            return;
+          }
+          const elapsed = Math.round(performance.now() - started);
+
+          const resText = await res.text();
+          const resHeaders = {};
+          res.headers.forEach((v, k) => (resHeaders[k] = v));
+
+          setMeta([
+            `${res.status} ${res.statusText} (${elapsed}ms)`,
+            url,
+            "Response headers:",
+            JSON.stringify(resHeaders, null, 2),
+          ]);
+
+          const maybeJson = safeJsonParse(resText);
+          if (maybeJson.ok) {
+            setOutput(JSON.stringify(maybeJson.value, null, 2));
+            const tokenFromResponse =
+              maybeJson.value &&
+              maybeJson.value.body &&
+              typeof maybeJson.value.body.token === "string" &&
+              maybeJson.value.body.token;
+            if (tokenFromResponse) {
+              tokenEl.value = tokenFromResponse;
+              localStorage.setItem(STORAGE_TOKEN_KEY, tokenFromResponse);
+            }
+            return;
+          }
+
+          setOutput(resText);
+        }
+
+        // init
+        baseUrlEl.value = location.origin;
+        headersEl.value = JSON.stringify(
+          {
+            "Content-Type": "application/json",
+          },
+          null,
+          2
+        );
+
+        const savedToken = localStorage.getItem(STORAGE_TOKEN_KEY);
+        if (savedToken) tokenEl.value = savedToken;
+
+        document.querySelectorAll("[data-preset]").forEach((btn) => {
+          btn.addEventListener("click", () => setPreset(btn.dataset.preset));
+        });
+
+        $("send").addEventListener("click", send);
+        $("clear").addEventListener("click", () => {
+          setMeta(["输出已清空"]);
+          setOutput("{}");
+        });
+
+        // default preset
+        setPreset("health");
+      })();
+    </script>
+  </body>
+</html>

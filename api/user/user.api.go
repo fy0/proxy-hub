@@ -9,6 +9,7 @@ import (
 
 	"go-template/api/h"
 	"go-template/model"
+	"go-template/model/tables"
 	userService "go-template/service/user"
 	"go-template/utils"
 )
@@ -86,9 +87,9 @@ type signupOutput struct {
 }
 
 func userSignupHandler(ctx context.Context, input *signupInput) (*signupOutput, error) {
-	var created *model.User
-	err := model.Transaction(ctx, func(q *model.Queries) error {
-		user, err := userService.UserCreate(ctx, q,
+	var created *tables.UserTable
+	err := model.Transaction(ctx, func(tx model.DBTx) error {
+		user, err := userService.UserCreate(ctx, tx,
 			input.Body.Username,
 			input.Body.Password,
 			input.Body.Nickname,
@@ -120,16 +121,15 @@ type signinOutput struct {
 }
 
 func userSigninHandler(ctx context.Context, input *signinInput) (*signinOutput, error) {
-	q := model.GetQ(nil)
-	u, err := userService.UserAuthenticate(ctx, q, input.Body.Username, input.Body.Password)
+	u, err := userService.UserAuthenticate(ctx, nil, input.Body.Username, input.Body.Password)
 	if err != nil {
 		return nil, mapError(err)
 	}
 
-	if err := userService.AccessTokenDeleteAllByUserID(ctx, q, u.Id); err != nil {
+	if err := userService.AccessTokenDeleteAllByUserID(ctx, nil, u.ID); err != nil {
 		return nil, humanaError(http.StatusInternalServerError, err.Error())
 	}
-	token, err := userService.AccessTokenGenerate(ctx, q, u.Id)
+	token, err := userService.AccessTokenGenerate(ctx, nil, u.ID)
 	if err != nil {
 		return nil, humanaError(http.StatusInternalServerError, err.Error())
 	}
@@ -152,19 +152,18 @@ type changePasswordOutput struct {
 
 func userChangePasswordHandler(ctx context.Context, input *changePasswordInput) (*changePasswordOutput, error) {
 	current := ctx.Value(ctxUserKey)
-	userInfo, ok := current.(*model.User)
+	userInfo, ok := current.(*tables.UserTable)
 	if !ok || userInfo == nil {
 		return nil, humanaError(http.StatusUnauthorized, "未检测到登录状态")
 	}
 
-	q := model.GetQ(nil)
-	if _, err := userService.UserAuthenticate(ctx, q, userInfo.Username, input.Body.Password); err != nil {
+	if _, err := userService.UserAuthenticate(ctx, nil, userInfo.Username, input.Body.Password); err != nil {
 		return nil, mapError(err)
 	}
-	if err := userService.UserUpdatePassword(ctx, q, userInfo.Id, input.Body.PasswordNew); err != nil {
+	if err := userService.UserUpdatePassword(ctx, nil, userInfo.ID, input.Body.PasswordNew); err != nil {
 		return nil, mapError(err)
 	}
-	if err := userService.AccessTokenDeleteAllByUserID(ctx, q, userInfo.Id); err != nil {
+	if err := userService.AccessTokenDeleteAllByUserID(ctx, nil, userInfo.ID); err != nil {
 		return nil, humanaError(http.StatusInternalServerError, err.Error())
 	}
 
@@ -181,13 +180,12 @@ type infoOutput struct {
 
 func userInfoHandler(ctx context.Context, _ *struct{}) (*infoOutput, error) {
 	current := ctx.Value(ctxUserKey)
-	userInfo, ok := current.(*model.User)
+	userInfo, ok := current.(*tables.UserTable)
 	if !ok || userInfo == nil {
 		return nil, humanaError(http.StatusUnauthorized, "未检测到登录状态")
 	}
 
-	q := model.GetQ(nil)
-	refreshed, err := userService.UserGet(ctx, q, userInfo.Id)
+	refreshed, err := userService.UserGet(ctx, nil, userInfo.ID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -211,13 +209,12 @@ type updateInfoOutput struct {
 
 func userInfoUpdateHandler(ctx context.Context, input *updateInfoInput) (*updateInfoOutput, error) {
 	current := ctx.Value(ctxUserKey)
-	userInfo, ok := current.(*model.User)
+	userInfo, ok := current.(*tables.UserTable)
 	if !ok || userInfo == nil {
 		return nil, humanaError(http.StatusUnauthorized, "未检测到登录状态")
 	}
 
-	q := model.GetQ(nil)
-	updated, err := userService.UserUpdateInfo(ctx, q, userInfo.Id, input.Body.Nickname, input.Body.Brief, input.Body.Avatar)
+	updated, err := userService.UserUpdateInfo(ctx, nil, userInfo.ID, input.Body.Nickname, input.Body.Brief, input.Body.Avatar)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -247,8 +244,7 @@ func userListHandler(ctx context.Context, input *listInput) (*listOutput, error)
 		IncludeDisabled: input.IncludeDisabled,
 	}
 
-	q := model.GetQ(nil)
-	users, total, err := userService.UserList(ctx, q, req, page, size)
+	users, total, err := userService.UserList(ctx, nil, req, page, size)
 	if err != nil {
 		return nil, mapError(err)
 	}

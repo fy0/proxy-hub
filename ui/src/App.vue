@@ -3,7 +3,6 @@ import { zhCN, dateZhCN, type GlobalThemeOverrides } from 'naive-ui';
 import { RouterLink, RouterView } from 'vue-router';
 import HelloWorld from './components/HelloWorld.vue';
 import { computed } from 'vue';
-import Button from 'naive-ui/es/button/src/Button';
 
 // 有需要的时候操作吧
 const themeOverrides = computed<GlobalThemeOverrides>(() => {

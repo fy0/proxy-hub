@@ -9,6 +9,7 @@ import (
 
 	"go-template/utils"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -47,6 +48,8 @@ func (m *StringPKBaseModel) BeforeCreate(tx *gorm.DB) error {
 
 func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
 	var dialector gorm.Dialector
+	isSQLite := false
+	isSQLiteMemory := false
 
 	switch {
 	case strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://"):
@@ -54,7 +57,9 @@ func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
 	case strings.HasPrefix(dsn, "mysql://") || strings.Contains(dsn, "@tcp("):
 		dialector = mysql.Open(strings.TrimPrefix(dsn, "mysql://"))
 	case strings.HasSuffix(dsn, ".db") || strings.HasPrefix(dsn, "file:") || strings.HasPrefix(dsn, ":memory:"):
-		dialector = sqliteOpen(dsn)
+		dialector = sqlite.Open(dsn)
+		isSQLite = true
+		isSQLiteMemory = isSQLiteMemoryDSN(dsn)
 	default:
 		return nil, fmt.Errorf("无法识别的数据库类型: %s", dsn)
 	}
@@ -73,13 +78,29 @@ func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// SQLite 模式下开启 WAL 提升并发性能
-	switch dialector.(type) {
-	case *sqliteDialector:
-		db.Exec("PRAGMA journal_mode=WAL")
+	// SQLite 模式下开启 WAL 提升并发性能；内存模式仅保留单连接，避免多连接导致表/数据丢失。
+	if isSQLite {
+		if sqlDB, err := db.DB(); err == nil {
+			if isSQLiteMemory {
+				sqlDB.SetMaxOpenConns(1)
+				sqlDB.SetMaxIdleConns(1)
+			}
+		}
+		if !isSQLiteMemory {
+			_ = db.Exec("PRAGMA journal_mode=WAL").Error
+		}
 	}
 
 	return db, nil
+}
+
+func isSQLiteMemoryDSN(dsn string) bool {
+	if strings.HasPrefix(dsn, ":memory:") {
+		return true
+	}
+
+	lower := strings.ToLower(dsn)
+	return strings.HasPrefix(lower, "file::memory:") || strings.Contains(lower, "mode=memory")
 }
 
 func DBClose(db *gorm.DB) {
@@ -91,9 +112,13 @@ func DBClose(db *gorm.DB) {
 }
 
 func FlushWAL(db *gorm.DB) {
-	switch db.Dialector.(type) {
-	case *sqliteDialector:
-		_ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-		_ = db.Exec("PRAGMA shrink_memory")
+	if db == nil || db.Dialector == nil {
+		return
 	}
+	if db.Dialector.Name() != "sqlite" {
+		return
+	}
+
+	_ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error
+	_ = db.Exec("PRAGMA shrink_memory").Error
 }

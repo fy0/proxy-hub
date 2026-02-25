@@ -11,11 +11,15 @@ import (
 
 // registerHealthRoutes 注册健康探测接口，用于服务监控
 func registerHealthRoutes(api huma.API) {
+	registerHealthRoute(api, "/health", "health-get")
+}
+
+func registerHealthRoute(api huma.API, path, operationID string) {
 	h.HumaRegister(api, huma.Operation{
-		OperationID: "health-get",
+		OperationID: operationID,
 		Tags:        []string{"health-健康探测"},
 		Method:      http.MethodGet,
-		Path:        "/health",
+		Path:        path,
 		Summary:     "健康探测",
 	}, func(ctx context.Context, _ *struct{}) (*h.MessageResponse, error) {
 		return h.NewMessageResponse("ok"), nil

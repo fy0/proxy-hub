@@ -17,8 +17,6 @@ import (
 //go:embed all:static
 var embedStatic embed.FS
 
-//go:generate go run ./model/sqlc_gen/
-
 func main() {
 	var opts struct {
 		Install      bool   `short:"i" long:"install" description:"安装为系统服务"`

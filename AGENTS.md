@@ -1,13 +1,12 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The entry point `main.go` wires CLI flags, service installation, and HTTP startup via `server.go`. HTTP handlers live in `api/` with Huma schemas under `api/h`. Data access code resides in `model/`, where `table/` hosts sample GORM models and `sqlc_gen/` stores SQL schema plus codegen stubs. Shared helpers, configuration loaders, and logging adapters are kept in `utils/` (see `app_config.go` for defaults). Static assets and generated docs land under `static/` and `docs/`, both served via the embedded filesystem. Keep project-wide settings in `config.yaml`.
+The entry point `main.go` wires CLI flags, service installation, and HTTP startup via `server.go`. HTTP handlers live in `api/` with Huma schemas under `api/h`. Data access code resides in `model/`, where `tables/` hosts GORM models. Shared helpers, configuration loaders, and logging adapters are kept in `utils/` (see `app_config.go` for defaults). Static assets and generated docs land under `static/` and `docs/`, both served via the embedded filesystem. Keep project-wide settings in `config.yaml`.
 
 ## Build, Test, and Development Commands
 - `go mod tidy` syncs dependencies with the module definition.
 - `go run .` starts the HTTP service; append `-m` to force migrations, `-i` or `--uninstall` for Windows service management.
 - `go test ./...` runs all package tests with race detection optional via `-race`.
-- `go generate -run "sqlc" ./model/sqlc_gen/...` regenerates SQLC outputs before committing schema changes.
 - `go vet ./...` catches common anti-patterns during review.
 
 ## Coding Style & Naming Conventions

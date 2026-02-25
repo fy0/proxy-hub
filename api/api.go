@@ -40,11 +40,16 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 		Immutable:             true,
 	})
 
+	allowOrigins := strings.TrimSpace(cfg.CorsAllowOrigins)
+	if allowOrigins == "" {
+		allowOrigins = "*"
+	}
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     cfg.CorsAllowOrigins,
-		AllowMethods:     "GET,POST,PUT,DELETE,PATCH",
+		AllowOrigins:     allowOrigins,
+		AllowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowCredentials: cfg.CorsAllowOrigins != "*",
+		AllowCredentials: allowOrigins != "*" && !strings.Contains(allowOrigins, "*"),
 	}))
 
 	// 使用 fiberzap 统一日志输出
@@ -52,6 +57,18 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 		Logger: theLogger,
 		// 按状态码区分日志级别：500+ Error, 400+ Warn, 其他 Info
 		Levels: []zapcore.Level{zapcore.ErrorLevel, zapcore.WarnLevel, zapcore.InfoLevel},
+		FieldsFunc: func(c *fiber.Ctx) []zap.Field {
+			hInfo, ok := c.Locals("humaHandlerInfo").(*h.HandlerInfo)
+			if !ok || hInfo == nil {
+				return nil
+			}
+
+			return []zap.Field{
+				zap.String("handler", hInfo.FuncName),
+				zap.String("handlerFile", hInfo.FilePath),
+				zap.Int("handlerLine", hInfo.Line),
+			}
+		},
 	}))
 
 	app.Use(recover.New(recover.Config{
@@ -65,15 +82,17 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 			)
 		},
 	}))
+
 	app.Use(compress.New())
 
 	api, v1 := h.NewAPI(app, cfg)
+	registerHealthRoutes(api)
+
 	api.UseMiddleware(h.HumaTraceMiddleware)
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 
 	user.Register(v1)
-	registerHealthRoutes(v1)
 	mountStatic(app, cfg, assets, theLogger)
 
 	return app.Listen(cfg.ServeAt)
@@ -100,11 +119,25 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 		mountPath = "/"
 	}
 
-	app.Use(mountPath, filesystem.New(filesystem.Config{
+	handler := filesystem.New(filesystem.Config{
 		Root:       fs,
 		PathPrefix: "static",
 		MaxAge:     300,
-	}))
+	})
+
+	// 静态资源作为 Fiber 底层路由兜底，不依赖 Fiber middleware 链。
+	mountPath = strings.TrimSuffix(mountPath, "/")
+	if mountPath == "" {
+		mountPath = "/"
+	}
+
+	if mountPath == "/" {
+		app.All("/*", handler)
+		return
+	}
+
+	app.All(mountPath, handler)
+	app.All(mountPath+"/*", handler)
 }
 
 // GenOpenAPI 生成 OpenAPI JSON/YAML 文件
@@ -130,7 +163,7 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 
 	// 注册所有路由
 	user.Register(v1)
-	registerHealthRoutes(v1)
+	registerHealthRoutes(api)
 
 	// 获取 OpenAPI 规范
 	openapi := api.OpenAPI()

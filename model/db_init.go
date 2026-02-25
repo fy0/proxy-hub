@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	"go-template/utils/model_base"
@@ -11,23 +10,19 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var (
-	db             *gorm.DB
-	sqlDB          *sql.DB
-	defaultQueries *Queries
+type DBTx = *gorm.DB
 
-	// ErrSQLCNotReady indicates sqlc helpers have not been initialized.
-	ErrSQLCNotReady = errors.New("model: sql queries are not initialized")
+var (
+	db *gorm.DB
+
+	// ErrDBNotReady indicates the gorm.DB has not been initialized.
+	ErrDBNotReady = errors.New("model: db is not initialized")
 )
 
 func InitWithDSN(dsn string, logLevel int, autoMigrate bool) error {
 	var err error
 	db, err = model_base.DBInit(dsn, logger.LogLevel(logLevel))
 	if err != nil {
-		return err
-	}
-
-	if err := initQueries(); err != nil {
 		return err
 	}
 
@@ -39,74 +34,33 @@ func DBClose() {
 	if db != nil {
 		model_base.DBClose(db)
 	}
-	sqlDB = nil
-	defaultQueries = nil
+	db = nil
 }
 
 func GetDB() *gorm.DB {
 	return db
 }
 
-func initQueries() error {
+func GetTx(tx DBTx) DBTx {
+	if tx != nil {
+		return tx
+	}
 	if db == nil {
-		return ErrSQLCNotReady
+		panic("model: db is not initialized")
 	}
-
-	sqlConn, err := db.DB()
-	if err != nil {
-		return err
-	}
-
-	sqlDB = sqlConn
-	defaultQueries = New(sqlConn)
-	return nil
+	return db
 }
 
-func ensureQueriesReady() error {
-	if sqlDB == nil || defaultQueries == nil {
-		return ErrSQLCNotReady
-	}
-	return nil
-}
-
-func Transaction(ctx context.Context, fn func(q *Queries) error) error {
+func Transaction(ctx context.Context, fn func(tx DBTx) error) error {
 	if fn == nil {
 		return nil
 	}
 
-	if err := ensureQueriesReady(); err != nil {
-		return err
+	if db == nil {
+		return ErrDBNotReady
 	}
 
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	q := New(tx)
-	defer func() {
-		if r := recover(); r != nil {
-			_ = tx.Rollback()
-			panic(r)
-		}
-	}()
-
-	if err := fn(q); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func GetQ(q *Queries) *Queries {
-	if q != nil {
-		return q
-	}
-
-	if defaultQueries == nil {
-		panic("model: sql queries are not initialized")
-	}
-
-	return defaultQueries
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(tx)
+	})
 }

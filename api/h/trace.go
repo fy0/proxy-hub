@@ -35,9 +35,12 @@ func HumaTraceMiddleware(ctx huma.Context, next func(huma.Context)) {
 	// 获取底层的 fiber context
 	fiberCtx := humafiber.Unwrap(ctx)
 
-	hInfo := GetHandlerInfo(ctx.Operation().OperationID)
-	if hInfo != nil {
-		fiberCtx.Locals("humaHandlerInfo", hInfo)
+	op := ctx.Operation()
+	if op != nil {
+		hInfo := GetHandlerInfo(op.OperationID)
+		if hInfo != nil {
+			fiberCtx.Locals("humaHandlerInfo", hInfo)
+		}
 	}
 
 	// 继续处理
