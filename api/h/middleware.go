@@ -1,88 +1,73 @@
 package h
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
+	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
+
+	"go-template/model/tables"
+	userService "go-template/service/user"
 )
 
-type corsSettings struct {
-	allowOrigins     string
-	allowMethods     string
-	allowHeaders     string
-	allowCredentials bool
-}
-
-func newCORSSettings(allowOrigins string) corsSettings {
-	allowOrigins = strings.TrimSpace(allowOrigins)
-	if allowOrigins == "" {
-		allowOrigins = "*"
-	}
-	return corsSettings{
-		allowOrigins:     allowOrigins,
-		allowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
-		allowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		allowCredentials: allowOrigins != "*" && !strings.Contains(allowOrigins, "*"),
-	}
-}
-
-func setCORSHeaders(ctx huma.Context, cfg corsSettings) {
-	origin := strings.TrimSpace(ctx.Header("Origin"))
-	if cfg.allowOrigins == "*" || origin == "" {
-		ctx.SetHeader("Access-Control-Allow-Origin", cfg.allowOrigins)
-	} else {
-		for _, allowed := range strings.Split(cfg.allowOrigins, ",") {
-			if strings.TrimSpace(allowed) == origin {
-				ctx.SetHeader("Access-Control-Allow-Origin", origin)
-				ctx.AppendHeader("Vary", "Origin")
-				break
-			}
+// getToken 从请求头或Cookie中获取认证token
+func getToken(c *fiber.Ctx) string {
+	// 优先从Authorization头获取token
+	authorization := c.Get("Authorization")
+	if authorization != "" {
+		// 支持Bearer token格式
+		if after, ok := strings.CutPrefix(authorization, "Bearer "); ok {
+			authorization = after
 		}
+		return authorization
 	}
 
-	ctx.SetHeader("Access-Control-Allow-Methods", cfg.allowMethods)
-	ctx.SetHeader("Access-Control-Allow-Headers", cfg.allowHeaders)
-
-	if cfg.allowCredentials {
-		ctx.SetHeader("Access-Control-Allow-Credentials", "true")
-	}
+	// 从Cookie获取token作为备选
+	cookieToken := c.Cookies("Authorization")
+	return cookieToken
 }
 
-func NewHumaCORSMiddleware(allowOrigins string) func(ctx huma.Context, next func(huma.Context)) {
-	cfg := newCORSSettings(allowOrigins)
-	return func(ctx huma.Context, next func(huma.Context)) {
-		setCORSHeaders(ctx, cfg)
-		next(ctx)
-	}
+// GetUserInfo 从 Huma Context 中读取用户信息。
+func GetUserInfo(ctx context.Context) *tables.UserTable {
+	userInfo, _ := ctx.Value("user").(*tables.UserTable)
+	return userInfo
 }
 
-func NewHumaRecoverMiddleware(logger *zap.Logger) func(ctx huma.Context, next func(huma.Context)) {
-	if logger == nil {
-		logger = zap.NewNop()
+func HumaUserMiddleware(ctx huma.Context, next func(huma.Context)) {
+	// 注: huma 的中间件能力比较菜，拿cookie和header都费劲，所以选择从fiber中获取
+	// 获取底层的 fiber context
+	fiberCtx := humafiber.Unwrap(ctx)
+	token := getToken(fiberCtx)
+
+	if token == "" {
+		ctx.SetStatus(http.StatusBadRequest)
+		ctx.SetHeader("Content-Type", "application/json")
+		ctx.BodyWriter().Write([]byte(`{"code":"MISSING_TOKEN","message":"缺少认证凭证"}`))
+		return
 	}
 
-	return func(ctx huma.Context, next func(huma.Context)) {
-		defer func() {
-			if r := recover(); r != nil {
-				url := ctx.URL()
-				logger.Error("panic recovered",
-					zap.Any("error", r),
-					zap.String("method", ctx.Method()),
-					zap.String("path", url.Path),
-					zap.Stack("stacktrace"),
-				)
-
-				ctx.SetStatus(http.StatusInternalServerError)
-				ctx.SetHeader("Content-Type", "application/json")
-				_, _ = ctx.BodyWriter().Write([]byte(`{"code":"INTERNAL_ERROR","message":"internal server error"}`))
-			}
-		}()
-
-		next(ctx)
+	u, err := userService.AccessTokenVerify(context.Background(), nil, token)
+	if err != nil {
+		ctx.SetStatus(http.StatusBadRequest)
+		ctx.SetHeader("Content-Type", "application/json")
+		ctx.BodyWriter().Write([]byte(`{"code":"INVALID_TOKEN","message":"认证凭证无效，请重新登录"}`))
+		return
 	}
+	if u.Disabled {
+		ctx.SetStatus(http.StatusForbidden)
+		ctx.SetHeader("Content-Type", "application/json")
+		ctx.BodyWriter().Write([]byte(`{"code":"ACCOUNT_DISABLED","message":"账号已被禁用"}`))
+		return
+	}
+
+	ctx = huma.WithValue(ctx, "user", u)
+	ctx = huma.WithValue(ctx, "token", token)
+	next(ctx)
 }
 
 func NewHumaLoggerMiddleware(logger *zap.Logger) func(ctx huma.Context, next func(huma.Context)) {

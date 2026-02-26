@@ -47,7 +47,7 @@ func Register(api huma.API) {
 		Summary:     "修改密码",
 		OperationID: "user-change-password",
 		Tags:        []string{userTag},
-		Middlewares: huma.Middlewares{SignCheckHumaMiddleware},
+		Middlewares: huma.Middlewares{h.HumaUserMiddleware},
 	}, userChangePasswordHandler)
 
 	h.HumaRegister(group, huma.Operation{
@@ -56,7 +56,7 @@ func Register(api huma.API) {
 		Summary:     "获取当前用户信息",
 		OperationID: "user-info",
 		Tags:        []string{userTag},
-		Middlewares: huma.Middlewares{SignCheckHumaMiddleware},
+		Middlewares: huma.Middlewares{h.HumaUserMiddleware},
 	}, userInfoHandler)
 
 	h.HumaRegister(group, huma.Operation{
@@ -65,7 +65,7 @@ func Register(api huma.API) {
 		Summary:     "更新当前用户信息",
 		OperationID: "user-info-update",
 		Tags:        []string{userTag},
-		Middlewares: huma.Middlewares{SignCheckHumaMiddleware},
+		Middlewares: huma.Middlewares{h.HumaUserMiddleware},
 	}, userInfoUpdateHandler)
 
 	h.HumaRegister(group, huma.Operation{
@@ -74,7 +74,7 @@ func Register(api huma.API) {
 		Summary:     "用户列表",
 		OperationID: "user-list",
 		Tags:        []string{userTag},
-		Middlewares: huma.Middlewares{SignCheckHumaMiddleware},
+		Middlewares: huma.Middlewares{h.HumaUserMiddleware},
 	}, userListHandler)
 }
 
