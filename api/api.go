@@ -172,7 +172,7 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 
 	// 注册所有路由
 	user.Register(v1)
-	registerHealthRoutes(api)
+	registerHealthRoute(api, "/health", "health-get")
 
 	// 获取 OpenAPI 规范
 	openapi := api.OpenAPI()

@@ -10,10 +10,6 @@ import (
 )
 
 // registerHealthRoutes 注册健康探测接口，用于服务监控
-func registerHealthRoutes(api huma.API) {
-	registerHealthRoute(api, "/health", "health-get")
-}
-
 func registerHealthRoute(api huma.API, path, operationID string) {
 	h.HumaRegister(api, huma.Operation{
 		OperationID: operationID,

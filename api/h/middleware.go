@@ -15,21 +15,25 @@ import (
 	userService "go-template/service/user"
 )
 
-// getToken 从请求头或Cookie中获取认证token
+// getToken 从 Fiber Context 获取 Token
+// 优先级: 1. Authorization Header  2. Authorization Cookie  3. Query token
 func getToken(c *fiber.Ctx) string {
-	// 优先从Authorization头获取token
-	authorization := c.Get("Authorization")
-	if authorization != "" {
-		// 支持Bearer token格式
-		if after, ok := strings.CutPrefix(authorization, "Bearer "); ok {
-			authorization = after
+	// 1. 从 Header 获取 (支持 Bearer)
+	auth := c.Get("Authorization")
+	if auth != "" {
+		if after, ok := strings.CutPrefix(auth, "Bearer "); ok {
+			return strings.TrimSpace(after)
 		}
-		return authorization
+		return strings.TrimSpace(auth)
 	}
 
-	// 从Cookie获取token作为备选
-	cookieToken := c.Cookies("Authorization")
-	return cookieToken
+	// 2. 从 Cookie 获取
+	if cookie := c.Cookies("Authorization"); cookie != "" {
+		return cookie
+	}
+
+	// 3. 从 Query 获取（方便 WebSocket/测试）
+	return c.Query("token")
 }
 
 // GetUserInfo 从 Huma Context 中读取用户信息。
