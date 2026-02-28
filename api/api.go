@@ -97,7 +97,7 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 	app.Use(compress.New())
 
 	api, v1 := h.NewAPI(app, cfg)
-	registerHealthRoutes(api)
+	registerHealthRoute(api, "/health", "health-get")
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 
