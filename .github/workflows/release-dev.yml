@@ -1,0 +1,105 @@
+name: Release dev
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: go-template
+
+jobs:
+  publish-dev-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: ./ui
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Generate OpenAPI and frontend assets
+        run: |
+          go run . --gen-openapi=./ui/openapi.json
+          cd ui
+          pnpm run generate-client
+          pnpm run build
+          cd ..
+          rm -rf static/*
+          cp -r ui/dist/. static/
+
+      - name: Build release archives
+        run: |
+          mkdir -p release
+
+          build_target() {
+            local goos="$1"
+            local goarch="$2"
+            local ext="$3"
+            local archive="$4"
+            local stage="release/stage/${goos}-${goarch}"
+
+            rm -rf "$stage"
+            mkdir -p "$stage"
+
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" -o "$stage/${APP_NAME}$ext" .
+            cp README.md "$stage/README.md"
+
+            if [ "$archive" = "zip" ]; then
+              (cd "$stage" && zip -rq "../../${APP_NAME}-dev-${goos}-${goarch}.zip" .)
+            else
+              tar -C "$stage" -czf "release/${APP_NAME}-dev-${goos}-${goarch}.tar.gz" .
+            fi
+          }
+
+          build_target linux amd64 "" tar.gz
+          build_target linux arm64 "" tar.gz
+          build_target windows amd64 ".exe" zip
+
+          (cd release && sha256sum ${APP_NAME}-dev-* > SHA256SUMS.txt)
+
+      - name: Move dev tag to current commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f dev "${GITHUB_SHA}"
+          git push origin refs/tags/dev --force
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: dev
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          files: |
+            release/go-template-dev-linux-amd64.tar.gz
+            release/go-template-dev-linux-arm64.tar.gz
+            release/go-template-dev-windows-amd64.zip
+            release/SHA256SUMS.txt

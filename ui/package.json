@@ -20,7 +20,6 @@
     "generate-api": "pnpm run generate-openapi && pnpm run generate-client"
   },
   "dependencies": {
-    "@hey-api/client-fetch": "^0.13.1",
     "@tanstack/vue-query": "^5.92.1",
     "dayjs": "^1.11.18",
     "es-toolkit": "^1.39.10",

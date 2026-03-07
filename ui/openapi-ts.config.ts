@@ -70,7 +70,7 @@ export default defineConfig({
     {
       name: '@hey-api/client-fetch',
       baseUrl: false,
-      bundle: false,
+      bundle: true,
     },
     '@hey-api/typescript',
     '@hey-api/schemas',

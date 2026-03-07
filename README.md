@@ -40,3 +40,11 @@ SQLite 使用 `github.com/glebarez/sqlite`（pure Go，无需 CGO）。
 - 卸载：`go run . --uninstall`
 
 复制项目后，可按需替换示例模型或移除不需要的模块，使其贴合自身业务。
+
+## Docker / CI
+- 本地构建镜像：`docker build -t go-template:local .`
+- 本地运行容器：`docker run --rm -p 9005:9005 -v ${PWD}/data:/app/data go-template:local`
+- 如需自定义配置，可将宿主机的 `data/` 挂载到容器内 `/app/data`
+- `Dockerfile` 会在构建阶段生成 OpenAPI、编译前端并将 `static/` 打包进 Go 二进制
+- `.github/workflows/docker-image.yml` 会在 `master`、`v*` tag、PR 或手动触发时构建镜像，并在非 PR 场景推送到 `ghcr.io`
+- `.github/workflows/release-dev.yml` 会在 `master` 推送或手动触发时生成 `dev` 预发布压缩包并上传到 GitHub Releases
