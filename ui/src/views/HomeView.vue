@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { getHealthOptions, getHealthQueryKey } from '@/api';
@@ -7,6 +7,7 @@ const queryClient = useQueryClient();
 const { data, isLoading, isError, error, isFetching } = useQuery(getHealthOptions());
 
 const message = computed(() => data.value?.message ?? '');
+const errorMessage = computed(() => error.value?.detail ?? error.value?.title ?? 'Request failed');
 
 const refresh = () => {
   queryClient.invalidateQueries({ queryKey: getHealthQueryKey() });
@@ -19,7 +20,7 @@ const refresh = () => {
 
     <p v-if="isLoading">Loading...</p>
     <p v-else-if="isError">
-      Error: {{ error?.message ?? 'Request failed' }}
+      Error: {{ errorMessage }}
     </p>
     <p v-else>API: {{ message || 'ok' }}</p>
 

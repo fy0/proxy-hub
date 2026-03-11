@@ -4,7 +4,7 @@
 
 > **技术栈版本：**
 > - `@tanstack/vue-query`: ^5.x
-> - `@hey-api/openapi-ts`: ^0.89.x（内置 Fetch client，无需单独安装）
+> - `@hey-api/openapi-ts`: ^0.91.x（内置 Fetch client，无需单独安装）
 
 ---
 

@@ -30,7 +30,7 @@
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
-    "@hey-api/openapi-ts": "^0.89.2",
+    "@hey-api/openapi-ts": "^0.91.1",
     "@prettier/plugin-oxc": "^0.0.4",
     "@tailwindcss/vite": "^4.1.13",
     "@tsconfig/node22": "^22.0.2",
