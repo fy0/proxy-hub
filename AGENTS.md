@@ -1,3 +1,5 @@
+使用 pwsh / powershell 读写仓库文件时，必须显式使用 UTF-8 编码（建议 UTF-8 without BOM），避免乱码或破坏源码。
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization

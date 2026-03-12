@@ -13,34 +13,34 @@ import (
 )
 
 type AttachmentConfig struct {
-	UseS3     bool   `json:"useS3" yaml:"useS3"`
-	Endpoint  string `json:"endpoint" yaml:"endpoint"`
-	Bucket    string `json:"bucket" yaml:"bucket"`
-	AccessKey string `json:"accessKey" yaml:"accessKey"`
-	SecretKey string `json:"secretKey" yaml:"secretKey"`
-	Token     string `json:"token" yaml:"token"`
+	UseS3     bool   `json:"useS3" yaml:"useS3" koanf:"useS3"`
+	Endpoint  string `json:"endpoint" yaml:"endpoint" koanf:"endpoint"`
+	Bucket    string `json:"bucket" yaml:"bucket" koanf:"bucket"`
+	AccessKey string `json:"accessKey" yaml:"accessKey" koanf:"accessKey"`
+	SecretKey string `json:"secretKey" yaml:"secretKey" koanf:"secretKey"`
+	Token     string `json:"token" yaml:"token" koanf:"token"`
 }
 
 type AppConfig struct {
-	ServeAt             string           `json:"serveAt" yaml:"serveAt"`
-	Domain              string           `json:"domain" yaml:"domain"`
-	RegisterOpen        bool             `json:"registerOpen" yaml:"registerOpen"`
-	WebUrl              string           `json:"webUrl" yaml:"webUrl"`
-	AttachmentSizeLimit int64            `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit"`
-	ImageCompress       bool             `json:"imageCompress" yaml:"imageCompress"`
-	LogFile             string           `json:"logFile" yaml:"logFile"`
-	LogLevel            string           `json:"logLevel" yaml:"logLevel"`
-	DBLogLevel          int              `json:"dbLogLevel" yaml:"dbLogLevel"`
-	CorsAllowOrigins    string           `json:"corsAllowOrigins" yaml:"corsAllowOrigins"`
-	UIOverwrite         string           `json:"uiOverwrite" yaml:"uiOverwrite"`
-	AutoMigrate         bool             `json:"autoMigrate" yaml:"autoMigrate"`
-	OpenAPIEnabled      bool             `json:"openapiEnabled" yaml:"openapiEnabled"`
-	DocsPath            string           `json:"docsPath" yaml:"docsPath"`
-	APITitle            string           `json:"apiTitle" yaml:"apiTitle"`
-	APIVersion          string           `json:"apiVersion" yaml:"apiVersion"`
-	AttachmentConfig    AttachmentConfig `json:"attachmentConfig" yaml:"attachmentConfig"`
-	DSN                 string           `json:"dbUrl" yaml:"dbUrl"`
-	PrintConfig         bool             `json:"printConfig" yaml:"printConfig"`
+	ServeAt             string           `json:"serveAt" yaml:"serveAt" koanf:"serveAt"`
+	Domain              string           `json:"domain" yaml:"domain" koanf:"domain"`
+	RegisterOpen        bool             `json:"registerOpen" yaml:"registerOpen" koanf:"registerOpen"`
+	WebUrl              string           `json:"webUrl" yaml:"webUrl" koanf:"webUrl"`
+	AttachmentSizeLimit int64            `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit" koanf:"attachmentSizeLimit"`
+	ImageCompress       bool             `json:"imageCompress" yaml:"imageCompress" koanf:"imageCompress"`
+	LogFile             string           `json:"logFile" yaml:"logFile" koanf:"logFile"`
+	LogLevel            string           `json:"logLevel" yaml:"logLevel" koanf:"logLevel"`
+	DBLogLevel          int              `json:"dbLogLevel" yaml:"dbLogLevel" koanf:"dbLogLevel"`
+	CorsAllowOrigins    string           `json:"corsAllowOrigins" yaml:"corsAllowOrigins" koanf:"corsAllowOrigins"`
+	UIOverwrite         string           `json:"uiOverwrite" yaml:"uiOverwrite" koanf:"uiOverwrite"`
+	AutoMigrate         bool             `json:"autoMigrate" yaml:"autoMigrate" koanf:"autoMigrate"`
+	OpenAPIEnabled      bool             `json:"openapiEnabled" yaml:"openapiEnabled" koanf:"openapiEnabled"`
+	DocsPath            string           `json:"docsPath" yaml:"docsPath" koanf:"docsPath"`
+	APITitle            string           `json:"apiTitle" yaml:"apiTitle" koanf:"apiTitle"`
+	APIVersion          string           `json:"apiVersion" yaml:"apiVersion" koanf:"apiVersion"`
+	AttachmentConfig    AttachmentConfig `json:"attachmentConfig" yaml:"attachmentConfig" koanf:"attachmentConfig"`
+	DSN                 string           `json:"dbUrl" yaml:"dbUrl" koanf:"dbUrl"`
+	PrintConfig         bool             `json:"printConfig" yaml:"printConfig" koanf:"printConfig"`
 }
 
 var configStore = koanf.New(".")
