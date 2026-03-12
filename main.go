@@ -48,7 +48,7 @@ func run(forceMigrate, migrateOnly bool, genOpenAPI string) {
 		cfg.AutoMigrate = true
 	}
 
-	utils.InitLogger()
+	utils.InitLogger(cfg.LogLevel)
 	logger := utils.Logger
 
 	if err := model.InitWithDSN(cfg.DSN, cfg.DBLogLevel, cfg.AutoMigrate); err != nil {
