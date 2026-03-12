@@ -27,7 +27,7 @@
 - MySQL：`mysql://...` 或包含 `@tcp(` 的 DSN
 - SQLite：`./data/data.db` / `file:...` / `:memory:`
 
-SQLite 使用 `github.com/glebarez/sqlite`（pure Go，无需 CGO）。
+SQLite 使用 `github.com/ncruces/go-sqlite3/gormlite`（无需 CGO）。
 
 ## 目录说明
 - `api/`：HTTP & Huma 相关实现。

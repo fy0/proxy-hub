@@ -9,7 +9,8 @@ import (
 
 	"go-template/utils"
 
-	"github.com/glebarez/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -57,7 +58,7 @@ func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
 	case strings.HasPrefix(dsn, "mysql://") || strings.Contains(dsn, "@tcp("):
 		dialector = mysql.Open(strings.TrimPrefix(dsn, "mysql://"))
 	case strings.HasSuffix(dsn, ".db") || strings.HasPrefix(dsn, "file:") || strings.HasPrefix(dsn, ":memory:"):
-		dialector = sqlite.Open(dsn)
+		dialector = gormlite.Open(dsn)
 		isSQLite = true
 		isSQLiteMemory = isSQLiteMemoryDSN(dsn)
 	default:
