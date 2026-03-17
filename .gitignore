@@ -26,7 +26,7 @@ temp/
 dist/
 config.yaml
 version.yaml
-assets/
+/assets/
 data.db
 .vscode/launch.json
 
