@@ -75,8 +75,13 @@ func HumaTypesRegister() {
 	// 注册 any 接口类型的 Schema，使其在文档中表现为任意对象
 	huma.RegisterTypeSchema(reflect.TypeOf((*any)(nil)).Elem(), func(huma.Registry) *huma.Schema {
 		return &huma.Schema{
-			Type:                 "object",
-			AdditionalProperties: map[string]*huma.Schema{},
+			OneOf: []*huma.Schema{
+				{Type: huma.TypeString},
+				{Type: huma.TypeNumber},
+				{Type: huma.TypeBoolean},
+				{Type: huma.TypeObject, AdditionalProperties: true},
+				{Type: huma.TypeArray, Items: &huma.Schema{}},
+			},
 		}
 	})
 
