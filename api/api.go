@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ import (
 	"go-template/api/user"
 	"go-template/utils"
 )
+
+const staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
 
 // Init 初始化 Fiber + Huma 的初始化，启动 HTTP 服务
 func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
@@ -124,29 +127,61 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 	}
 
 	mountPath := cfg.WebUrl
-	if mountPath == "" {
-		mountPath = "/"
-	}
+	mountPath = normalizeStaticMountPath(mountPath)
 
-	handler := filesystem.New(filesystem.Config{
-		Root:       fs,
-		PathPrefix: "static",
-		MaxAge:     300,
+	app.Use(mountPath, func(c *fiber.Ctx) error {
+		err := c.Next()
+		if err != nil {
+			return err
+		}
+		if c.Response().StatusCode() != fiber.StatusOK {
+			return nil
+		}
+		if isStaticIndexRequest(c.Path(), mountPath) {
+			setNoCacheHeaders(c)
+		}
+		return nil
 	})
 
-	// 静态资源作为 Fiber 底层路由兜底，不依赖 Fiber middleware 链。
-	mountPath = strings.TrimSuffix(mountPath, "/")
+	app.Use(mountPath, filesystem.New(filesystem.Config{
+		Root:       fs,
+		PathPrefix: "static",
+		Index:      "index.html",
+		MaxAge:     staticAssetMaxAgeSeconds,
+		Browse:     false,
+	}))
+}
+
+func normalizeStaticMountPath(mountPath string) string {
+	mountPath = strings.TrimSpace(mountPath)
 	if mountPath == "" {
-		mountPath = "/"
+		return "/"
 	}
-
-	if mountPath == "/" {
-		app.All("/*", handler)
-		return
+	if !strings.HasPrefix(mountPath, "/") {
+		mountPath = "/" + mountPath
 	}
+	cleaned := path.Clean(mountPath)
+	if cleaned == "." {
+		return "/"
+	}
+	return cleaned
+}
 
-	app.All(mountPath, handler)
-	app.All(mountPath+"/*", handler)
+func isStaticIndexRequest(requestPath, mountPath string) bool {
+	cleanedPath := normalizeStaticMountPath(requestPath)
+	cleanedMountPath := normalizeStaticMountPath(mountPath)
+	if cleanedPath == cleanedMountPath {
+		return true
+	}
+	return cleanedPath == path.Join(cleanedMountPath, "index.html")
+}
+
+func setNoCacheHeaders(c *fiber.Ctx) {
+	// 静态中间件会先写入长缓存头，这里覆盖为 index 专用的不缓存策略。
+	c.Response().Header.Del(fiber.HeaderCacheControl)
+	c.Set(fiber.HeaderCacheControl, "no-store, no-cache, must-revalidate")
+	c.Set(fiber.HeaderPragma, "no-cache")
+	c.Set(fiber.HeaderExpires, "0")
 }
 
 // GenOpenAPI 生成 OpenAPI JSON/YAML 文件
