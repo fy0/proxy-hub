@@ -5,13 +5,12 @@ function trimTrailingSlash(value: string): string {
 /**
  * API Base URL.
  *
- * - If `VITE_API_BASE_URL` is set, use it.
- * - Otherwise, use same-origin (`''`).
+ * 前端统一走同源地址，开发态由 Vite 代理映射到后端，
+ * 生产态则复用当前站点 origin。
  */
 export function getApiBaseUrl(): string {
-  const fromEnv = import.meta.env.VITE_API_BASE_URL;
-  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') {
-    return trimTrailingSlash(fromEnv.trim());
+  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string') {
+    return trimTrailingSlash(window.location.origin);
   }
 
   return '';

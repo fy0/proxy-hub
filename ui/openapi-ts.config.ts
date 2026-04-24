@@ -6,6 +6,13 @@ import { fileURLToPath } from 'url';
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 const localSpecPath = path.join(configDir, 'openapi.json');
 const httpMethods = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace']);
+const DEFAULT_OPENAPI_SERVER = 'http://127.0.0.1:9005';
+const openApiServer = (
+  process.env.VITE_API_PROXY_TARGET ||
+  process.env.DEV_PROXY_SERVER ||
+  process.env.VITE_API_BASE_URL ||
+  DEFAULT_OPENAPI_SERVER
+).replace(/\/+$/, '');
 
 const loadLocalSpec = () => {
   if (!existsSync(localSpecPath)) return null;
@@ -54,7 +61,7 @@ const localSpec = loadLocalSpec();
 const operationIdPatch = buildOperationIdPatch(localSpec);
 
 export default defineConfig({
-  input: existsSync(localSpecPath) ? localSpecPath : 'http://localhost:3003/openapi.json',
+  input: existsSync(localSpecPath) ? localSpecPath : `${openApiServer}/openapi.json`,
   parser: operationIdPatch
     ? {
         patch: {
