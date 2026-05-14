@@ -70,6 +70,8 @@ let initialLoadPromise: Promise<void> | null = null;
 function normalizeProtocol(value: string | null | undefined): ProxyProtocol {
   const protocol = value?.toLowerCase().replace(':', '') ?? 'unknown';
 
+  if (protocol === 'https') return 'http';
+  if (protocol === 'socks') return 'socks5';
   if (
     protocol === 'vless' ||
     protocol === 'vmess' ||
@@ -129,6 +131,28 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 }
 
+function normalizeTransportTag(value: string | null): string {
+  const transport = value?.trim().toLowerCase() ?? '';
+  if (!transport || transport === 'tcp' || transport === 'raw' || transport === 'none') return '';
+  if (transport === 'websocket') return 'ws';
+  return transport;
+}
+
+function uriTags(protocol: ProxyProtocol, searchParams: URLSearchParams): string[] {
+  const tags: string[] = [protocol].filter(tag => tag !== 'unknown');
+  const transport = normalizeTransportTag(
+    searchParams.get('type') || searchParams.get('network') || ''
+  );
+  if (transport) tags.push(transport);
+
+  const security = (searchParams.get('security') || '').trim().toLowerCase();
+  const tls = (searchParams.get('tls') || '').trim().toLowerCase();
+  if (security === 'tls' || security === 'reality') tags.push(security);
+  if (!security && ['1', 'true', 'yes', 'y', 'tls'].includes(tls)) tags.push('tls');
+
+  return Array.from(new Set(tags));
+}
+
 function parseVmessUri(rawUri: string): NodeInput | null {
   if (!rawUri.toLowerCase().startsWith('vmess://')) return null;
 
@@ -136,6 +160,7 @@ function parseVmessUri(rawUri: string): NodeInput | null {
     const payload = rawUri.replace(/^vmess:\/\//i, '').trim();
     const parsed = JSON.parse(decodeBase64Payload(payload)) as Record<string, unknown>;
     const server = stringValue(parsed.add).trim();
+    const transport = normalizeTransportTag(stringValue(parsed.net));
     const name =
       stringValue(parsed.ps).trim() || (server ? `VMess ${server}` : t('state.node.vmessDefault'));
 
@@ -147,7 +172,7 @@ function parseVmessUri(rawUri: string): NodeInput | null {
       username: stringValue(parsed.id).trim(),
       password: '',
       rawUri,
-      tags: ['vmess'],
+      tags: ['vmess', transport].filter(Boolean),
       remark: '',
     };
   } catch {
@@ -169,16 +194,18 @@ function parseProxyUri(rawValue: string): NodeInput {
     const protocol = normalizeProtocol(parsed.protocol);
     const nameFromHash = decodeURIComponent(parsed.hash.replace(/^#/, '')).trim();
     const name = nameFromHash || `${protocol.toUpperCase()} ${parsed.hostname || fallbackName}`;
+    const username = decodeURIComponent(parsed.username || '').trim();
+    const password = decodeURIComponent(parsed.password || '').trim();
 
     return {
       name,
       protocol,
       server: parsed.hostname,
       port: toPort(parsed.port),
-      username: decodeURIComponent(parsed.username || '').trim(),
-      password: decodeURIComponent(parsed.password || '').trim(),
+      username: protocol === 'trojan' ? '' : username,
+      password: protocol === 'trojan' ? username : password,
       rawUri,
-      tags: [protocol].filter(tag => tag !== 'unknown'),
+      tags: uriTags(protocol, parsed.searchParams),
       remark: '',
     };
   } catch {

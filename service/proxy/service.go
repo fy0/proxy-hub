@@ -451,28 +451,13 @@ func ensureListenPortAvailable(ctx context.Context, tx model.DBTx, mappingID str
 func normalizeImportURIs(req NodeImportRequest) []string {
 	values := make([]string, 0, len(req.URIs))
 	values = append(values, req.URIs...)
-	for _, line := range strings.FieldsFunc(req.Raw, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}) {
-		values = append(values, line)
+	if raw := strings.TrimSpace(req.Raw); raw != "" {
+		values = append(values, raw)
 	}
 
 	expanded := make([]string, 0, len(values))
 	for _, value := range uniqueNonEmpty(values) {
-		if strings.Contains(value, "://") {
-			expanded = append(expanded, value)
-			continue
-		}
-		decoded, err := decodeBase64Flexible(value)
-		if err != nil || !strings.Contains(string(decoded), "://") {
-			expanded = append(expanded, value)
-			continue
-		}
-		for _, line := range strings.FieldsFunc(string(decoded), func(r rune) bool {
-			return r == '\n' || r == '\r'
-		}) {
-			expanded = append(expanded, line)
-		}
+		expanded = append(expanded, expandImportValue(value)...)
 	}
 	return uniqueNonEmpty(expanded)
 }
@@ -482,6 +467,8 @@ func normalizeProtocol(protocol string) string {
 	switch protocol {
 	case "socks", "socks5":
 		return ProtocolSOCKS5
+	case "https":
+		return ProtocolHTTP
 	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHTTP:
 		return protocol
 	default:

@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
+
+	"proxy-hub/model/tables"
 )
 
 func TestParseVLESSURI(t *testing.T) {
@@ -134,5 +137,126 @@ func TestBuildNodeOutboundFromVLESSRealityURI(t *testing.T) {
 	}
 	if options.TLS.Reality.ShortID != "" {
 		t.Fatalf("Reality short ID = %q, want empty", options.TLS.Reality.ShortID)
+	}
+}
+
+func TestBuildNodeOutboundFromVLESSH2URI(t *testing.T) {
+	raw := "vless://uuid@example.com:443?type=h2&security=tls&sni=edge.example.com&host=cdn.example.com&path=%2Fh2#edge"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if !containsString(node.Tags, "h2") {
+		t.Fatalf("Tags = %v, want h2 tag", node.Tags)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	options, ok := outbound.Options.(*option.VLESSOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.VLESSOutboundOptions", outbound.Options)
+	}
+	if options.Transport == nil || options.Transport.Type != constant.V2RayTransportTypeHTTP {
+		t.Fatalf("Transport = %+v, want http transport for h2 URI", options.Transport)
+	}
+	if options.Transport.HTTPOptions.Path != "/h2" {
+		t.Fatalf("HTTP path = %q, want /h2", options.Transport.HTTPOptions.Path)
+	}
+	if len(options.Transport.HTTPOptions.Host) != 1 || options.Transport.HTTPOptions.Host[0] != "cdn.example.com" {
+		t.Fatalf("HTTP host = %v, want cdn.example.com", options.Transport.HTTPOptions.Host)
+	}
+}
+
+func TestBuildNodeOutboundFromVMessURL(t *testing.T) {
+	raw := "vmess://uuid@example.com:443?security=auto&tls=tls&type=grpc&serviceName=edge-grpc#vmess-url"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolVMess {
+		t.Fatalf("Protocol = %q, want %q", node.Protocol, ProtocolVMess)
+	}
+	if !containsString(node.Tags, "grpc") || !containsString(node.Tags, "tls") {
+		t.Fatalf("Tags = %v, want grpc and tls", node.Tags)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	options, ok := outbound.Options.(*option.VMessOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.VMessOutboundOptions", outbound.Options)
+	}
+	if options.Security != "auto" {
+		t.Fatalf("Security = %q, want auto", options.Security)
+	}
+	if options.TLS == nil || !options.TLS.Enabled {
+		t.Fatalf("TLS = %+v, want enabled", options.TLS)
+	}
+	if options.Transport == nil || options.Transport.Type != constant.V2RayTransportTypeGRPC {
+		t.Fatalf("Transport = %+v, want grpc", options.Transport)
+	}
+	if options.Transport.GRPCOptions.ServiceName != "edge-grpc" {
+		t.Fatalf("ServiceName = %q, want edge-grpc", options.Transport.GRPCOptions.ServiceName)
+	}
+}
+
+func TestBuildNodeOutboundFromTrojanURI(t *testing.T) {
+	raw := "trojan://secret@example.com:443?type=ws&sni=edge.example.com&path=%2Ftrojan#trojan"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Username != "" || node.Password != "secret" {
+		t.Fatalf("Username/Password = %q/%q, want empty/secret", node.Username, node.Password)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	options, ok := outbound.Options.(*option.TrojanOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.TrojanOutboundOptions", outbound.Options)
+	}
+	if options.Password != "secret" {
+		t.Fatalf("Password = %q, want secret", options.Password)
+	}
+	if options.TLS == nil || !options.TLS.Enabled || options.TLS.ServerName != "edge.example.com" {
+		t.Fatalf("TLS = %+v, want enabled with edge.example.com", options.TLS)
+	}
+	if options.Transport == nil || options.Transport.Type != constant.V2RayTransportTypeWebsocket {
+		t.Fatalf("Transport = %+v, want websocket", options.Transport)
+	}
+}
+
+func TestBuildNodeOutboundRejectsUnsupportedTransport(t *testing.T) {
+	raw := "vless://uuid@example.com:443?type=xhttp#bad"
+
+	_, err := buildNodeOutboundFromURI(raw, "node-test")
+	if !errors.Is(err, ErrUnsupportedURI) {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v, want ErrUnsupportedURI", err)
+	}
+}
+
+func TestBuildNodeOutboundRawURIDoesNotFallback(t *testing.T) {
+	port := uint16(1080)
+	node := &tables.ProxyNodeTable{
+		Name:     "bad raw",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+		RawURI:   "vless://uuid@example.com:443?type=xhttp#bad",
+	}
+
+	_, err := buildNodeOutbound(node, "node-test")
+	if !errors.Is(err, ErrUnsupportedURI) {
+		t.Fatalf("buildNodeOutbound() error = %v, want ErrUnsupportedURI", err)
 	}
 }

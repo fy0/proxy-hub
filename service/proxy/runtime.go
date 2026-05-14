@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -376,9 +375,10 @@ func buildInboundRouteRule(inboundTag, outboundTag string) option.Rule {
 func buildNodeOutbound(node *tables.ProxyNodeTable, tag string) (option.Outbound, error) {
 	if strings.TrimSpace(node.RawURI) != "" {
 		outbound, err := buildNodeOutboundFromURI(node.RawURI, tag)
-		if err == nil {
-			return outbound, nil
+		if err != nil {
+			return option.Outbound{}, err
 		}
+		return outbound, nil
 	}
 
 	if node.Port == nil || *node.Port == 0 {
@@ -447,60 +447,93 @@ func buildNodeOutbound(node *tables.ProxyNodeTable, tag string) (option.Outbound
 }
 
 func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error) {
-	rawURI = strings.TrimSpace(rawURI)
-	if strings.HasPrefix(strings.ToLower(rawURI), "vmess://") {
-		return buildVMessOutbound(rawURI, tag)
-	}
-
-	parsed, err := url.Parse(rawURI)
-	if err != nil {
-		return option.Outbound{}, err
-	}
-	port, err := parseURLPort(parsed)
+	parsed, err := parseNodeURI(rawURI)
 	if err != nil {
 		return option.Outbound{}, err
 	}
 	serverOptions := option.ServerOptions{
-		Server:     parsed.Hostname(),
-		ServerPort: *port,
-	}
-	query := parsed.Query()
-	protocol := normalizeProtocol(parsed.Scheme)
-	username := parsed.User.Username()
-	password, _ := parsed.User.Password()
-	if requiresUTLS(query) && !withUTLS {
-		return option.Outbound{}, ErrUTLSRequired
+		Server:     parsed.Server,
+		ServerPort: *parsed.Port,
 	}
 
-	switch protocol {
+	switch parsed.Protocol {
 	case ProtocolVLESS:
+		if requiresUTLS(parsed.Query) && !withUTLS {
+			return option.Outbound{}, ErrUTLSRequired
+		}
+		transport, err := buildV2RayTransport(parsed.Query)
+		if err != nil {
+			return option.Outbound{}, err
+		}
+		tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, false)
+		if err != nil {
+			return option.Outbound{}, err
+		}
 		return option.Outbound{
 			Type: constant.TypeVLESS,
 			Tag:  tag,
 			Options: &option.VLESSOutboundOptions{
 				ServerOptions: serverOptions,
-				UUID:          username,
-				Flow:          queryFirst(query, "flow"),
+				UUID:          parsed.Username,
+				Flow:          queryFirst(parsed.Query, "flow"),
 				PacketEncoding: stringPtrOrNil(
-					queryFirst(query, "packetEncoding", "packet_encoding", "packet-encoding"),
+					queryFirst(parsed.Query, "packetEncoding", "packet_encoding", "packet-encoding"),
 				),
 				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
-					TLS: buildTLSOptions(query, serverOptions.Server, false),
+					TLS: tlsOptions,
 				},
-				Transport: buildV2RayTransport(query),
+				Transport: transport,
+			},
+		}, nil
+	case ProtocolVMess:
+		if requiresUTLS(parsed.Query) && !withUTLS {
+			return option.Outbound{}, ErrUTLSRequired
+		}
+		transport, err := buildV2RayTransport(parsed.Query)
+		if err != nil {
+			return option.Outbound{}, err
+		}
+		tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, false)
+		if err != nil {
+			return option.Outbound{}, err
+		}
+		return option.Outbound{
+			Type: constant.TypeVMess,
+			Tag:  tag,
+			Options: &option.VMessOutboundOptions{
+				ServerOptions:  serverOptions,
+				UUID:           parsed.Username,
+				Security:       firstNonEmpty(parsed.VMessSecurity, "auto"),
+				AlterId:        parsed.VMessAlterID,
+				PacketEncoding: parsed.VMessPacketEncoding,
+				Transport:      transport,
+				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+					TLS: tlsOptions,
+				},
 			},
 		}, nil
 	case ProtocolTrojan:
+		if requiresUTLS(parsed.Query) && !withUTLS {
+			return option.Outbound{}, ErrUTLSRequired
+		}
+		transport, err := buildV2RayTransport(parsed.Query)
+		if err != nil {
+			return option.Outbound{}, err
+		}
+		tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, true)
+		if err != nil {
+			return option.Outbound{}, err
+		}
 		return option.Outbound{
 			Type: constant.TypeTrojan,
 			Tag:  tag,
 			Options: &option.TrojanOutboundOptions{
 				ServerOptions: serverOptions,
-				Password:      username,
+				Password:      parsed.Password,
 				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
-					TLS: buildTLSOptions(query, serverOptions.Server, true),
+					TLS: tlsOptions,
 				},
-				Transport: buildV2RayTransport(query),
+				Transport: transport,
 			},
 		}, nil
 	case ProtocolSOCKS5:
@@ -510,20 +543,24 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 			Options: &option.SOCKSOutboundOptions{
 				ServerOptions: serverOptions,
 				Version:       "5",
-				Username:      username,
-				Password:      password,
+				Username:      parsed.Username,
+				Password:      parsed.Password,
 			},
 		}, nil
 	case ProtocolHTTP:
+		tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, false)
+		if err != nil {
+			return option.Outbound{}, err
+		}
 		return option.Outbound{
 			Type: constant.TypeHTTP,
 			Tag:  tag,
 			Options: &option.HTTPOutboundOptions{
 				ServerOptions: serverOptions,
-				Username:      username,
-				Password:      password,
+				Username:      parsed.Username,
+				Password:      parsed.Password,
 				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
-					TLS: buildTLSOptions(query, serverOptions.Server, false),
+					TLS: tlsOptions,
 				},
 			},
 		}, nil
@@ -532,69 +569,11 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 	}
 }
 
-func buildVMessOutbound(rawURI string, tag string) (option.Outbound, error) {
-	content, err := decodeBase64Flexible(uriPayload(rawURI))
-	if err != nil {
-		return option.Outbound{}, err
-	}
-	var data map[string]any
-	if err := json.Unmarshal(content, &data); err != nil {
-		return option.Outbound{}, err
-	}
-	port, err := parsePortString(stringFromMap(data, "port"))
-	if err != nil {
-		return option.Outbound{}, err
-	}
-	alterID := 0
-	if value := stringFromMap(data, "aid"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil {
-			alterID = parsed
-		}
-	}
-	query := url.Values{}
-	for key, dataKey := range map[string]string{
-		"type": "net",
-		"host": "host",
-		"path": "path",
-		"sni":  "sni",
-		"alpn": "alpn",
-		"fp":   "fp",
-	} {
-		if value := stringFromMap(data, dataKey); value != "" {
-			query.Set(key, value)
-		}
-	}
-	if tlsMode := stringFromMap(data, "tls"); tlsMode != "" {
-		query.Set("security", tlsMode)
-	}
-	if requiresUTLS(query) && !withUTLS {
-		return option.Outbound{}, ErrUTLSRequired
-	}
-
-	return option.Outbound{
-		Type: constant.TypeVMess,
-		Tag:  tag,
-		Options: &option.VMessOutboundOptions{
-			ServerOptions: option.ServerOptions{
-				Server:     stringFromMap(data, "add"),
-				ServerPort: *port,
-			},
-			UUID:      stringFromMap(data, "id"),
-			Security:  firstNonEmpty(stringFromMap(data, "scy"), "auto"),
-			AlterId:   alterID,
-			Transport: buildV2RayTransport(query),
-			OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
-				TLS: buildTLSOptions(query, stringFromMap(data, "add"), false),
-			},
-		},
-	}, nil
-}
-
-func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) *option.OutboundTLSOptions {
-	security := strings.ToLower(queryFirst(query, "security", "tls"))
+func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (*option.OutboundTLSOptions, error) {
+	security := securityMode(query)
 	enabled := defaultEnabled || security == "tls" || security == "reality"
 	if !enabled || security == "none" {
-		return nil
+		return nil, nil
 	}
 
 	tlsOptions := &option.OutboundTLSOptions{
@@ -616,25 +595,28 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) *
 		}
 	}
 	if security == "reality" {
+		publicKey := queryFirst(query, "pbk", "publicKey", "public_key")
+		if publicKey == "" {
+			return nil, fmt.Errorf("%w: missing reality public key", ErrUnsupportedURI)
+		}
 		tlsOptions.Reality = &option.OutboundRealityOptions{
 			Enabled:   true,
-			PublicKey: queryFirst(query, "pbk", "publicKey", "public_key"),
+			PublicKey: publicKey,
 			ShortID:   queryFirst(query, "sid", "shortId", "short_id"),
 		}
 	}
-	return tlsOptions
+	return tlsOptions, nil
 }
 
 func requiresUTLS(query url.Values) bool {
-	security := strings.ToLower(queryFirst(query, "security", "tls"))
-	return security == "reality"
+	return securityMode(query) == "reality"
 }
 
-func buildV2RayTransport(query url.Values) *option.V2RayTransportOptions {
-	transportType := normalizeTransportType(queryFirst(query, "type", "network"))
+func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error) {
+	transportType, _ := transportTypeAndTag(query)
 	switch transportType {
 	case "":
-		return nil
+		return nil, nil
 	case constant.V2RayTransportTypeWebsocket:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeWebsocket}
 		transport.WebsocketOptions.Path = firstNonEmpty(queryFirst(query, "path"), "/")
@@ -654,27 +636,27 @@ func buildV2RayTransport(query url.Values) *option.V2RayTransportOptions {
 				"Host": badoption.Listable[string]{host},
 			}
 		}
-		return transport
+		return transport, nil
 	case constant.V2RayTransportTypeHTTP:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeHTTP}
 		transport.HTTPOptions.Path = queryFirst(query, "path")
 		if host := splitCommaList(queryFirst(query, "host")); len(host) > 0 {
 			transport.HTTPOptions.Host = badoption.Listable[string](host)
 		}
-		return transport
+		return transport, nil
 	case constant.V2RayTransportTypeGRPC:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeGRPC}
 		transport.GRPCOptions.ServiceName = firstNonEmpty(queryFirst(query, "serviceName", "service_name"), queryFirst(query, "path"))
-		return transport
+		return transport, nil
 	case constant.V2RayTransportTypeHTTPUpgrade:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeHTTPUpgrade}
 		transport.HTTPUpgradeOptions.Path = firstNonEmpty(queryFirst(query, "path"), "/")
 		transport.HTTPUpgradeOptions.Host = queryFirst(query, "host")
-		return transport
+		return transport, nil
 	case constant.V2RayTransportTypeQUIC:
-		return &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeQUIC}
+		return &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeQUIC}, nil
 	default:
-		return nil
+		return nil, fmt.Errorf("%w: unsupported transport %s", ErrUnsupportedURI, transportType)
 	}
 }
 
