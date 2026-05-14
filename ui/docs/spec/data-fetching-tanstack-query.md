@@ -582,11 +582,11 @@ const { isLoading, isFetching, isPending } = useQuery(...)
 ```vue
 <template>
   <!-- 首次加载显示骨架屏 -->
-  <n-skeleton v-if="isLoading" />
+  <div v-if="isLoading" class="h-5 w-full animate-pulse rounded-md bg-muted" />
 
   <!-- 有数据时显示内容，右上角显示刷新指示器 -->
   <div v-else>
-    <n-spin :show="isFetching" size="small" class="float-right" />
+    <span v-if="isFetching" class="float-right text-sm text-muted-foreground">刷新中...</span>
     <UserList :data="data" />
   </div>
 </template>
@@ -597,9 +597,9 @@ const { isLoading, isFetching, isPending } = useQuery(...)
 ```typescript
 const { mutate, isPending } = useMutation({ ... })
 
-<n-button :loading="isPending" @click="handleSubmit">
-  保存
-</n-button>
+<Button :disabled="isPending" @click="handleSubmit">
+  {{ isPending ? '保存中...' : '保存' }}
+</Button>
 ```
 
 ### 合并多个加载状态
@@ -631,7 +631,7 @@ const { data, error, isError } = useQuery({
 <template>
   <div v-if="isError" class="error">
     {{ error.message }}
-    <n-button @click="refetch">重试</n-button>
+    <Button variant="outline" @click="refetch">重试</Button>
   </div>
 </template>
 ```

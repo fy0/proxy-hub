@@ -5,29 +5,23 @@ import { createPinia } from 'pinia';
 import { VueQueryPlugin } from '@tanstack/vue-query';
 
 import dayjs from 'dayjs';
-import 'dayjs/locale/zh-cn';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
 import App from './App.vue';
 import router from './router';
 
 import { setupApiClient } from './api';
+import { initI18n } from './i18n';
 import { queryClient } from './queryClient';
 
-// 引入字体: 通用字体 / 等宽字体
-import 'vfonts/Lato.css';
-import 'vfonts/FiraCode.css';
-
-// 配置dayjs
-dayjs.locale('zh-cn');
 dayjs.extend(relativeTime);
-
-// naive-ui 样式冲突处理
-const meta = document.createElement('meta');
-meta.name = 'naive-ui-style';
-document.head.appendChild(meta);
+initI18n();
 
 setupApiClient();
+
+document.documentElement.classList.remove('dark');
+document.documentElement.classList.add('light');
+document.documentElement.style.colorScheme = 'light';
 
 const app = createApp(App);
 

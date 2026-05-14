@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 const localSpecPath = path.join(configDir, 'openapi.json');
 const httpMethods = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace']);
-const DEFAULT_OPENAPI_SERVER = 'http://127.0.0.1:9005';
+const DEFAULT_OPENAPI_SERVER = 'http://127.0.0.1:3020';
 const openApiServer = (
   process.env.VITE_API_PROXY_TARGET ||
   process.env.DEV_PROXY_SERVER ||
