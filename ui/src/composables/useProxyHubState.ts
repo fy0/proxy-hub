@@ -1,4 +1,24 @@
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
+import {
+  deleteProxyMappingsById,
+  deleteProxyNodesById,
+  getProxyRuntimeStatus,
+  getProxyState,
+  postProxyMappings,
+  postProxyNodes,
+  postProxyNodesImport,
+  putProxyMappingsById,
+  putProxyNodesById,
+} from '@/api/generated';
+import type {
+  MappingUpsertRequestWritable,
+  NodeUpsertRequestWritable,
+  PortMappingDto,
+  ProxyNodeDto,
+  RuntimeStatus,
+  StateSnapshotDto,
+} from '@/api/generated';
+import { isAuthCredentialError } from '@/api/auth';
 import type {
   OutboundProtocol,
   PortMapping,
@@ -8,8 +28,6 @@ import type {
   RouteStrategy,
 } from '@/types/proxyHub';
 import { t } from '@/i18n';
-
-const STORAGE_KEY = 'proxy-hub.console.v1';
 
 interface NodeInput {
   name: string;
@@ -36,23 +54,18 @@ interface MappingInput {
   remark: string;
 }
 
-interface StoredState {
-  nodes: ProxyNode[];
-  mappings: PortMapping[];
-  lastSavedAt: string | null;
-}
+const nodes = ref<ProxyNode[]>([]);
+const mappings = ref<PortMapping[]>([]);
+const lastSavedAt = ref<string | null>(null);
+const runtime = ref<RuntimeStatus | null>(null);
+const isLoading = ref(false);
+const activeMutations = ref(0);
+const errorMessage = ref('');
+const loginRequired = ref(false);
+const isSaving = computed(() => activeMutations.value > 0);
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function createId(prefix: string): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return `${prefix}_${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
+let didInitialLoad = false;
+let initialLoadPromise: Promise<void> | null = null;
 
 function normalizeProtocol(value: string | null | undefined): ProxyProtocol {
   const protocol = value?.toLowerCase().replace(':', '') ?? 'unknown';
@@ -80,6 +93,16 @@ function normalizeOutboundProtocol(value: string | null | undefined): OutboundPr
   return 'mixed';
 }
 
+function normalizeStrategy(value: string | null | undefined): RouteStrategy {
+  const strategy = value?.toLowerCase() ?? 'manual';
+
+  if (strategy === 'failover' || strategy === 'load-balance' || strategy === 'manual') {
+    return strategy;
+  }
+
+  return 'manual';
+}
+
 function toPort(value: string | number | null | undefined): number | null {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
@@ -87,6 +110,10 @@ function toPort(value: string | number | null | undefined): number | null {
   }
 
   return parsed;
+}
+
+function toRequestPort(value: number | null | undefined): number | undefined {
+  return toPort(value) ?? undefined;
 }
 
 function decodeBase64Payload(value: string): string {
@@ -178,215 +205,237 @@ export function inferNodeNameFromUri(rawUri: string): string {
   return parseProxyUri(value).name;
 }
 
-function seedState(): StoredState {
-  const createdAt = nowIso();
-  const node1Name = t('state.seed.node1Name');
-  const node2Name = t('state.seed.node2Name');
-  const node3Name = t('state.seed.node3Name');
-  const nodeA: ProxyNode = {
-    id: createId('node'),
-    name: node1Name,
-    protocol: 'vless',
-    server: 'edge-a.example.net',
-    port: 443,
-    username: 'uuid',
-    password: '',
-    rawUri: `vless://uuid@edge-a.example.net:443?type=http&security=tls#${encodeURIComponent(node1Name)}`,
-    tags: ['vless', 'h2'],
-    remark: t('state.seed.node1Remark'),
-    createdAt,
-    updatedAt: createdAt,
-  };
-  const nodeB: ProxyNode = {
-    id: createId('node'),
-    name: node2Name,
-    protocol: 'trojan',
-    server: 'relay-b.example.net',
-    port: 443,
-    username: '',
-    password: 'password',
-    rawUri: `trojan://password@relay-b.example.net:443#${encodeURIComponent(node2Name)}`,
-    tags: ['trojan', 'backup'],
-    remark: t('state.seed.node2Remark'),
-    createdAt,
-    updatedAt: createdAt,
-  };
-  const nodeC: ProxyNode = {
-    id: createId('node'),
-    name: node3Name,
-    protocol: 'socks5',
-    server: '10.0.0.8',
-    port: 1080,
-    username: '',
-    password: '',
-    rawUri: `socks5://10.0.0.8:1080#${encodeURIComponent(node3Name)}`,
-    tags: ['lan'],
-    remark: t('state.seed.node3Remark'),
-    createdAt,
-    updatedAt: createdAt,
-  };
-
+function toProxyNode(dto: ProxyNodeDto): ProxyNode {
   return {
-    nodes: [nodeA, nodeB, nodeC],
-    mappings: [
-      {
-        id: createId('map'),
-        enabled: true,
-        listenAddress: '0.0.0.0',
-        listenPort: 1080,
-        outboundProtocol: 'mixed',
-        username: '',
-        password: '',
-        strategy: 'failover',
-        nodeIds: [nodeA.id, nodeB.id],
-        activeNodeId: nodeA.id,
-        remark: t('state.seed.mapping1Remark'),
-        createdAt,
-        updatedAt: createdAt,
-      },
-      {
-        id: createId('map'),
-        enabled: true,
-        listenAddress: '0.0.0.0',
-        listenPort: 1082,
-        outboundProtocol: 'mixed',
-        username: '',
-        password: '',
-        strategy: 'manual',
-        nodeIds: [nodeC.id],
-        activeNodeId: nodeC.id,
-        remark: t('state.seed.mapping2Remark'),
-        createdAt,
-        updatedAt: createdAt,
-      },
-    ],
-    lastSavedAt: createdAt,
+    id: dto.id,
+    name: dto.name,
+    protocol: normalizeProtocol(dto.protocol),
+    server: dto.server,
+    port: toPort(dto.port),
+    username: dto.username,
+    password: dto.password,
+    rawUri: dto.rawUri,
+    tags: dto.tags ?? [],
+    remark: dto.remark,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
   };
 }
 
-function isProxyNode(value: unknown): value is ProxyNode {
-  if (!value || typeof value !== 'object') return false;
-  const node = value as Partial<ProxyNode>;
-  return typeof node.id === 'string' && typeof node.name === 'string';
-}
-
-function isPortMapping(value: unknown): value is PortMapping {
-  if (!value || typeof value !== 'object') return false;
-  const mapping = value as Partial<PortMapping>;
-  return typeof mapping.id === 'string' && Number.isInteger(mapping.listenPort);
-}
-
-function normalizeMapping(mapping: PortMapping): PortMapping {
+function toPortMapping(dto: PortMappingDto): PortMapping {
   return {
-    ...mapping,
-    outboundProtocol: normalizeOutboundProtocol(mapping.outboundProtocol),
-    username: typeof mapping.username === 'string' ? mapping.username : '',
-    password: typeof mapping.password === 'string' ? mapping.password : '',
+    id: dto.id,
+    enabled: dto.enabled,
+    listenAddress: dto.listenAddress,
+    listenPort: dto.listenPort,
+    order: dto.order ?? 0,
+    outboundProtocol: normalizeOutboundProtocol(dto.outboundProtocol),
+    username: dto.username,
+    password: dto.password,
+    strategy: normalizeStrategy(dto.strategy),
+    nodeIds: dto.nodeIds ?? [],
+    activeNodeId: dto.activeNodeId,
+    remark: dto.remark,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
   };
 }
 
-function loadState(): { state: StoredState; shouldPersist: boolean } {
-  if (typeof localStorage === 'undefined') {
-    return { state: seedState(), shouldPersist: true };
+function applySnapshot(snapshot: StateSnapshotDto): void {
+  nodes.value = (snapshot.nodes ?? []).map(toProxyNode);
+  mappings.value = (snapshot.mappings ?? []).map(toPortMapping);
+  runtime.value = snapshot.runtime;
+  lastSavedAt.value = snapshot.lastSavedAt;
+}
+
+function markSaved(timestamp = new Date().toISOString()): void {
+  lastSavedAt.value = timestamp;
+}
+
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim() !== '') {
+    return error.message;
   }
 
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return { state: seedState(), shouldPersist: true };
+  if (typeof error === 'object' && error !== null) {
+    const candidate = error as Record<string, unknown>;
+    for (const key of ['message', 'detail', 'title']) {
+      const value = candidate[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        return value;
+      }
+    }
   }
+
+  return t('home.messages.requestFailed');
+}
+
+function clearBackendError(): void {
+  errorMessage.value = '';
+  loginRequired.value = false;
+}
+
+function setBackendError(error: unknown): void {
+  errorMessage.value = errorToMessage(error);
+  loginRequired.value = isAuthCredentialError(error);
+}
+
+async function runMutation<T>(work: () => Promise<T>): Promise<T> {
+  activeMutations.value += 1;
+  clearBackendError();
 
   try {
-    const parsed = JSON.parse(raw) as Partial<StoredState>;
-    const nodes = Array.isArray(parsed.nodes) ? parsed.nodes.filter(isProxyNode) : [];
-    const mappings = Array.isArray(parsed.mappings)
-      ? parsed.mappings.filter(isPortMapping).map(normalizeMapping)
-      : [];
-
-    return {
-      state: {
-        nodes,
-        mappings,
-        lastSavedAt: typeof parsed.lastSavedAt === 'string' ? parsed.lastSavedAt : null,
-      },
-      shouldPersist: false,
-    };
-  } catch {
-    return {
-      state: seedState(),
-      shouldPersist: true,
-    };
+    return await work();
+  } catch (error) {
+    setBackendError(error);
+    throw error;
+  } finally {
+    activeMutations.value = Math.max(0, activeMutations.value - 1);
   }
 }
 
-const loaded = loadState();
-const initialState = loaded.state;
+function upsertNode(node: ProxyNode): void {
+  const index = nodes.value.findIndex(item => item.id === node.id);
+  if (index === -1) {
+    nodes.value = [node, ...nodes.value];
+    return;
+  }
 
-const nodes = ref<ProxyNode[]>(initialState.nodes);
-const mappings = ref<PortMapping[]>(initialState.mappings);
-const lastSavedAt = ref<string | null>(initialState.lastSavedAt);
-
-function persistState(): void {
-  if (typeof localStorage === 'undefined') return;
-
-  lastSavedAt.value = nowIso();
-  const payload: StoredState = {
-    nodes: nodes.value,
-    mappings: mappings.value,
-    lastSavedAt: lastSavedAt.value,
-  };
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  nodes.value = nodes.value.map(item => (item.id === node.id ? node : item));
 }
 
-watch(
-  [nodes, mappings],
-  () => {
-    persistState();
-  },
-  { deep: true }
-);
+function upsertMapping(mapping: PortMapping): void {
+  const index = mappings.value.findIndex(item => item.id === mapping.id);
+  if (index === -1) {
+    mappings.value = [...mappings.value, mapping];
+    return;
+  }
 
-if (loaded.shouldPersist) {
-  persistState();
+  mappings.value = mappings.value.map(item => (item.id === mapping.id ? mapping : item));
 }
 
-function cleanMappingNodes(
-  nodeIds: string[],
-  activeNodeId: string | null
-): Pick<PortMapping, 'nodeIds' | 'activeNodeId'> {
-  const available = new Set(nodes.value.map(node => node.id));
-  const uniqueNodeIds = Array.from(new Set(nodeIds)).filter(id => available.has(id));
-  const nextActive =
-    activeNodeId && uniqueNodeIds.includes(activeNodeId) ? activeNodeId : uniqueNodeIds[0] || null;
-
+function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
   return {
-    nodeIds: uniqueNodeIds,
-    activeNodeId: nextActive,
-  };
-}
-
-function addNode(input: NodeInput): ProxyNode {
-  const timestamp = nowIso();
-  const node: ProxyNode = {
-    id: createId('node'),
     name: input.name.trim() || t('state.node.unnamed'),
     protocol: input.protocol,
     server: input.server.trim(),
-    port: input.port,
+    port: toRequestPort(input.port),
     username: input.username.trim(),
     password: input.password.trim(),
     rawUri: input.rawUri.trim(),
     tags: input.tags.map(tag => tag.trim()).filter(Boolean),
     remark: input.remark.trim(),
-    createdAt: timestamp,
-    updatedAt: timestamp,
   };
-
-  nodes.value = [node, ...nodes.value];
-  return node;
 }
 
-function addNodeFromUri(rawUri: string, nameOverride = ''): ProxyNode {
+function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
+  return {
+    enabled: input.enabled,
+    listenAddress: input.listenAddress.trim() || '0.0.0.0',
+    listenPort: toPort(input.listenPort) ?? input.listenPort,
+    outboundProtocol: normalizeOutboundProtocol(input.outboundProtocol),
+    username: input.username.trim(),
+    password: input.password.trim(),
+    strategy: normalizeStrategy(input.strategy),
+    nodeIds: input.nodeIds,
+    activeNodeId: input.activeNodeId ?? undefined,
+    remark: input.remark.trim(),
+  };
+}
+
+function mergeMappingPatch(mapping: PortMapping, patch: Partial<MappingInput>): MappingInput {
+  return {
+    listenAddress: patch.listenAddress ?? mapping.listenAddress,
+    listenPort: patch.listenPort ?? mapping.listenPort,
+    outboundProtocol: patch.outboundProtocol ?? mapping.outboundProtocol,
+    username: patch.username ?? mapping.username,
+    password: patch.password ?? mapping.password,
+    strategy: patch.strategy ?? mapping.strategy,
+    nodeIds: patch.nodeIds ?? mapping.nodeIds,
+    activeNodeId: patch.activeNodeId === undefined ? mapping.activeNodeId : patch.activeNodeId,
+    enabled: patch.enabled ?? mapping.enabled,
+    remark: patch.remark ?? mapping.remark,
+  };
+}
+
+function mergeNodePatch(node: ProxyNode, patch: Partial<NodeInput>): NodeInput {
+  return {
+    name: patch.name ?? node.name,
+    protocol: patch.protocol ?? node.protocol,
+    server: patch.server ?? node.server,
+    port: patch.port === undefined ? node.port : patch.port,
+    username: patch.username ?? node.username,
+    password: patch.password ?? node.password,
+    rawUri: patch.rawUri ?? node.rawUri,
+    tags: patch.tags ?? node.tags,
+    remark: patch.remark ?? node.remark,
+  };
+}
+
+function removeNodeFromLocalState(id: string): void {
+  nodes.value = nodes.value.filter(node => node.id !== id);
+  mappings.value = mappings.value.map(mapping => {
+    const nodeIds = mapping.nodeIds.filter(nodeId => nodeId !== id);
+    const activeNodeId = mapping.activeNodeId === id ? nodeIds[0] || null : mapping.activeNodeId;
+
+    return {
+      ...mapping,
+      nodeIds,
+      activeNodeId,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+}
+
+export async function refreshProxyHubState(): Promise<void> {
+  isLoading.value = true;
+  clearBackendError();
+
+  try {
+    const { data } = await getProxyState({ throwOnError: true });
+    applySnapshot(data);
+  } catch (error) {
+    setBackendError(error);
+    throw error;
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function refreshRuntimeStatus(): Promise<void> {
+  try {
+    const { data } = await getProxyRuntimeStatus({ throwOnError: true });
+    runtime.value = data;
+  } catch {
+    // Runtime status is secondary; the main mutation result is already applied.
+  }
+}
+
+function ensureInitialLoad(): void {
+  if (didInitialLoad || initialLoadPromise) return;
+
+  didInitialLoad = true;
+  initialLoadPromise = refreshProxyHubState()
+    .catch(() => {
+      didInitialLoad = false;
+    })
+    .finally(() => {
+      initialLoadPromise = null;
+    });
+}
+
+async function addNode(input: NodeInput): Promise<ProxyNode> {
+  return runMutation(async () => {
+    const { data } = await postProxyNodes({ body: nodeToRequest(input), throwOnError: true });
+    const node = toProxyNode(data.item);
+    upsertNode(node);
+    markSaved(node.updatedAt);
+    await refreshRuntimeStatus();
+    return node;
+  });
+}
+
+async function addNodeFromUri(rawUri: string, nameOverride = ''): Promise<ProxyNode> {
   const input = parseProxyUri(rawUri);
   const name = nameOverride.trim();
 
@@ -396,101 +445,93 @@ function addNodeFromUri(rawUri: string, nameOverride = ''): ProxyNode {
   });
 }
 
-function updateNode(id: string, patch: Partial<NodeInput>): void {
-  const timestamp = nowIso();
-  nodes.value = nodes.value.map(node =>
-    node.id === id
-      ? {
-          ...node,
-          ...patch,
-          name: patch.name?.trim() || node.name,
-          server: patch.server?.trim() ?? node.server,
-          username: patch.username?.trim() ?? node.username,
-          password: patch.password?.trim() ?? node.password,
-          rawUri: patch.rawUri?.trim() ?? node.rawUri,
-          remark: patch.remark?.trim() ?? node.remark,
-          tags: patch.tags?.map(tag => tag.trim()).filter(Boolean) ?? node.tags,
-          updatedAt: timestamp,
-        }
-      : node
-  );
-}
-
-function removeNode(id: string): void {
-  nodes.value = nodes.value.filter(node => node.id !== id);
-  mappings.value = mappings.value.map(mapping => {
-    const cleaned = cleanMappingNodes(
-      mapping.nodeIds.filter(nodeId => nodeId !== id),
-      mapping.activeNodeId === id ? null : mapping.activeNodeId
-    );
-
-    return {
-      ...mapping,
-      ...cleaned,
-      updatedAt: nowIso(),
-    };
+async function importNodes(raw: string): Promise<ProxyNode[]> {
+  return runMutation(async () => {
+    const { data } = await postProxyNodesImport({ body: { raw }, throwOnError: true });
+    const imported = (data.items ?? []).map(toProxyNode);
+    if (imported.length > 0) {
+      for (const node of imported) upsertNode(node);
+      markSaved(imported[0].updatedAt);
+      await refreshRuntimeStatus();
+    }
+    if (data.failures?.length) {
+      errorMessage.value = data.failures.map(failure => failure.message).join('\n');
+    }
+    return imported;
   });
 }
 
-function addMapping(input: MappingInput): PortMapping {
-  const timestamp = nowIso();
-  const cleaned = cleanMappingNodes(input.nodeIds, input.activeNodeId);
-  const mapping: PortMapping = {
-    id: createId('map'),
-    enabled: input.enabled,
-    listenAddress: input.listenAddress.trim() || '0.0.0.0',
-    listenPort: input.listenPort,
-    outboundProtocol: normalizeOutboundProtocol(input.outboundProtocol),
-    username: input.username.trim(),
-    password: input.password.trim(),
-    strategy: input.strategy,
-    nodeIds: cleaned.nodeIds,
-    activeNodeId: cleaned.activeNodeId,
-    remark: input.remark.trim(),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
+async function updateNode(id: string, patch: Partial<NodeInput>): Promise<ProxyNode> {
+  return runMutation(async () => {
+    const current = nodes.value.find(node => node.id === id);
+    if (!current) {
+      throw new Error(t('home.messages.nodeNotFound'));
+    }
 
-  mappings.value = [mapping, ...mappings.value];
-  return mapping;
-}
-
-function updateMapping(id: string, patch: Partial<MappingInput>): void {
-  const timestamp = nowIso();
-
-  mappings.value = mappings.value.map(mapping => {
-    if (mapping.id !== id) return mapping;
-
-    const nodeIds = patch.nodeIds ?? mapping.nodeIds;
-    const activeNodeId =
-      patch.activeNodeId === undefined ? mapping.activeNodeId : patch.activeNodeId;
-    const cleaned = cleanMappingNodes(nodeIds, activeNodeId);
-
-    return {
-      ...mapping,
-      ...patch,
-      ...cleaned,
-      listenAddress: patch.listenAddress?.trim() || mapping.listenAddress,
-      outboundProtocol: normalizeOutboundProtocol(
-        patch.outboundProtocol ?? mapping.outboundProtocol
-      ),
-      username: patch.username?.trim() ?? mapping.username,
-      password: patch.password?.trim() ?? mapping.password,
-      remark: patch.remark?.trim() ?? mapping.remark,
-      updatedAt: timestamp,
-    };
+    const { data } = await putProxyNodesById({
+      path: { id },
+      body: nodeToRequest(mergeNodePatch(current, patch)),
+      throwOnError: true,
+    });
+    const node = toProxyNode(data.item);
+    upsertNode(node);
+    markSaved(node.updatedAt);
+    await refreshRuntimeStatus();
+    return node;
   });
 }
 
-function removeMapping(id: string): void {
-  mappings.value = mappings.value.filter(mapping => mapping.id !== id);
+async function removeNode(id: string): Promise<void> {
+  await runMutation(async () => {
+    await deleteProxyNodesById({ path: { id }, throwOnError: true });
+    removeNodeFromLocalState(id);
+    markSaved();
+    await refreshRuntimeStatus();
+  });
 }
 
-function resetDemoData(): void {
-  const next = seedState();
-  nodes.value = next.nodes;
-  mappings.value = next.mappings;
-  lastSavedAt.value = next.lastSavedAt;
+async function addMapping(input: MappingInput): Promise<PortMapping> {
+  return runMutation(async () => {
+    const { data } = await postProxyMappings({ body: mappingToRequest(input), throwOnError: true });
+    const mapping = toPortMapping(data.item);
+    upsertMapping(mapping);
+    markSaved(mapping.updatedAt);
+    await refreshRuntimeStatus();
+    return mapping;
+  });
+}
+
+async function updateMapping(id: string, patch: Partial<MappingInput>): Promise<PortMapping> {
+  return runMutation(async () => {
+    const current = mappings.value.find(mapping => mapping.id === id);
+    if (!current) {
+      throw new Error(t('home.messages.mappingNotFound'));
+    }
+
+    const { data } = await putProxyMappingsById({
+      path: { id },
+      body: mappingToRequest(mergeMappingPatch(current, patch)),
+      throwOnError: true,
+    });
+    const mapping = toPortMapping(data.item);
+    upsertMapping(mapping);
+    markSaved(mapping.updatedAt);
+    await refreshRuntimeStatus();
+    return mapping;
+  });
+}
+
+async function removeMapping(id: string): Promise<void> {
+  await runMutation(async () => {
+    await deleteProxyMappingsById({ path: { id }, throwOnError: true });
+    mappings.value = mappings.value.filter(mapping => mapping.id !== id);
+    markSaved();
+    await refreshRuntimeStatus();
+  });
+}
+
+async function resetDemoData(): Promise<void> {
+  await refreshProxyHubState();
 }
 
 function snapshot(): ProxyHubStateSnapshot {
@@ -502,6 +543,8 @@ function snapshot(): ProxyHubStateSnapshot {
 }
 
 export function useProxyHubState() {
+  ensureInitialLoad();
+
   const enabledMappings = computed(() => mappings.value.filter(mapping => mapping.enabled));
   const nodeById = computed(() => new Map(nodes.value.map(node => [node.id, node])));
 
@@ -509,10 +552,17 @@ export function useProxyHubState() {
     nodes,
     mappings,
     lastSavedAt,
+    runtime,
+    isLoading,
+    isSaving,
+    errorMessage,
+    loginRequired,
     enabledMappings,
     nodeById,
+    refreshState: refreshProxyHubState,
     addNode,
     addNodeFromUri,
+    importNodes,
     updateNode,
     removeNode,
     addMapping,

@@ -11,7 +11,7 @@ RUN go mod download
 FROM go-base AS openapi-builder
 
 COPY . ./
-RUN go run . --gen-openapi=./ui/openapi.json
+RUN go run -tags with_utls . --gen-openapi=./ui/openapi.json
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS ui-builder
 
@@ -30,7 +30,7 @@ ARG TARGETARCH
 COPY . ./
 RUN rm -rf ./static/*
 COPY --from=ui-builder /build/ui/dist/. ./static/
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /build/app .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags with_utls -trimpath -ldflags="-s -w" -o /build/app .
 
 FROM alpine:3.21 AS runner
 

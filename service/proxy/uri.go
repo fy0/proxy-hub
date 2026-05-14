@@ -167,7 +167,7 @@ func firstNonEmpty(values ...string) string {
 func normalizeTransportType(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
-	case "", "tcp", "raw":
+	case "", "tcp", "raw", "none":
 		return ""
 	case "websocket":
 		return "ws"

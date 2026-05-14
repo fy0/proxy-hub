@@ -24,6 +24,7 @@ export interface PortMapping {
   enabled: boolean;
   listenAddress: string;
   listenPort: number;
+  order: number;
   outboundProtocol: OutboundProtocol;
   username: string;
   password: string;

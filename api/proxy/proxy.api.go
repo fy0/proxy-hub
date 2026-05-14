@@ -6,9 +6,11 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"go.uber.org/zap"
 
 	"proxy-hub/api/h"
 	proxyService "proxy-hub/service/proxy"
+	"proxy-hub/utils"
 )
 
 const (
@@ -305,7 +307,7 @@ func runtimeReloadHandler(context.Context, *struct{}) (*runtimeStatusOutput, err
 
 func reloadRuntimeAfterMutation() error {
 	if _, err := proxyService.RuntimeReload(context.Background()); err != nil {
-		return humanaError(http.StatusInternalServerError, "配置已保存，但代理重载失败: "+err.Error())
+		utils.Logger.Warn("配置已保存，但代理重载失败", zap.Error(err))
 	}
 	return nil
 }
@@ -320,7 +322,8 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrInvalidAddress),
 		errors.Is(err, proxyService.ErrUnsupportedProtocol),
 		errors.Is(err, proxyService.ErrUnsupportedURI),
-		errors.Is(err, proxyService.ErrNoAvailableNode):
+		errors.Is(err, proxyService.ErrNoAvailableNode),
+		errors.Is(err, proxyService.ErrUTLSRequired):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())
@@ -328,18 +331,5 @@ func mapError(err error) error {
 }
 
 func humanaError(code int, message string) error {
-	return &apiError{status: code, message: message}
-}
-
-type apiError struct {
-	status  int
-	message string
-}
-
-func (e *apiError) Error() string {
-	return e.message
-}
-
-func (e *apiError) HTTPStatus() int {
-	return e.status
+	return huma.NewError(code, message)
 }

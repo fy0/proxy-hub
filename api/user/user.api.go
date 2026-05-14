@@ -43,6 +43,14 @@ func Register(api huma.API) {
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPost,
+		Path:        "/skip-login",
+		Summary:     "跳过登录并使用内置账号",
+		OperationID: "user-skip-login",
+		Tags:        []string{userTag},
+	}, userSkipLoginHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
 		Path:        "/change-password",
 		Summary:     "修改密码",
 		OperationID: "user-change-password",
@@ -137,6 +145,32 @@ func userSigninHandler(ctx context.Context, input *signinInput) (*signinOutput, 
 	return &signinOutput{
 		Body: AuthResponse{
 			Message: "登录成功",
+			Token:   token,
+		},
+	}, nil
+}
+
+func userSkipLoginHandler(ctx context.Context, _ *struct{}) (*signinOutput, error) {
+	var token string
+	err := model.Transaction(ctx, func(tx model.DBTx) error {
+		u, err := userService.UserEnsureDefaultRoot(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		if err := userService.AccessTokenDeleteAllByUserID(ctx, tx, u.ID); err != nil {
+			return err
+		}
+		token, err = userService.AccessTokenGenerate(ctx, tx, u.ID)
+		return err
+	})
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	return &signinOutput{
+		Body: AuthResponse{
+			Message: "已使用内置账号 root 登录",
 			Token:   token,
 		},
 	}, nil
@@ -282,18 +316,5 @@ func mapError(err error) error {
 }
 
 func humanaError(code int, message string) error {
-	return &apiError{status: code, message: message}
-}
-
-type apiError struct {
-	status  int
-	message string
-}
-
-func (e *apiError) Error() string {
-	return e.message
-}
-
-func (e *apiError) HTTPStatus() int {
-	return e.status
+	return huma.NewError(code, message)
 }

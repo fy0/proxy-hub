@@ -139,8 +139,46 @@
   background: rgb(248 250 255);
 }
 
+.notice-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice-link {
+  flex-shrink: 0;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgb(15 23 42);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.notice-link:hover {
+  background: rgb(30 41 59);
+}
+
 .notice-bar svg {
   color: rgb(30 41 59);
+}
+
+.notice-bar.error {
+  border-color: rgb(220 38 38 / 0.22);
+  background: rgb(254 242 242);
+  color: rgb(153 27 27);
+}
+
+.spin-icon {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tab-bar {
@@ -156,7 +194,11 @@
   font-size: 14px;
   font-weight: 700;
   color: rgb(71 85 105);
-  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .tab-bar button.active {
@@ -367,7 +409,9 @@
   pointer-events: none;
   opacity: 0;
   transform: translate(50%, 4px);
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
   box-shadow: 0 10px 22px rgb(15 23 42 / 0.2);
 }
 
@@ -383,7 +427,9 @@
   opacity: 0;
   pointer-events: none;
   transform: translate(50%, 4px) rotate(45deg);
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 
 .action-popover:hover::after,
@@ -535,7 +581,10 @@
   border-style: dashed;
   border-color: rgb(148 163 184 / 0.42);
   background: #ffffff;
-  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
 }
 
 .inner-add-card {
@@ -843,6 +892,7 @@ textarea:focus {
   }
 
   .port-card-footer,
+  .notice-bar,
   .modal-actions {
     flex-direction: column;
     align-items: stretch;

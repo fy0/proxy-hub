@@ -16,7 +16,7 @@ Proxy Hub 基于 GORM 数据层、zap 日志、koanf 配置以及 Fiber + Huma A
 ## 使用步骤
 1. 初始化依赖：`go mod tidy`
 2. 根据环境修改 `data/config.yaml`（数据库 DSN、日志输出等）。
-3. 启动服务：`go run .`
+3. 启动服务：`go run -tags with_utls .`
    - 如需强制迁移，可追加 `-m` 或 `--migrate`。
 
 ## 前端
@@ -25,7 +25,7 @@ Proxy Hub 基于 GORM 数据层、zap 日志、koanf 配置以及 Fiber + Huma A
 - 构建前端：`pnpm -C ui run build`
 
 ## 测试
-- 运行全部测试：`go test ./...`
+- 运行全部测试：`go test -tags with_utls ./...`
 - 数据层测试默认使用 SQLite 内存库（DSN `:memory:`），用于快速验证完整流程。
 
 ## DSN 支持
@@ -43,8 +43,8 @@ SQLite 使用 `github.com/ncruces/go-sqlite3/gormlite`（无需 CGO）。
 - `static/`、`docs/`、`data/`：静态资源、自定义文档、运行期数据占位。
 
 ## Windows 服务脚本
-- 安装：`go run . -i`
-- 卸载：`go run . --uninstall`
+- 安装：`go run -tags with_utls . -i`
+- 卸载：`go run -tags with_utls . --uninstall`
 
 后续可按 Proxy Hub 的业务需求替换示例用户模型或新增代理节点、订阅、检测等模块。
 

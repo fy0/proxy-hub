@@ -1,16 +1,9 @@
 import { client } from './generated/client.gen';
 import { getApiBaseUrl } from './config';
 import { ApiError } from './error';
+import { clearAccessToken, getAccessToken, isAuthCredentialError } from './auth';
 
 let configured = false;
-
-function getToken(): string | null {
-  try {
-    return localStorage.getItem('token');
-  } catch {
-    return null;
-  }
-}
 
 export function setupApiClient(): void {
   if (configured) return;
@@ -22,7 +15,7 @@ export function setupApiClient(): void {
   });
 
   client.interceptors.request.use((request) => {
-    const token = getToken();
+    const token = getAccessToken();
     if (!token) return request;
 
     const headers = new Headers(request.headers);
@@ -34,12 +27,18 @@ export function setupApiClient(): void {
   });
 
   client.interceptors.error.use((error, response, request) => {
-    return new ApiError({
+    const apiError = new ApiError({
       status: response.status,
       statusText: response.statusText,
       data: error,
       request,
       response,
     });
+
+    if (isAuthCredentialError(apiError)) {
+      clearAccessToken();
+    }
+
+    return apiError;
   });
 }

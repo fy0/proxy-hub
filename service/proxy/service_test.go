@@ -55,3 +55,44 @@ func TestNodeImportExpandsBase64Subscription(t *testing.T) {
 		t.Fatalf("Protocol = %q, want %q", result.Items[0].Protocol, ProtocolTrojan)
 	}
 }
+
+func TestMappingCreateAssignsAscendingOrderAndListsOldestFirst(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10081,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(first) error = %v", err)
+	}
+	second, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10082,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(second) error = %v", err)
+	}
+
+	if first.Order != 1 || second.Order != 2 {
+		t.Fatalf("orders = (%d, %d), want (1, 2)", first.Order, second.Order)
+	}
+
+	mappings, err := MappingList(ctx, nil)
+	if err != nil {
+		t.Fatalf("MappingList() error = %v", err)
+	}
+	if len(mappings) != 2 {
+		t.Fatalf("MappingList() length = %d, want 2", len(mappings))
+	}
+	if mappings[0].ID != first.ID || mappings[1].ID != second.ID {
+		t.Fatalf("MappingList() IDs = (%q, %q), want (%q, %q)", mappings[0].ID, mappings[1].ID, first.ID, second.ID)
+	}
+}

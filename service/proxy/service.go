@@ -11,6 +11,7 @@ import (
 	"proxy-hub/model/tables"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func NodeCreate(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) (*tables.ProxyNodeTable, error) {
@@ -170,11 +171,16 @@ func MappingCreate(ctx context.Context, tx model.DBTx, req MappingUpsertRequest)
 	if err != nil {
 		return nil, err
 	}
+	order, err := nextMappingOrder(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 
 	mapping := &tables.PortMappingTable{
 		Enabled:          normalized.Enabled,
 		ListenAddress:    normalized.ListenAddress,
 		ListenPort:       normalized.ListenPort,
+		Order:            order,
 		OutboundProtocol: normalized.OutboundProtocol,
 		Username:         normalized.Username,
 		Password:         normalized.Password,
@@ -247,7 +253,7 @@ func MappingList(ctx context.Context, tx model.DBTx) ([]*tables.PortMappingTable
 	tx = model.GetTx(tx).WithContext(ctx)
 
 	var mappings []*tables.PortMappingTable
-	if err := tx.Order("created_at DESC").Find(&mappings).Error; err != nil {
+	if err := tx.Order(mappingOrderClause()).Find(&mappings).Error; err != nil {
 		return nil, err
 	}
 	return mappings, nil
@@ -281,6 +287,38 @@ func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error
 		Runtime:     RuntimeStatusGet(),
 		LastSavedAt: time.Now(),
 	}, nil
+}
+
+func nextMappingOrder(ctx context.Context, tx model.DBTx) (int64, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var latest tables.PortMappingTable
+	err := tx.Order(mappingOrderDescClause()).First(&latest).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 1, nil
+		}
+		return 0, err
+	}
+	return latest.Order + 1, nil
+}
+
+func mappingOrderClause() clause.OrderBy {
+	return clause.OrderBy{
+		Columns: []clause.OrderByColumn{
+			{Column: clause.Column{Name: "order"}},
+			{Column: clause.Column{Name: "created_at"}},
+		},
+	}
+}
+
+func mappingOrderDescClause() clause.OrderBy {
+	return clause.OrderBy{
+		Columns: []clause.OrderByColumn{
+			{Column: clause.Column{Name: "order"}, Desc: true},
+			{Column: clause.Column{Name: "created_at"}, Desc: true},
+		},
+	}
 }
 
 func findNodesByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.ProxyNodeTable, error) {

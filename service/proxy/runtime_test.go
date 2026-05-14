@@ -7,6 +7,7 @@ import (
 
 	"proxy-hub/model"
 
+	"github.com/sagernet/sing-box/constant"
 	"gorm.io/gorm/logger"
 )
 
@@ -54,6 +55,39 @@ func TestRuntimeReloadStartsEnabledMapping(t *testing.T) {
 	}
 	if len(status.Inbounds) != 1 {
 		t.Fatalf("Runtime inbounds = %d, want 1", len(status.Inbounds))
+	}
+}
+
+func TestBuildSingBoxOptionsIncludesMappingWithoutNodes(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	if err != nil {
+		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+	}
+	if len(options.Inbounds) != 1 {
+		t.Fatalf("options.Inbounds length = %d, want 1", len(options.Inbounds))
+	}
+	if len(inbounds) != 1 {
+		t.Fatalf("runtime inbounds length = %d, want 1", len(inbounds))
+	}
+	if inbounds[0].MappingID != mapping.ID {
+		t.Fatalf("runtime inbound mapping ID = %q, want %q", inbounds[0].MappingID, mapping.ID)
+	}
+	if inbounds[0].Outbound != constant.TypeBlock {
+		t.Fatalf("runtime inbound outbound = %q, want %q", inbounds[0].Outbound, constant.TypeBlock)
 	}
 }
 

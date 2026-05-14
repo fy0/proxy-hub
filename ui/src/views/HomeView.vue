@@ -68,13 +68,19 @@ const {
   enabledMappings,
   nodeById,
   lastSavedAt,
+  runtime,
+  isLoading,
+  isSaving,
+  errorMessage,
+  loginRequired,
+  refreshState,
   addNode,
   addNodeFromUri,
+  importNodes,
   removeNode,
   addMapping,
   updateMapping,
   removeMapping,
-  resetDemoData,
 } = useProxyHubState();
 
 const currentTab = ref<TabKey>('mappings');
@@ -139,6 +145,29 @@ const formattedLastSaved = computed(() => {
   });
 });
 
+const runtimeInboundCount = computed(() => runtime.value?.inbounds?.length ?? 0);
+
+const backendNotice = computed(() => {
+  if (errorMessage.value) return errorMessage.value;
+  if (isLoading.value) return t('home.messages.loadingBackend');
+  if (isSaving.value) return t('home.messages.savingBackend');
+  if (runtime.value?.error)
+    return t('home.messages.runtimeError', { message: runtime.value.error });
+  if (runtime.value?.running) {
+    return t('home.messages.runtimeRunning', { count: runtimeInboundCount.value });
+  }
+  if (runtime.value) return t('home.messages.runtimeStopped');
+
+  return t('home.notice');
+});
+
+const loginRoute = computed(() => ({
+  name: 'login',
+  query: {
+    redirect: '/',
+  },
+}));
+
 const overviewCards = computed(() => [
   { label: t('home.status.enabledPorts'), value: enabledMappings.value.length, icon: Power },
   { label: t('home.status.nodeCount'), value: nodes.value.length, icon: Server },
@@ -183,39 +212,43 @@ function closeMappingDialog(): void {
   resetMappingForm();
 }
 
-function saveMappingDialog(): void {
-  if (editingMappingId.value === 'new') {
-    const mapping = addMapping({
-      listenAddress: mappingForm.listenAddress,
-      listenPort: mappingForm.listenPort,
-      outboundProtocol: mappingForm.outboundProtocol,
-      username: mappingForm.username,
-      password: mappingForm.password,
-      strategy: mappingForm.strategy,
-      nodeIds: [],
-      activeNodeId: null,
-      enabled: true,
-      remark: mappingForm.remark,
-    });
+async function saveMappingDialog(): Promise<void> {
+  try {
+    if (editingMappingId.value === 'new') {
+      const mapping = await addMapping({
+        listenAddress: mappingForm.listenAddress,
+        listenPort: mappingForm.listenPort,
+        outboundProtocol: mappingForm.outboundProtocol,
+        username: mappingForm.username,
+        password: mappingForm.password,
+        strategy: mappingForm.strategy,
+        nodeIds: [],
+        activeNodeId: null,
+        enabled: true,
+        remark: mappingForm.remark,
+      });
+
+      closeMappingDialog();
+      openRouteDialog(mapping);
+      return;
+    }
+
+    if (editingMappingId.value) {
+      await updateMapping(editingMappingId.value, {
+        listenAddress: mappingForm.listenAddress,
+        listenPort: mappingForm.listenPort,
+        outboundProtocol: mappingForm.outboundProtocol,
+        username: mappingForm.username,
+        password: mappingForm.password,
+        strategy: mappingForm.strategy,
+        remark: mappingForm.remark,
+      });
+    }
 
     closeMappingDialog();
-    openRouteDialog(mapping);
-    return;
+  } catch {
+    // The composable exposes the backend error in the notice bar.
   }
-
-  if (editingMappingId.value) {
-    updateMapping(editingMappingId.value, {
-      listenAddress: mappingForm.listenAddress,
-      listenPort: mappingForm.listenPort,
-      outboundProtocol: mappingForm.outboundProtocol,
-      username: mappingForm.username,
-      password: mappingForm.password,
-      strategy: mappingForm.strategy,
-      remark: mappingForm.remark,
-    });
-  }
-
-  closeMappingDialog();
 }
 
 function openRouteDialog(mapping: PortMapping): void {
@@ -244,7 +277,7 @@ function closeRouteDialog(): void {
   routeNodeError.value = '';
 }
 
-function saveRouteDialog(): void {
+async function saveRouteDialog(): Promise<void> {
   const mapping = routeTargetMapping.value;
   if (!mapping) return;
 
@@ -253,24 +286,34 @@ function saveRouteDialog(): void {
     return;
   }
 
-  const node = addNodeFromUri(routeNodeForm.uri, routeNodeForm.name);
-  const nodeIds = Array.from(new Set([...mapping.nodeIds, node.id]));
+  try {
+    const node = await addNodeFromUri(routeNodeForm.uri, routeNodeForm.name);
+    const nodeIds = Array.from(new Set([...mapping.nodeIds, node.id]));
 
-  updateMapping(mapping.id, {
-    nodeIds,
-    activeNodeId: mapping.activeNodeId || node.id,
-  });
-  closeRouteDialog();
+    await updateMapping(mapping.id, {
+      nodeIds,
+      activeNodeId: mapping.activeNodeId || node.id,
+    });
+    closeRouteDialog();
+  } catch (error) {
+    routeNodeError.value =
+      error instanceof Error ? error.message : t('home.messages.requestFailed');
+  }
 }
 
 function handleRouteNodeNameInput(): void {
   routeNodeNameEdited.value = true;
 }
 
-function removeNodeFromMapping(mapping: PortMapping, nodeId: string): void {
+async function removeNodeFromMapping(mapping: PortMapping, nodeId: string): Promise<void> {
   const nodeIds = mapping.nodeIds.filter(id => id !== nodeId);
   const activeNodeId = mapping.activeNodeId === nodeId ? nodeIds[0] || null : mapping.activeNodeId;
-  updateMapping(mapping.id, { nodeIds, activeNodeId });
+
+  try {
+    await updateMapping(mapping.id, { nodeIds, activeNodeId });
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
 function copyPopoverText(mappingId: string): string {
@@ -279,7 +322,7 @@ function copyPopoverText(mappingId: string): string {
     : t('common.copyEndpoint');
 }
 
-function handleImport(): void {
+async function handleImport(): Promise<void> {
   const lines = rawImport.value
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -290,39 +333,51 @@ function handleImport(): void {
     return;
   }
 
-  const added = lines.map(line => addNodeFromUri(line));
-  rawImport.value = '';
-  importMessage.value = t('home.messages.imported', { count: added.length });
+  try {
+    const added = await importNodes(lines.join('\n'));
+    if (added.length > 0) rawImport.value = '';
+    importMessage.value = t('home.messages.imported', { count: added.length });
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
-function handleManualNodeSubmit(): void {
-  const node = addNode({
-    name: manualNodeForm.name,
-    protocol: manualNodeForm.protocol,
-    server: manualNodeForm.server,
-    port: manualNodeForm.port,
-    username: manualNodeForm.username,
-    password: manualNodeForm.password,
-    rawUri: '',
-    tags: manualNodeForm.tags
-      .split(',')
-      .map(tag => tag.trim())
-      .filter(Boolean),
-    remark: manualNodeForm.remark,
-  });
+async function handleManualNodeSubmit(): Promise<void> {
+  try {
+    const node = await addNode({
+      name: manualNodeForm.name,
+      protocol: manualNodeForm.protocol,
+      server: manualNodeForm.server,
+      port: manualNodeForm.port,
+      username: manualNodeForm.username,
+      password: manualNodeForm.password,
+      rawUri: '',
+      tags: manualNodeForm.tags
+        .split(',')
+        .map(tag => tag.trim())
+        .filter(Boolean),
+      remark: manualNodeForm.remark,
+    });
 
-  manualNodeForm.name = '';
-  manualNodeForm.server = '';
-  manualNodeForm.port = 1080;
-  manualNodeForm.username = '';
-  manualNodeForm.password = '';
-  manualNodeForm.tags = '';
-  manualNodeForm.remark = '';
-  importMessage.value = t('home.messages.nodeAdded', { name: node.name });
+    manualNodeForm.name = '';
+    manualNodeForm.server = '';
+    manualNodeForm.port = 1080;
+    manualNodeForm.username = '';
+    manualNodeForm.password = '';
+    manualNodeForm.tags = '';
+    manualNodeForm.remark = '';
+    importMessage.value = t('home.messages.nodeAdded', { name: node.name });
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
-function toggleMappingEnabled(mapping: PortMapping): void {
-  updateMapping(mapping.id, { enabled: !mapping.enabled });
+async function toggleMappingEnabled(mapping: PortMapping): Promise<void> {
+  try {
+    await updateMapping(mapping.id, { enabled: !mapping.enabled });
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
 async function copyEndpoint(mapping: PortMapping): Promise<void> {
@@ -351,9 +406,13 @@ async function copyEndpoint(mapping: PortMapping): Promise<void> {
   }, 2200);
 }
 
-function handleReset(): void {
-  resetDemoData();
-  importMessage.value = t('home.messages.demoReset');
+async function handleReset(): Promise<void> {
+  try {
+    await refreshState();
+    importMessage.value = t('home.messages.backendRefreshed');
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
 function openTab(tab: TabKey): void {
@@ -378,8 +437,18 @@ function portEnabledLabel(mapping: PortMapping): string {
       </div>
 
       <div class="hero-actions">
-        <Button type="button" variant="outline" class="restore-button" @click="handleReset">
-          <RefreshCw class="size-4" aria-hidden="true" />
+        <Button
+          type="button"
+          variant="outline"
+          class="restore-button"
+          :disabled="isLoading || isSaving"
+          @click="handleReset"
+        >
+          <RefreshCw
+            class="size-4"
+            :class="{ 'spin-icon': isLoading || isSaving }"
+            aria-hidden="true"
+          />
           {{ t('common.restoreDemo') }}
         </Button>
       </div>
@@ -397,9 +466,12 @@ function portEnabledLabel(mapping: PortMapping): string {
       </article>
     </section>
 
-    <section class="notice-bar" role="status">
+    <section class="notice-bar" :class="{ error: errorMessage }" role="status">
       <Info class="size-4" aria-hidden="true" />
-      {{ t('home.notice') }}
+      <span class="notice-message">{{ backendNotice }}</span>
+      <RouterLink v-if="loginRequired" class="notice-link" :to="loginRoute">
+        {{ t('common.goLogin') }}
+      </RouterLink>
     </section>
 
     <nav class="tab-bar" :aria-label="t('home.aria.tabs')">
@@ -543,7 +615,7 @@ function portEnabledLabel(mapping: PortMapping): string {
                 variant="destructive"
                 size="icon"
                 :aria-label="t('common.deletePort')"
-                @click="removeMapping(mapping.id)"
+                @click="removeMapping(mapping.id).catch(() => undefined)"
               >
                 <Trash2 class="size-4" aria-hidden="true" />
               </Button>
@@ -597,7 +669,7 @@ function portEnabledLabel(mapping: PortMapping): string {
             variant="ghost"
             size="icon-sm"
             :title="t('common.deleteNode')"
-            @click="removeNode(node.id)"
+            @click="removeNode(node.id).catch(() => undefined)"
           >
             <Trash2 class="size-4" aria-hidden="true" />
           </Button>

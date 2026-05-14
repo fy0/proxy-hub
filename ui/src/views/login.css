@@ -1,0 +1,123 @@
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgb(248 250 252), #ffffff 52%),
+    #ffffff;
+}
+
+.login-panel {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 22px;
+  padding: 26px;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 26px 80px rgb(15 23 42 / 0.12);
+}
+
+.login-back-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(71 85 105);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.login-back-link:hover {
+  color: rgb(15 23 42);
+}
+
+.login-heading {
+  display: grid;
+  gap: 14px;
+}
+
+.login-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgb(220 252 231);
+  color: rgb(22 163 74);
+}
+
+.login-heading h1 {
+  color: rgb(15 23 42);
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.login-message {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: rgb(240 253 244);
+  color: rgb(22 101 52);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.login-message.error {
+  background: rgb(254 242 242);
+  color: rgb(153 27 27);
+}
+
+.login-submit {
+  min-height: 44px;
+  border-radius: 11px;
+  background: rgb(15 23 42);
+  color: #ffffff;
+}
+
+.login-submit:hover {
+  background: rgb(30 41 59);
+}
+
+.skip-login-button {
+  min-height: 42px;
+  border: 1px solid rgb(148 163 184 / 0.35);
+  border-radius: 11px;
+  background: #ffffff;
+  color: rgb(71 85 105);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.skip-login-button:hover {
+  border-color: rgb(15 23 42 / 0.22);
+  color: rgb(15 23 42);
+  background: rgb(248 250 252);
+}
+
+.skip-login-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 520px) {
+  .login-shell {
+    padding: 12px;
+    place-items: stretch;
+  }
+
+  .login-panel {
+    align-self: center;
+    padding: 20px;
+  }
+}

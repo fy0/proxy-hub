@@ -9,6 +9,7 @@ type PortMappingTable struct {
 	Enabled          bool   `gorm:"not null;default:true;index" json:"enabled"`
 	ListenAddress    string `gorm:"type:text;not null" json:"listenAddress"`
 	ListenPort       uint16 `gorm:"not null;uniqueIndex:idx_port_mappings_listen" json:"listenPort"`
+	Order            int64  `gorm:"not null;default:0;index" json:"order"`
 	OutboundProtocol string `gorm:"type:text;not null" json:"outboundProtocol"`
 	Username         string `gorm:"type:text" json:"username"`
 	Password         string `gorm:"type:text" json:"-"`

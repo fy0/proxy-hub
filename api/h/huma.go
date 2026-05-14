@@ -36,7 +36,6 @@ func NewAPI(app *fiber.App, cfg *utils.AppConfig) (huma.API, *huma.Group) {
 
 	api := humafiber.New(app, apiConfig)
 	api.UseMiddleware(HumaTraceMiddleware)
-	api.UseMiddleware(HumaUserMiddleware)
 	group := huma.NewGroup(api, "/api/v1")
 
 	// 默认比较严格，根据情况开启吧

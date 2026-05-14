@@ -16,7 +16,7 @@ Proxy Hub is a backend and frontend foundation for a proxy management platform, 
 ## Getting Started
 1. Initialize dependencies: `go mod tidy`
 2. Update `data/config.yaml` for your environment, including the database DSN and log output.
-3. Start the service: `go run .`
+3. Start the service: `go run -tags with_utls .`
    - To force migrations, append `-m` or `--migrate`.
 
 ## Frontend
@@ -25,7 +25,7 @@ Proxy Hub is a backend and frontend foundation for a proxy management platform, 
 - Build the frontend: `pnpm -C ui run build`
 
 ## Testing
-- Run all tests: `go test ./...`
+- Run all tests: `go test -tags with_utls ./...`
 - Data-layer tests use an in-memory SQLite database by default (DSN `:memory:`) for fast end-to-end flow validation.
 
 ## Supported DSNs
@@ -43,8 +43,8 @@ SQLite uses `github.com/ncruces/go-sqlite3/gormlite` and does not require CGO.
 - `static/`, `docs/`, `data/`: placeholders for static assets, custom documentation, and runtime data.
 
 ## Windows Service Commands
-- Install: `go run . -i`
-- Uninstall: `go run . --uninstall`
+- Install: `go run -tags with_utls . -i`
+- Uninstall: `go run -tags with_utls . --uninstall`
 
 You can later replace the sample user model or add proxy nodes, subscriptions, health checks, and other modules according to Proxy Hub business requirements.
 

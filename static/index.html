@@ -231,7 +231,7 @@
               </div>
             </div>
 
-            <label for="token">Token（自动保存到 localStorage）</label>
+            <label for="token">Token（默认留空）</label>
             <input id="token" type="text" class="mono" placeholder="Bearer ..." />
 
             <label for="headers">Headers（JSON）</label>
@@ -283,7 +283,6 @@
         const metaEl = $("meta");
         const outputEl = $("output");
 
-        const STORAGE_TOKEN_KEY = "request_demo_token";
         const demoRand = Math.random().toString(36).slice(2, 10);
         const demoUsername = "demo_" + demoRand;
         const demoPassword = "123456";
@@ -435,7 +434,6 @@
               maybeJson.value.body.token;
             if (tokenFromResponse) {
               tokenEl.value = tokenFromResponse;
-              localStorage.setItem(STORAGE_TOKEN_KEY, tokenFromResponse);
             }
             return;
           }
@@ -452,9 +450,6 @@
           null,
           2
         );
-
-        const savedToken = localStorage.getItem(STORAGE_TOKEN_KEY);
-        if (savedToken) tokenEl.value = savedToken;
 
         document.querySelectorAll("[data-preset]").forEach((btn) => {
           btn.addEventListener("click", () => setPreset(btn.dataset.preset));

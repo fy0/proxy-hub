@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/group"
 	protocolHTTP "github.com/sagernet/sing-box/protocol/http"
@@ -157,17 +158,25 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 	tx = model.GetTx(tx).WithContext(ctx)
 
 	var mappings []*tables.PortMappingTable
-	if err := tx.Where("enabled = ?", true).Order("created_at ASC").Find(&mappings).Error; err != nil {
+	if err := tx.Where("enabled = ?", true).Order(mappingOrderClause()).Find(&mappings).Error; err != nil {
 		return option.Options{}, nil, err
 	}
 
-	outbounds := []option.Outbound{{
-		Type:    constant.TypeDirect,
-		Tag:     constant.TypeDirect,
-		Options: &option.DirectOutboundOptions{},
-	}}
+	outbounds := []option.Outbound{
+		{
+			Type:    constant.TypeDirect,
+			Tag:     constant.TypeDirect,
+			Options: &option.DirectOutboundOptions{},
+		},
+		{
+			Type:    constant.TypeBlock,
+			Tag:     constant.TypeBlock,
+			Options: &option.StubOptions{},
+		},
+	}
 	outboundTags := map[string]struct{}{
 		constant.TypeDirect: {},
+		constant.TypeBlock:  {},
 	}
 	inbounds := make([]option.Inbound, 0, len(mappings))
 	rules := make([]option.Rule, 0, len(mappings))
@@ -177,9 +186,6 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 		nodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(mapping.NodeIDsJSON))
 		if err != nil {
 			return option.Options{}, nil, err
-		}
-		if len(nodes) == 0 {
-			continue
 		}
 
 		nodeTags := make([]string, 0, len(nodes))
@@ -242,6 +248,7 @@ func singBoxContext(ctx context.Context) context.Context {
 	mixed.RegisterInbound(inboundRegistry)
 
 	outboundRegistry := adapterOutbound.NewRegistry()
+	block.RegisterOutbound(outboundRegistry)
 	direct.RegisterOutbound(outboundRegistry)
 	group.RegisterSelector(outboundRegistry)
 	group.RegisterURLTest(outboundRegistry)
@@ -309,6 +316,9 @@ func buildMappingInbound(mapping *tables.PortMappingTable) (option.Inbound, erro
 }
 
 func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (string, *option.Outbound) {
+	if len(nodeTags) == 0 {
+		return constant.TypeBlock, nil
+	}
 	if len(nodeTags) == 1 {
 		return nodeTags[0], nil
 	}
@@ -458,6 +468,9 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 	protocol := normalizeProtocol(parsed.Scheme)
 	username := parsed.User.Username()
 	password, _ := parsed.User.Password()
+	if requiresUTLS(query) && !withUTLS {
+		return option.Outbound{}, ErrUTLSRequired
+	}
 
 	switch protocol {
 	case ProtocolVLESS:
@@ -468,6 +481,9 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 				ServerOptions: serverOptions,
 				UUID:          username,
 				Flow:          queryFirst(query, "flow"),
+				PacketEncoding: stringPtrOrNil(
+					queryFirst(query, "packetEncoding", "packet_encoding", "packet-encoding"),
+				),
 				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
 					TLS: buildTLSOptions(query, serverOptions.Server, false),
 				},
@@ -551,6 +567,9 @@ func buildVMessOutbound(rawURI string, tag string) (option.Outbound, error) {
 	if tlsMode := stringFromMap(data, "tls"); tlsMode != "" {
 		query.Set("security", tlsMode)
 	}
+	if requiresUTLS(query) && !withUTLS {
+		return option.Outbound{}, ErrUTLSRequired
+	}
 
 	return option.Outbound{
 		Type: constant.TypeVMess,
@@ -586,7 +605,11 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) *
 	if alpn := splitCommaList(queryFirst(query, "alpn")); len(alpn) > 0 {
 		tlsOptions.ALPN = badoption.Listable[string](alpn)
 	}
-	if fingerprint := queryFirst(query, "fp", "fingerprint"); fingerprint != "" {
+	fingerprint := queryFirst(query, "fp", "fingerprint")
+	if security == "reality" {
+		fingerprint = firstNonEmpty(fingerprint, "chrome")
+	}
+	if fingerprint != "" {
 		tlsOptions.UTLS = &option.OutboundUTLSOptions{
 			Enabled:     true,
 			Fingerprint: fingerprint,
@@ -595,11 +618,16 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) *
 	if security == "reality" {
 		tlsOptions.Reality = &option.OutboundRealityOptions{
 			Enabled:   true,
-			PublicKey: queryFirst(query, "pbk", "public_key"),
-			ShortID:   queryFirst(query, "sid", "short_id"),
+			PublicKey: queryFirst(query, "pbk", "publicKey", "public_key"),
+			ShortID:   queryFirst(query, "sid", "shortId", "short_id"),
 		}
 	}
 	return tlsOptions
+}
+
+func requiresUTLS(query url.Values) bool {
+	security := strings.ToLower(queryFirst(query, "security", "tls"))
+	return security == "reality"
 }
 
 func buildV2RayTransport(query url.Values) *option.V2RayTransportOptions {
@@ -610,6 +638,17 @@ func buildV2RayTransport(query url.Values) *option.V2RayTransportOptions {
 	case constant.V2RayTransportTypeWebsocket:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeWebsocket}
 		transport.WebsocketOptions.Path = firstNonEmpty(queryFirst(query, "path"), "/")
+		if earlyData := queryFirst(query, "ed", "maxEarlyData", "max_early_data"); earlyData != "" {
+			if parsed, err := strconv.ParseUint(earlyData, 10, 32); err == nil {
+				transport.WebsocketOptions.MaxEarlyData = uint32(parsed)
+			}
+		}
+		transport.WebsocketOptions.EarlyDataHeaderName = queryFirst(
+			query,
+			"eh",
+			"earlyDataHeaderName",
+			"early_data_header_name",
+		)
 		if host := queryFirst(query, "host"); host != "" {
 			transport.WebsocketOptions.Headers = badoption.HTTPHeader{
 				"Host": badoption.Listable[string]{host},

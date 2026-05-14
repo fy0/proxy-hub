@@ -20,6 +20,8 @@ export const messages = {
       deleteNode: '删除节点',
       deletePort: '删除端口',
       editPort: '编辑端口',
+      goHome: '返回面板',
+      goLogin: '去登录',
       importLinks: '导入分享链接',
       noAccount: '未配置账号',
       noAuth: '无认证',
@@ -27,7 +29,7 @@ export const messages = {
       notSaved: '尚未保存',
       optional: '可留空',
       removeRoute: '移除线路',
-      restoreDemo: '恢复示例',
+      restoreDemo: '刷新数据',
       save: '保存',
     },
     home: {
@@ -73,12 +75,21 @@ export const messages = {
         title: '代理转发面板',
       },
       messages: {
+        backendRefreshed: '已从后端重新加载。',
         demoReset: '已恢复示例数据。',
         endpointCopied: '已复制 {endpoint}',
         importEmpty: '请先粘贴分享链接。',
         imported: '已导入 {count} 条节点。',
+        loadingBackend: '正在从后端加载代理配置…',
+        mappingNotFound: '端口映射不存在，请刷新后重试。',
         nodeAdded: '已新增 {name}。',
+        nodeNotFound: '节点不存在，请刷新后重试。',
+        requestFailed: '请求后端失败，请确认服务已启动。',
         routeNodeRequired: '请填写节点 URI。',
+        runtimeError: '运行时异常：{message}',
+        runtimeRunning: '已连接后端，代理运行中（{count} 个入口）。',
+        runtimeStopped: '已连接后端，代理运行时未启动。',
+        savingBackend: '正在保存到后端…',
       },
       nodeMeta: {
         passwordConfigured: '密码：已配置',
@@ -141,6 +152,27 @@ export const messages = {
     about: {
       title: '关于页面',
     },
+    login: {
+      errors: {
+        failed: '登录失败，请检查用户名和密码。',
+        skipFailed: '跳过登录失败，请确认后端服务已启动。',
+      },
+      form: {
+        password: '密码',
+        skip: '跳过登录',
+        submit: '登录',
+        username: '用户名',
+      },
+      messages: {
+        skipSuccess: '已使用内置账号 root 登录。',
+        success: '登录成功，正在返回面板。',
+      },
+      placeholders: {
+        password: '请输入密码',
+        username: '请输入用户名',
+      },
+      title: '登录 ProxyHub',
+    },
     state: {
       node: {
         unnamed: '未命名节点',
@@ -176,6 +208,8 @@ export const messages = {
       deleteNode: 'Delete node',
       deletePort: 'Delete port',
       editPort: 'Edit port',
+      goHome: 'Back to panel',
+      goLogin: 'Sign in',
       importLinks: 'Import links',
       noAccount: 'No account configured',
       noAuth: 'No auth',
@@ -183,7 +217,7 @@ export const messages = {
       notSaved: 'Not saved yet',
       optional: 'Optional',
       removeRoute: 'Remove route',
-      restoreDemo: 'Restore demo',
+      restoreDemo: 'Refresh data',
       save: 'Save',
     },
     home: {
@@ -229,12 +263,21 @@ export const messages = {
         title: 'Proxy forwarding panel',
       },
       messages: {
+        backendRefreshed: 'Reloaded from backend.',
         demoReset: 'Demo data restored.',
         endpointCopied: 'Copied {endpoint}',
         importEmpty: 'Paste a share link first.',
         imported: 'Imported {count} nodes.',
+        loadingBackend: 'Loading proxy config from backend...',
+        mappingNotFound: 'Port mapping not found. Refresh and try again.',
         nodeAdded: 'Added {name}.',
+        nodeNotFound: 'Node not found. Refresh and try again.',
+        requestFailed: 'Backend request failed. Make sure the service is running.',
         routeNodeRequired: 'Enter a node URI.',
+        runtimeError: 'Runtime error: {message}',
+        runtimeRunning: 'Backend connected, proxy runtime is running ({count} inbounds).',
+        runtimeStopped: 'Backend connected, proxy runtime is stopped.',
+        savingBackend: 'Saving to backend...',
       },
       nodeMeta: {
         passwordConfigured: 'Password: configured',
@@ -296,6 +339,27 @@ export const messages = {
     },
     about: {
       title: 'About',
+    },
+    login: {
+      errors: {
+        failed: 'Sign-in failed. Check your username and password.',
+        skipFailed: 'Skip sign-in failed. Make sure the backend service is running.',
+      },
+      form: {
+        password: 'Password',
+        skip: 'Skip sign-in',
+        submit: 'Sign in',
+        username: 'Username',
+      },
+      messages: {
+        skipSuccess: 'Signed in as the built-in root account.',
+        success: 'Signed in. Returning to the panel.',
+      },
+      placeholders: {
+        password: 'Enter password',
+        username: 'Enter username',
+      },
+      title: 'Sign in to ProxyHub',
     },
     state: {
       node: {

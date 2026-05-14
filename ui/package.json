@@ -15,7 +15,7 @@
     "lint:eslint": "eslint . --fix",
     "lint": "pnpm run lint:oxlint && pnpm run lint:eslint",
     "format": "prettier --write src/",
-    "generate-openapi": "cd .. && go run . --gen-openapi=./ui/openapi.json",
+    "generate-openapi": "cd .. && go run -tags with_utls . --gen-openapi=./ui/openapi.json",
     "generate-client": "openapi-ts",
     "generate-api": "pnpm run generate-openapi && pnpm run generate-client"
   },

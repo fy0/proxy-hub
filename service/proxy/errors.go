@@ -11,4 +11,5 @@ var (
 	ErrInvalidAddress      = errors.New("invalid listen address")
 	ErrNoAvailableNode     = errors.New("no available node")
 	ErrListenPortTaken     = errors.New("listen port already exists")
+	ErrUTLSRequired        = errors.New("reality requires a binary built with -tags with_utls")
 )

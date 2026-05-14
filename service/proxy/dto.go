@@ -44,6 +44,7 @@ type PortMappingDTO struct {
 	Enabled          bool      `json:"enabled"`
 	ListenAddress    string    `json:"listenAddress"`
 	ListenPort       uint16    `json:"listenPort"`
+	Order            int64     `json:"order"`
 	OutboundProtocol string    `json:"outboundProtocol"`
 	Username         string    `json:"username"`
 	Password         string    `json:"password"`
@@ -63,9 +64,9 @@ type StateSnapshotDTO struct {
 }
 
 type NodeUpsertRequest struct {
-	Name     string   `json:"name" validate:"required,min=1,max=100"`
-	Protocol string   `json:"protocol" validate:"required"`
-	Server   string   `json:"server" validate:"omitempty,max=255"`
+	Name     string   `json:"name,omitempty" validate:"omitempty,max=100"`
+	Protocol string   `json:"protocol,omitempty" validate:"omitempty"`
+	Server   string   `json:"server,omitempty" validate:"omitempty,max=255"`
 	Port     *uint16  `json:"port,omitempty" validate:"omitempty,min=1,max=65535"`
 	Username string   `json:"username,omitempty" validate:"omitempty,max=255"`
 	Password string   `json:"password,omitempty" validate:"omitempty,max=500"`
@@ -135,6 +136,7 @@ func ToMappingDTO(mapping *tables.PortMappingTable) *PortMappingDTO {
 		Enabled:          mapping.Enabled,
 		ListenAddress:    mapping.ListenAddress,
 		ListenPort:       mapping.ListenPort,
+		Order:            mapping.Order,
 		OutboundProtocol: mapping.OutboundProtocol,
 		Username:         mapping.Username,
 		Password:         mapping.Password,
