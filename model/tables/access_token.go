@@ -3,7 +3,7 @@ package tables
 import (
 	"time"
 
-	"go-template/utils/model_base"
+	"proxy-hub/utils/model_base"
 )
 
 // UserAccessTokenTable stores refreshable access tokens bound to a user.

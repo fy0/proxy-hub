@@ -49,8 +49,8 @@ var configPath = filepath.Join(".", "data", "config.yaml")
 // ReadConfig 会加载 data/config.yaml，若不存在则写入默认配置。
 func ReadConfig() *AppConfig {
 	defaults := AppConfig{
-		ServeAt:             ":9005",
-		Domain:              "127.0.0.1:9005",
+		ServeAt:             ":3020",
+		Domain:              "127.0.0.1:3020",
 		RegisterOpen:        true,
 		WebUrl:              "/",
 		AttachmentSizeLimit: 8192,
@@ -61,7 +61,7 @@ func ReadConfig() *AppConfig {
 		AutoMigrate:         true,
 		OpenAPIEnabled:      true,
 		DocsPath:            "/docs",
-		APITitle:            "Go Template API",
+		APITitle:            "Proxy Hub API",
 		APIVersion:          "1.0.0",
 		AttachmentConfig: AttachmentConfig{
 			UseS3: false,

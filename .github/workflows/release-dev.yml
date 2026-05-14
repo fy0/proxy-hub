@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  APP_NAME: go-template
+  APP_NAME: proxy-hub
 
 jobs:
   publish-dev-release:
@@ -99,7 +99,7 @@ jobs:
           make_latest: false
           generate_release_notes: true
           files: |
-            release/go-template-dev-linux-amd64.tar.gz
-            release/go-template-dev-linux-arm64.tar.gz
-            release/go-template-dev-windows-amd64.zip
+            release/proxy-hub-dev-linux-amd64.tar.gz
+            release/proxy-hub-dev-linux-arm64.tar.gz
+            release/proxy-hub-dev-windows-amd64.zip
             release/SHA256SUMS.txt

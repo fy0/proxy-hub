@@ -29,9 +29,9 @@ func serviceInstall(isInstall bool) {
 	wd, _ := filepath.Abs(cwd)
 
 	svcConfig := &service.Config{
-		Name:             "go-template",
-		DisplayName:      "Go Template Service",
-		Description:      "Go 项目模板自动以 Windows 服务运行",
+		Name:             "proxy-hub",
+		DisplayName:      "Proxy Hub Service",
+		Description:      "Proxy Hub 自动以 Windows 服务运行",
 		WorkingDirectory: wd,
 	}
 

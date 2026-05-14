@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"go-template/utils"
+	"proxy-hub/utils"
 
 	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"

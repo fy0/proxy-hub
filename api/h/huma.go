@@ -8,14 +8,14 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"go-template/utils"
+	"proxy-hub/utils"
 )
 
 // NewAPI 会基于 Fiber 实例构建 Huma API，并按约定创建 /api/v1 分组。
 func NewAPI(app *fiber.App, cfg *utils.AppConfig) (huma.API, *huma.Group) {
 	title := cfg.APITitle
 	if title == "" {
-		title = "Go Template API"
+		title = "Proxy Hub API"
 	}
 
 	version := cfg.APIVersion

@@ -20,9 +20,11 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"go-template/api/h"
-	"go-template/api/user"
-	"go-template/utils"
+	"proxy-hub/api/h"
+	proxyAPI "proxy-hub/api/proxy"
+	"proxy-hub/api/user"
+	proxyService "proxy-hub/service/proxy"
+	"proxy-hub/utils"
 )
 
 const staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
@@ -105,6 +107,19 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 	h.HumaValidatePatch()
 
 	user.Register(v1)
+	proxyAPI.Register(v1)
+
+	if status, err := proxyService.RuntimeReload(context.Background()); err != nil {
+		theLogger.Warn("代理运行时启动失败", zap.Error(err))
+	} else if status.Running {
+		theLogger.Info("代理运行时已启动", zap.Int("inbounds", len(status.Inbounds)))
+	}
+	defer func() {
+		if err := proxyService.RuntimeStop(); err != nil {
+			theLogger.Warn("代理运行时关闭失败", zap.Error(err))
+		}
+	}()
+
 	mountStatic(app, cfg, assets, theLogger)
 
 	return app.Listen(cfg.ServeAt)
@@ -207,6 +222,7 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 
 	// 注册所有路由
 	user.Register(v1)
+	proxyAPI.Register(v1)
 	registerHealthRoute(api, "/health", "health-get")
 
 	// 获取 OpenAPI 规范

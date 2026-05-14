@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go-template/model"
+	"proxy-hub/model"
 
 	"gorm.io/gorm/logger"
 )

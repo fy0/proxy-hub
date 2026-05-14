@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"go-template/model"
-	"go-template/model/tables"
+	"proxy-hub/model"
+	"proxy-hub/model/tables"
 
 	"gorm.io/gorm"
 )

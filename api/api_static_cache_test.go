@@ -9,7 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
-	"go-template/utils"
+	"proxy-hub/utils"
 )
 
 func TestMountStaticDisablesCacheForIndexOnly(t *testing.T) {

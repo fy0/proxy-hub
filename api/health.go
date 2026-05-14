@@ -6,7 +6,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"go-template/api/h"
+	"proxy-hub/api/h"
 )
 
 // registerHealthRoutes 注册健康探测接口，用于服务监控

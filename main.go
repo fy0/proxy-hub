@@ -8,9 +8,9 @@ import (
 	"github.com/jessevdk/go-flags"
 	"go.uber.org/zap"
 
-	"go-template/api"
-	"go-template/model"
-	"go-template/utils"
+	"proxy-hub/api"
+	"proxy-hub/model"
+	"proxy-hub/utils"
 )
 
 //go:embed all:static

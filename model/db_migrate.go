@@ -1,13 +1,15 @@
 package model
 
 import (
-	"go-template/model/tables"
+	"proxy-hub/model/tables"
 )
 
 func GetAllModels() []any {
 	return []any{
 		&tables.UserTable{},
 		&tables.UserAccessTokenTable{},
+		&tables.ProxyNodeTable{},
+		&tables.PortMappingTable{},
 	}
 }
 

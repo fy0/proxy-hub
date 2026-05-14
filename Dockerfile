@@ -42,7 +42,7 @@ COPY --from=go-base /etc/ssl /etc/ssl
 COPY --from=go-base /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=backend-builder /build/app /app/app
 
-EXPOSE 9005
+EXPOSE 3020
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["/app/app"]

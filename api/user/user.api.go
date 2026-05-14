@@ -7,11 +7,11 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"go-template/api/h"
-	"go-template/model"
-	"go-template/model/tables"
-	userService "go-template/service/user"
-	"go-template/utils"
+	"proxy-hub/api/h"
+	"proxy-hub/model"
+	"proxy-hub/model/tables"
+	userService "proxy-hub/service/user"
+	"proxy-hub/utils"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"go-template/model/tables"
+	"proxy-hub/model/tables"
 
 	"gorm.io/gorm"
 )

@@ -1,6 +1,6 @@
 package user
 
-import "go-template/service/user"
+import "proxy-hub/service/user"
 
 type UserSignupRequest struct {
 	Username string `json:"username" validate:"required,min=2,max=50"`

@@ -1,7 +1,7 @@
 package tables
 
 import (
-	"go-template/utils/model_base"
+	"proxy-hub/utils/model_base"
 )
 
 // UserTable stores credential and profile data for a platform user.

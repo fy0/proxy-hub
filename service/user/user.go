@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"go-template/model"
-	"go-template/model/tables"
-	"go-template/utils"
+	"proxy-hub/model"
+	"proxy-hub/model/tables"
+	"proxy-hub/utils"
 
 	"gorm.io/gorm"
 )

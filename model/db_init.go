@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"go-template/utils/model_base"
+	"proxy-hub/utils/model_base"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

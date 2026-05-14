@@ -11,8 +11,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
-	"go-template/model/tables"
-	userService "go-template/service/user"
+	"proxy-hub/model/tables"
+	userService "proxy-hub/service/user"
 )
 
 // getToken 从 Fiber Context 获取 Token
