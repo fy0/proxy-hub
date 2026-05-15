@@ -83,7 +83,7 @@
 .metric-card,
 .panel,
 .notice-bar,
-.quick-card,
+.node-group-summary-card,
 .node-row,
 .tab-bar button {
   border: 1px solid rgb(15 23 42 / 0.08);
@@ -166,9 +166,14 @@
 }
 
 .notice-bar.error {
-  border-color: rgb(220 38 38 / 0.22);
+  border-color: rgb(220 38 38 / 0.48);
   background: rgb(254 242 242);
-  color: rgb(153 27 27);
+  color: rgb(127 29 29);
+  box-shadow: 0 12px 30px rgb(220 38 38 / 0.1);
+}
+
+.notice-bar.error svg {
+  color: rgb(220 38 38);
 }
 
 .spin-icon {
@@ -223,29 +228,6 @@
   gap: 18px;
 }
 
-.simple-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.quick-card {
-  padding: 18px;
-  border-radius: 16px;
-}
-
-.quick-card h2 {
-  color: rgb(15 23 42);
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.quick-card p {
-  margin-top: 8px;
-  color: rgb(100 116 139);
-  font-size: 13px;
-}
-
 .panel-heading {
   display: flex;
   align-items: flex-start;
@@ -286,6 +268,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 12px;
+  border: 1px solid transparent;
   border-radius: 999px;
   background: rgb(241 245 249);
   color: rgb(15 23 42);
@@ -302,9 +285,15 @@
   box-shadow: 0 0 0 4px rgb(34 197 94 / 0.12);
 }
 
-.port-strip span:nth-child(even) i {
-  background: rgb(59 130 246);
-  box-shadow: 0 0 0 4px rgb(59 130 246 / 0.12);
+.port-strip span.status-failed {
+  border-color: rgb(248 113 113 / 0.32);
+  background: rgb(254 242 242);
+  color: rgb(153 27 27);
+}
+
+.port-strip span.status-failed i {
+  background: rgb(239 68 68);
+  box-shadow: 0 0 0 4px rgb(239 68 68 / 0.14);
 }
 
 .port-grid {
@@ -330,8 +319,18 @@
   box-shadow: 0 12px 28px rgb(15 23 42 / 0.04);
 }
 
-.port-card.disabled {
-  opacity: 0.58;
+.port-card.status-failed {
+  border-color: rgb(248 113 113 / 0.6);
+  box-shadow: 0 14px 32px rgb(239 68 68 / 0.1);
+}
+
+.port-card.status-closed {
+  border-color: rgb(220 38 38 / 0.16);
+  background: #ffffff;
+}
+
+.port-card.status-notRunning {
+  border-color: rgb(100 116 139 / 0.22);
 }
 
 .port-card-header {
@@ -352,6 +351,21 @@
   flex-shrink: 0;
 }
 
+.switch-button.status-failed {
+  background: rgb(254 226 226);
+  color: rgb(220 38 38);
+}
+
+.switch-button.status-closed {
+  background: rgb(254 226 226);
+  color: rgb(220 38 38);
+}
+
+.switch-button.status-notRunning {
+  background: rgb(226 232 240);
+  color: rgb(71 85 105);
+}
+
 .port-title strong {
   display: block;
   color: rgb(15 23 42);
@@ -367,6 +381,56 @@
   color: rgb(100 116 139);
   font-size: 14px;
   font-weight: 650;
+}
+
+.port-card.status-failed .port-title strong {
+  color: rgb(153 27 27);
+}
+
+.port-card.status-closed .port-title strong {
+  color: rgb(15 23 42);
+}
+
+.port-card.status-notRunning .port-title strong {
+  color: rgb(71 85 105);
+}
+
+.port-status-chip {
+  width: fit-content;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgb(220 252 231);
+  color: rgb(22 101 52);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.port-status-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.port-status-chip.status-failed {
+  background: rgb(254 226 226);
+  color: rgb(185 28 28);
+}
+
+.port-status-chip.status-closed {
+  background: rgb(248 250 252);
+  color: rgb(100 116 139);
+}
+
+.port-status-chip.status-notRunning {
+  background: rgb(226 232 240);
+  color: rgb(51 65 85);
 }
 
 .card-actions,
@@ -662,6 +726,16 @@ textarea {
   outline: none;
 }
 
+select[multiple] {
+  min-height: 112px;
+}
+
+input:disabled {
+  background: rgb(248 250 252);
+  color: rgb(100 116 139);
+  cursor: not-allowed;
+}
+
 textarea {
   min-height: 136px;
   resize: vertical;
@@ -679,6 +753,187 @@ textarea:focus {
   gap: 12px;
 }
 
+.sub-heading {
+  margin-top: 18px;
+}
+
+.node-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-height: 150px;
+  overflow: auto;
+  padding: 4px 4px 6px 0;
+  scrollbar-width: thin;
+}
+
+.node-empty-toggle,
+.node-filter-bar button {
+  min-height: 38px;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border-radius: 12px;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  background: rgb(248 250 252);
+  color: rgb(51 65 85);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.node-empty-toggle {
+  cursor: pointer;
+}
+
+.node-empty-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: rgb(15 23 42);
+}
+
+.node-filter-bar button:hover {
+  border-color: rgb(34 197 94 / 0.28);
+  background: rgb(240 253 244);
+}
+
+.node-filter-bar button.active {
+  border-color: rgb(15 23 42);
+  background: rgb(15 23 42);
+  color: #ffffff;
+}
+
+.node-empty-toggle span,
+.node-filter-bar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.node-filter-bar small {
+  flex-shrink: 0;
+  color: rgb(100 116 139);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.node-filter-bar button.active small {
+  color: rgb(226 232 240);
+}
+
+.node-group-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.node-group-summary-card {
+  min-height: 166px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 12px;
+  align-items: start;
+  border-radius: 16px;
+  text-align: left;
+  color: rgb(15 23 42);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease;
+}
+
+.node-group-summary-card:hover {
+  transform: translateY(-1px);
+  border-color: rgb(34 197 94 / 0.34);
+}
+
+.node-summary-type {
+  width: fit-content;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgb(220 252 231);
+  color: rgb(22 101 52);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.node-summary-type.subscription {
+  background: rgb(219 234 254);
+  color: rgb(37 99 235);
+}
+
+.node-group-summary-card strong {
+  grid-column: 1 / span 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.node-summary-count {
+  justify-self: end;
+  color: rgb(15 23 42);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.node-group-summary-card small {
+  grid-column: 1 / span 2;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.node-summary-meta {
+  grid-column: 1 / span 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.node-summary-meta em {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgb(15 23 42 / 0.05);
+  color: rgb(71 85 105);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.active-node-group {
+  padding: 16px;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  border-radius: 16px;
+  background: rgb(248 250 252);
+}
+
+.empty-node-state {
+  min-height: 82px;
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  border: 1px dashed rgb(148 163 184 / 0.5);
+  border-radius: 14px;
+  color: rgb(100 116 139);
+  background: #ffffff;
+  font-size: 13px;
+}
+
 .node-row {
   padding: 14px;
   display: grid;
@@ -686,6 +941,45 @@ textarea:focus {
   gap: 12px;
   align-items: start;
   border-radius: 14px;
+}
+
+.group-row .node-protocol {
+  background: rgb(219 234 254);
+  color: rgb(37 99 235);
+}
+
+.group-route-card {
+  border-color: rgb(59 130 246 / 0.22);
+  background: rgb(239 246 255);
+}
+
+.grouped-node-list,
+.node-group-section {
+  display: grid;
+  gap: 12px;
+}
+
+.node-group-section {
+  padding-top: 6px;
+}
+
+.node-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgb(15 23 42);
+}
+
+.node-group-heading strong {
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.node-group-heading span {
+  color: rgb(100 116 139);
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .node-protocol {
@@ -866,8 +1160,8 @@ textarea:focus {
   }
 
   .status-grid,
-  .simple-grid,
   .port-grid,
+  .node-group-summary-grid,
   .import-layout,
   .field-grid.two {
     grid-template-columns: 1fr;
@@ -904,6 +1198,15 @@ textarea:focus {
 
   .node-row {
     grid-template-columns: 1fr;
+  }
+
+  .node-filter-bar button {
+    flex: 1 1 148px;
+    justify-content: space-between;
+  }
+
+  .node-group-summary-card {
+    min-height: 148px;
   }
 
   .node-meta {

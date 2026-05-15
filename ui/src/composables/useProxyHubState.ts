@@ -1,30 +1,45 @@
 import { computed, ref } from 'vue';
 import {
+  deleteProxyGroupsById,
   deleteProxyMappingsById,
   deleteProxyNodesById,
+  deleteProxySubscriptionsById,
   getProxyRuntimeStatus,
   getProxyState,
+  postProxyGroups,
   postProxyMappings,
   postProxyNodes,
   postProxyNodesImport,
+  postProxySubscriptions,
+  postProxySubscriptionsByIdSync,
+  putProxyGroupsById,
   putProxyMappingsById,
   putProxyNodesById,
+  putProxySubscriptionsById,
 } from '@/api/generated';
 import type {
+  GroupUpsertRequestWritable,
   MappingUpsertRequestWritable,
   NodeUpsertRequestWritable,
   PortMappingDto,
+  ProxyGroupDto,
   ProxyNodeDto,
+  ProxySubscriptionDto,
   RuntimeStatus,
   StateSnapshotDto,
+  SubscriptionUpsertRequestWritable,
 } from '@/api/generated';
 import { isAuthCredentialError } from '@/api/auth';
 import type {
   OutboundProtocol,
   PortMapping,
+  ProxyGroup,
+  ProxyGroupStrategy,
+  ProxyGroupType,
   ProxyHubStateSnapshot,
   ProxyNode,
   ProxyProtocol,
+  ProxySubscription,
   RouteStrategy,
 } from '@/types/proxyHub';
 import { t } from '@/i18n';
@@ -38,6 +53,7 @@ interface NodeInput {
   password: string;
   rawUri: string;
   tags: string[];
+  groupId: string;
   remark: string;
 }
 
@@ -50,11 +66,30 @@ interface MappingInput {
   strategy: RouteStrategy;
   nodeIds: string[];
   activeNodeId: string | null;
+  groupIds: string[];
+  activeGroupId: string | null;
   enabled: boolean;
   remark: string;
 }
 
+interface GroupInput {
+  name: string;
+  strategy: ProxyGroupStrategy;
+  nodeIds: string[];
+  groupIds: string[];
+  remark: string;
+}
+
+interface SubscriptionInput {
+  name: string;
+  url: string;
+  groupId: string;
+  remark: string;
+}
+
 const nodes = ref<ProxyNode[]>([]);
+const groups = ref<ProxyGroup[]>([]);
+const subscriptions = ref<ProxySubscription[]>([]);
 const mappings = ref<PortMapping[]>([]);
 const lastSavedAt = ref<string | null>(null);
 const runtime = ref<RuntimeStatus | null>(null);
@@ -103,6 +138,14 @@ function normalizeStrategy(value: string | null | undefined): RouteStrategy {
   }
 
   return 'manual';
+}
+
+function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
+  return value === 'subscription' ? 'subscription' : 'manual';
+}
+
+function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
+  return value === 'url-test' ? 'url-test' : 'selector';
 }
 
 function toPort(value: string | number | null | undefined): number | null {
@@ -173,6 +216,7 @@ function parseVmessUri(rawUri: string): NodeInput | null {
       password: '',
       rawUri,
       tags: ['vmess', transport].filter(Boolean),
+      groupId: '',
       remark: '',
     };
   } catch {
@@ -206,6 +250,7 @@ function parseProxyUri(rawValue: string): NodeInput {
       password: protocol === 'trojan' ? username : password,
       rawUri,
       tags: uriTags(protocol, parsed.searchParams),
+      groupId: '',
       remark: '',
     };
   } catch {
@@ -220,6 +265,7 @@ function parseProxyUri(rawValue: string): NodeInput {
       password: '',
       rawUri,
       tags: [protocol].filter(tag => tag !== 'unknown'),
+      groupId: '',
       remark: t('state.node.unsupportedRemark'),
     };
   }
@@ -244,6 +290,43 @@ function toProxyNode(dto: ProxyNodeDto): ProxyNode {
     rawUri: dto.rawUri,
     tags: dto.tags ?? [],
     remark: dto.remark,
+    subscriptionId: dto.subscriptionId,
+    groupId: dto.groupId,
+    sourceKey: dto.sourceKey,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+  };
+}
+
+function toProxySubscription(dto: ProxySubscriptionDto): ProxySubscription {
+  return {
+    id: dto.id,
+    name: dto.name,
+    url: dto.url,
+    groupId: dto.groupId,
+    remark: dto.remark,
+    lastSyncedAt: dto.lastSyncedAt,
+    lastSyncStatus: dto.lastSyncStatus,
+    lastSyncError: dto.lastSyncError,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+  };
+}
+
+function toProxyGroup(dto: ProxyGroupDto): ProxyGroup {
+  return {
+    id: dto.id,
+    name: dto.name,
+    type: normalizeGroupType(dto.type),
+    strategy: normalizeGroupStrategy(dto.strategy),
+    subscriptionId: dto.subscriptionId,
+    sourceKey: dto.sourceKey,
+    nodeIds: dto.nodeIds ?? [],
+    groupIds: dto.groupIds ?? [],
+    builtinTags: dto.builtinTags ?? [],
+    includesAll: dto.includesAll,
+    filter: dto.filter,
+    remark: dto.remark,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
   };
@@ -262,6 +345,8 @@ function toPortMapping(dto: PortMappingDto): PortMapping {
     strategy: normalizeStrategy(dto.strategy),
     nodeIds: dto.nodeIds ?? [],
     activeNodeId: dto.activeNodeId,
+    groupIds: dto.groupIds ?? [],
+    activeGroupId: dto.activeGroupId,
     remark: dto.remark,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
@@ -270,6 +355,8 @@ function toPortMapping(dto: PortMappingDto): PortMapping {
 
 function applySnapshot(snapshot: StateSnapshotDto): void {
   nodes.value = (snapshot.nodes ?? []).map(toProxyNode);
+  groups.value = (snapshot.groups ?? []).map(toProxyGroup);
+  subscriptions.value = (snapshot.subscriptions ?? []).map(toProxySubscription);
   mappings.value = (snapshot.mappings ?? []).map(toPortMapping);
   runtime.value = snapshot.runtime;
   lastSavedAt.value = snapshot.lastSavedAt;
@@ -331,6 +418,28 @@ function upsertNode(node: ProxyNode): void {
   nodes.value = nodes.value.map(item => (item.id === node.id ? node : item));
 }
 
+function upsertGroup(group: ProxyGroup): void {
+  const index = groups.value.findIndex(item => item.id === group.id);
+  if (index === -1) {
+    groups.value = [group, ...groups.value];
+    return;
+  }
+
+  groups.value = groups.value.map(item => (item.id === group.id ? group : item));
+}
+
+function upsertSubscription(subscription: ProxySubscription): void {
+  const index = subscriptions.value.findIndex(item => item.id === subscription.id);
+  if (index === -1) {
+    subscriptions.value = [subscription, ...subscriptions.value];
+    return;
+  }
+
+  subscriptions.value = subscriptions.value.map(item =>
+    item.id === subscription.id ? subscription : item
+  );
+}
+
 function upsertMapping(mapping: PortMapping): void {
   const index = mappings.value.findIndex(item => item.id === mapping.id);
   if (index === -1) {
@@ -351,6 +460,7 @@ function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
     password: input.password.trim(),
     rawUri: input.rawUri.trim(),
     tags: input.tags.map(tag => tag.trim()).filter(Boolean),
+    groupId: input.groupId.trim() || undefined,
     remark: input.remark.trim(),
   };
 }
@@ -366,6 +476,27 @@ function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
     strategy: normalizeStrategy(input.strategy),
     nodeIds: input.nodeIds,
     activeNodeId: input.activeNodeId ?? undefined,
+    groupIds: input.groupIds,
+    activeGroupId: input.activeGroupId ?? undefined,
+    remark: input.remark.trim(),
+  };
+}
+
+function groupToRequest(input: GroupInput): GroupUpsertRequestWritable {
+  return {
+    name: input.name.trim(),
+    strategy: normalizeGroupStrategy(input.strategy),
+    nodeIds: input.nodeIds,
+    groupIds: input.groupIds,
+    remark: input.remark.trim(),
+  };
+}
+
+function subscriptionToRequest(input: SubscriptionInput): SubscriptionUpsertRequestWritable {
+  return {
+    name: input.name.trim() || undefined,
+    url: input.url.trim(),
+    groupId: input.groupId.trim() || undefined,
     remark: input.remark.trim(),
   };
 }
@@ -380,6 +511,8 @@ function mergeMappingPatch(mapping: PortMapping, patch: Partial<MappingInput>): 
     strategy: patch.strategy ?? mapping.strategy,
     nodeIds: patch.nodeIds ?? mapping.nodeIds,
     activeNodeId: patch.activeNodeId === undefined ? mapping.activeNodeId : patch.activeNodeId,
+    groupIds: patch.groupIds ?? mapping.groupIds,
+    activeGroupId: patch.activeGroupId === undefined ? mapping.activeGroupId : patch.activeGroupId,
     enabled: patch.enabled ?? mapping.enabled,
     remark: patch.remark ?? mapping.remark,
   };
@@ -395,12 +528,18 @@ function mergeNodePatch(node: ProxyNode, patch: Partial<NodeInput>): NodeInput {
     password: patch.password ?? node.password,
     rawUri: patch.rawUri ?? node.rawUri,
     tags: patch.tags ?? node.tags,
+    groupId: patch.groupId ?? node.groupId,
     remark: patch.remark ?? node.remark,
   };
 }
 
 function removeNodeFromLocalState(id: string): void {
   nodes.value = nodes.value.filter(node => node.id !== id);
+  groups.value = groups.value.map(group => ({
+    ...group,
+    nodeIds: group.nodeIds.filter(nodeId => nodeId !== id),
+    updatedAt: new Date().toISOString(),
+  }));
   mappings.value = mappings.value.map(mapping => {
     const nodeIds = mapping.nodeIds.filter(nodeId => nodeId !== id);
     const activeNodeId = mapping.activeNodeId === id ? nodeIds[0] || null : mapping.activeNodeId;
@@ -409,6 +548,31 @@ function removeNodeFromLocalState(id: string): void {
       ...mapping,
       nodeIds,
       activeNodeId,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+}
+
+function removeGroupFromLocalState(id: string): void {
+  groups.value = groups.value
+    .filter(group => group.id !== id)
+    .map(group => ({
+      ...group,
+      groupIds: group.groupIds.filter(groupId => groupId !== id),
+      updatedAt: new Date().toISOString(),
+    }));
+  nodes.value = nodes.value.map(node =>
+    node.groupId === id ? { ...node, groupId: '', updatedAt: new Date().toISOString() } : node
+  );
+  mappings.value = mappings.value.map(mapping => {
+    const groupIds = mapping.groupIds.filter(groupId => groupId !== id);
+    const activeGroupId =
+      mapping.activeGroupId === id ? groupIds[0] || null : mapping.activeGroupId;
+
+    return {
+      ...mapping,
+      groupIds,
+      activeGroupId,
       updatedAt: new Date().toISOString(),
     };
   });
@@ -462,23 +626,33 @@ async function addNode(input: NodeInput): Promise<ProxyNode> {
   });
 }
 
-async function addNodeFromUri(rawUri: string, nameOverride = ''): Promise<ProxyNode> {
+async function addNodeFromUri(rawUri: string, nameOverride = '', groupId = ''): Promise<ProxyNode> {
   const input = parseProxyUri(rawUri);
   const name = nameOverride.trim();
 
   return addNode({
     ...input,
     name: name || input.name,
+    groupId,
   });
 }
 
-async function importNodes(raw: string): Promise<ProxyNode[]> {
+async function importNodes(raw: string, groupId = ''): Promise<ProxyNode[]> {
   return runMutation(async () => {
-    const { data } = await postProxyNodesImport({ body: { raw }, throwOnError: true });
+    const { data } = await postProxyNodesImport({
+      body: { raw, groupId: groupId.trim() || undefined },
+      throwOnError: true,
+    });
     const imported = (data.items ?? []).map(toProxyNode);
+    const importedGroups = (data.groups ?? []).map(toProxyGroup);
     if (imported.length > 0) {
       for (const node of imported) upsertNode(node);
       markSaved(imported[0].updatedAt);
+      await refreshRuntimeStatus();
+    }
+    if (importedGroups.length > 0) {
+      for (const group of importedGroups) upsertGroup(group);
+      markSaved(importedGroups[0].updatedAt);
       await refreshRuntimeStatus();
     }
     if (data.failures?.length) {
@@ -513,6 +687,95 @@ async function removeNode(id: string): Promise<void> {
     await deleteProxyNodesById({ path: { id }, throwOnError: true });
     removeNodeFromLocalState(id);
     markSaved();
+    await refreshRuntimeStatus();
+  });
+}
+
+async function addGroup(input: GroupInput): Promise<ProxyGroup> {
+  return runMutation(async () => {
+    const { data } = await postProxyGroups({ body: groupToRequest(input), throwOnError: true });
+    const group = toProxyGroup(data.item);
+    upsertGroup(group);
+    markSaved(group.updatedAt);
+    await refreshRuntimeStatus();
+    return group;
+  });
+}
+
+async function updateGroup(id: string, input: GroupInput): Promise<ProxyGroup> {
+  return runMutation(async () => {
+    const { data } = await putProxyGroupsById({
+      path: { id },
+      body: groupToRequest(input),
+      throwOnError: true,
+    });
+    const group = toProxyGroup(data.item);
+    upsertGroup(group);
+    markSaved(group.updatedAt);
+    await refreshRuntimeStatus();
+    return group;
+  });
+}
+
+async function removeGroup(id: string): Promise<void> {
+  await runMutation(async () => {
+    await deleteProxyGroupsById({ path: { id }, throwOnError: true });
+    removeGroupFromLocalState(id);
+    markSaved();
+    await refreshRuntimeStatus();
+  });
+}
+
+async function addSubscription(input: SubscriptionInput): Promise<ProxySubscription> {
+  return runMutation(async () => {
+    const { data } = await postProxySubscriptions({
+      body: subscriptionToRequest(input),
+      throwOnError: true,
+    });
+    const subscription = toProxySubscription(data.item);
+    upsertSubscription(subscription);
+    markSaved(subscription.updatedAt);
+    return subscription;
+  });
+}
+
+async function updateSubscription(
+  id: string,
+  input: SubscriptionInput
+): Promise<ProxySubscription> {
+  return runMutation(async () => {
+    const { data } = await putProxySubscriptionsById({
+      path: { id },
+      body: subscriptionToRequest(input),
+      throwOnError: true,
+    });
+    const subscription = toProxySubscription(data.item);
+    upsertSubscription(subscription);
+    markSaved(subscription.updatedAt);
+    return subscription;
+  });
+}
+
+async function syncSubscription(id: string): Promise<void> {
+  await runMutation(async () => {
+    const { data } = await postProxySubscriptionsByIdSync({
+      path: { id },
+      body: {},
+      throwOnError: true,
+    });
+    if (data.failures?.length) {
+      errorMessage.value = data.failures.map(failure => failure.message).join('\n');
+    }
+    await refreshProxyHubState();
+    await refreshRuntimeStatus();
+  });
+}
+
+async function removeSubscription(id: string): Promise<void> {
+  await runMutation(async () => {
+    await deleteProxySubscriptionsById({ path: { id }, throwOnError: true });
+    subscriptions.value = subscriptions.value.filter(subscription => subscription.id !== id);
+    await refreshProxyHubState();
     await refreshRuntimeStatus();
   });
 }
@@ -564,6 +827,8 @@ async function resetDemoData(): Promise<void> {
 function snapshot(): ProxyHubStateSnapshot {
   return {
     nodes: nodes.value,
+    groups: groups.value,
+    subscriptions: subscriptions.value,
     mappings: mappings.value,
     lastSavedAt: lastSavedAt.value,
   };
@@ -574,9 +839,15 @@ export function useProxyHubState() {
 
   const enabledMappings = computed(() => mappings.value.filter(mapping => mapping.enabled));
   const nodeById = computed(() => new Map(nodes.value.map(node => [node.id, node])));
+  const groupById = computed(() => new Map(groups.value.map(group => [group.id, group])));
+  const subscriptionById = computed(
+    () => new Map(subscriptions.value.map(subscription => [subscription.id, subscription]))
+  );
 
   return {
     nodes,
+    groups,
+    subscriptions,
     mappings,
     lastSavedAt,
     runtime,
@@ -586,12 +857,21 @@ export function useProxyHubState() {
     loginRequired,
     enabledMappings,
     nodeById,
+    groupById,
+    subscriptionById,
     refreshState: refreshProxyHubState,
     addNode,
     addNodeFromUri,
     importNodes,
     updateNode,
     removeNode,
+    addGroup,
+    updateGroup,
+    removeGroup,
+    addSubscription,
+    updateSubscription,
+    syncSubscription,
+    removeSubscription,
     addMapping,
     updateMapping,
     removeMapping,
