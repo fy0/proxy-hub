@@ -71,6 +71,78 @@ func Register(api huma.API) {
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
+		Path:        "/subscriptions",
+		Summary:     "订阅列表",
+		OperationID: "proxy-subscription-list",
+		Tags:        []string{proxyTag},
+	}, subscriptionListHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/subscriptions",
+		Summary:     "创建订阅",
+		OperationID: "proxy-subscription-create",
+		Tags:        []string{proxyTag},
+	}, subscriptionCreateHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPut,
+		Path:        "/subscriptions/{id}",
+		Summary:     "更新订阅",
+		OperationID: "proxy-subscription-update",
+		Tags:        []string{proxyTag},
+	}, subscriptionUpdateHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodDelete,
+		Path:        "/subscriptions/{id}",
+		Summary:     "删除订阅",
+		OperationID: "proxy-subscription-delete",
+		Tags:        []string{proxyTag},
+	}, subscriptionDeleteHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/subscriptions/{id}/sync",
+		Summary:     "同步订阅",
+		OperationID: "proxy-subscription-sync",
+		Tags:        []string{proxyTag},
+	}, subscriptionSyncHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
+		Path:        "/groups",
+		Summary:     "节点组列表",
+		OperationID: "proxy-group-list",
+		Tags:        []string{proxyTag},
+	}, groupListHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/groups",
+		Summary:     "创建节点组",
+		OperationID: "proxy-group-create",
+		Tags:        []string{proxyTag},
+	}, groupCreateHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPut,
+		Path:        "/groups/{id}",
+		Summary:     "更新节点组",
+		OperationID: "proxy-group-update",
+		Tags:        []string{proxyTag},
+	}, groupUpdateHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodDelete,
+		Path:        "/groups/{id}",
+		Summary:     "删除节点组",
+		OperationID: "proxy-group-delete",
+		Tags:        []string{proxyTag},
+	}, groupDeleteHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
 		Path:        "/mappings",
 		Summary:     "端口映射列表",
 		OperationID: "proxy-mapping-list",
@@ -222,6 +294,154 @@ func nodeImportHandler(ctx context.Context, input *nodeImportInput) (*nodeImport
 	return &nodeImportOutput{Body: *result}, nil
 }
 
+type subscriptionListOutput struct {
+	Body struct {
+		Items []*proxyService.ProxySubscriptionDTO `json:"items"`
+	} `json:"body"`
+}
+
+func subscriptionListHandler(ctx context.Context, _ *struct{}) (*subscriptionListOutput, error) {
+	subscriptions, err := proxyService.SubscriptionList(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &subscriptionListOutput{}
+	output.Body.Items = proxyService.ToSubscriptionDTOs(subscriptions)
+	return output, nil
+}
+
+type subscriptionInput struct {
+	Body proxyService.SubscriptionUpsertRequest
+}
+
+type subscriptionOutput struct {
+	Body struct {
+		Item *proxyService.ProxySubscriptionDTO `json:"item"`
+	} `json:"body"`
+}
+
+func subscriptionCreateHandler(ctx context.Context, input *subscriptionInput) (*subscriptionOutput, error) {
+	subscription, err := proxyService.SubscriptionCreate(ctx, nil, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &subscriptionOutput{}
+	output.Body.Item = proxyService.ToSubscriptionDTO(subscription)
+	return output, nil
+}
+
+type subscriptionUpdateInput struct {
+	ID   string `path:"id"`
+	Body proxyService.SubscriptionUpsertRequest
+}
+
+func subscriptionUpdateHandler(ctx context.Context, input *subscriptionUpdateInput) (*subscriptionOutput, error) {
+	subscription, err := proxyService.SubscriptionUpdate(ctx, nil, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &subscriptionOutput{}
+	output.Body.Item = proxyService.ToSubscriptionDTO(subscription)
+	return output, nil
+}
+
+func subscriptionDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse, error) {
+	if err := proxyService.SubscriptionDelete(ctx, nil, input.ID); err != nil {
+		return nil, mapError(err)
+	}
+	if err := reloadRuntimeAfterMutation(); err != nil {
+		return nil, err
+	}
+	return h.NewMessageResponse("订阅已删除"), nil
+}
+
+type subscriptionSyncInput struct {
+	ID   string `path:"id"`
+	Body proxyService.SubscriptionSyncRequest
+}
+
+type subscriptionSyncOutput struct {
+	Body proxyService.NodeImportResult `json:"body"`
+}
+
+func subscriptionSyncHandler(ctx context.Context, input *subscriptionSyncInput) (*subscriptionSyncOutput, error) {
+	result, err := proxyService.SubscriptionSync(ctx, nil, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := reloadRuntimeAfterMutation(); err != nil {
+		return nil, err
+	}
+	return &subscriptionSyncOutput{Body: *result}, nil
+}
+
+type groupListOutput struct {
+	Body struct {
+		Items []*proxyService.ProxyGroupDTO `json:"items"`
+	} `json:"body"`
+}
+
+func groupListHandler(ctx context.Context, _ *struct{}) (*groupListOutput, error) {
+	groups, err := proxyService.GroupList(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &groupListOutput{}
+	output.Body.Items = proxyService.ToGroupDTOs(groups)
+	return output, nil
+}
+
+type groupInput struct {
+	Body proxyService.GroupUpsertRequest
+}
+
+type groupOutput struct {
+	Body struct {
+		Item *proxyService.ProxyGroupDTO `json:"item"`
+	} `json:"body"`
+}
+
+func groupCreateHandler(ctx context.Context, input *groupInput) (*groupOutput, error) {
+	group, err := proxyService.GroupCreate(ctx, nil, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := reloadRuntimeAfterMutation(); err != nil {
+		return nil, err
+	}
+	output := &groupOutput{}
+	output.Body.Item = proxyService.ToGroupDTO(group)
+	return output, nil
+}
+
+type groupUpdateInput struct {
+	ID   string `path:"id"`
+	Body proxyService.GroupUpsertRequest
+}
+
+func groupUpdateHandler(ctx context.Context, input *groupUpdateInput) (*groupOutput, error) {
+	group, err := proxyService.GroupUpdate(ctx, nil, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := reloadRuntimeAfterMutation(); err != nil {
+		return nil, err
+	}
+	output := &groupOutput{}
+	output.Body.Item = proxyService.ToGroupDTO(group)
+	return output, nil
+}
+
+func groupDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse, error) {
+	if err := proxyService.GroupDelete(ctx, nil, input.ID); err != nil {
+		return nil, mapError(err)
+	}
+	if err := reloadRuntimeAfterMutation(); err != nil {
+		return nil, err
+	}
+	return h.NewMessageResponse("节点组已删除"), nil
+}
+
 type mappingListOutput struct {
 	Body struct {
 		Items []*proxyService.PortMappingDTO `json:"items"`
@@ -314,7 +534,10 @@ func reloadRuntimeAfterMutation() error {
 
 func mapError(err error) error {
 	switch {
-	case errors.Is(err, proxyService.ErrNodeNotFound), errors.Is(err, proxyService.ErrMappingNotFound):
+	case errors.Is(err, proxyService.ErrNodeNotFound),
+		errors.Is(err, proxyService.ErrMappingNotFound),
+		errors.Is(err, proxyService.ErrSubscriptionNotFound),
+		errors.Is(err, proxyService.ErrGroupNotFound):
 		return humanaError(http.StatusNotFound, err.Error())
 	case errors.Is(err, proxyService.ErrListenPortTaken):
 		return humanaError(http.StatusConflict, "监听端口已存在")
@@ -323,7 +546,9 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrUnsupportedProtocol),
 		errors.Is(err, proxyService.ErrUnsupportedURI),
 		errors.Is(err, proxyService.ErrNoAvailableNode),
-		errors.Is(err, proxyService.ErrUTLSRequired):
+		errors.Is(err, proxyService.ErrUTLSRequired),
+		errors.Is(err, proxyService.ErrInvalidSubscription),
+		errors.Is(err, proxyService.ErrInvalidGroup):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())
