@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -46,23 +47,34 @@ type RuntimeInbound struct {
 	Outbound  string `json:"outbound"`
 }
 
+type RuntimeInboundFailure struct {
+	MappingID string `json:"mappingId"`
+	Tag       string `json:"tag"`
+	Listen    string `json:"listen"`
+	Error     string `json:"error"`
+}
+
 type RuntimeStatus struct {
-	Running   bool             `json:"running"`
-	State     string           `json:"state"`
-	Error     string           `json:"error,omitempty"`
-	Inbounds  []RuntimeInbound `json:"inbounds"`
-	UpdatedAt time.Time        `json:"updatedAt"`
+	Running   bool                    `json:"running"`
+	State     string                  `json:"state"`
+	Error     string                  `json:"error,omitempty"`
+	Inbounds  []RuntimeInbound        `json:"inbounds"`
+	Failures  []RuntimeInboundFailure `json:"failures"`
+	UpdatedAt time.Time               `json:"updatedAt"`
 }
 
 type runtimeManager struct {
-	mu       sync.Mutex
-	instance *box.Box
-	status   RuntimeStatus
+	mu        sync.Mutex
+	instances map[string]*box.Box
+	status    RuntimeStatus
 }
 
 var singBoxRuntime = &runtimeManager{
+	instances: map[string]*box.Box{},
 	status: RuntimeStatus{
 		State:     "stopped",
+		Inbounds:  []RuntimeInbound{},
+		Failures:  []RuntimeInboundFailure{},
 		UpdatedAt: time.Now(),
 	},
 }
@@ -72,7 +84,8 @@ func RuntimeStatusGet() RuntimeStatus {
 	defer singBoxRuntime.mu.Unlock()
 
 	status := singBoxRuntime.status
-	status.Inbounds = append([]RuntimeInbound(nil), singBoxRuntime.status.Inbounds...)
+	status.Inbounds = append([]RuntimeInbound{}, singBoxRuntime.status.Inbounds...)
+	status.Failures = append([]RuntimeInboundFailure{}, singBoxRuntime.status.Failures...)
 	return status
 }
 
@@ -81,86 +94,103 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 		ctx = context.Background()
 	}
 
-	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	mappings, err := enabledRuntimeMappings(ctx, nil)
 	if err != nil {
 		status := setRuntimeError(err)
 		return status, err
 	}
 
-	singBoxRuntime.mu.Lock()
-	old := singBoxRuntime.instance
-	singBoxRuntime.instance = nil
-	singBoxRuntime.status = RuntimeStatus{
+	oldInstances := replaceRuntimeInstances(RuntimeStatus{
 		Running:   false,
 		State:     "reloading",
-		Inbounds:  inbounds,
+		Inbounds:  []RuntimeInbound{},
+		Failures:  []RuntimeInboundFailure{},
 		UpdatedAt: time.Now(),
-	}
-	singBoxRuntime.mu.Unlock()
-
-	if old != nil {
-		if closeErr := old.Close(); closeErr != nil {
-			utils.Logger.Warn("关闭旧 sing-box 实例失败", zap.Error(closeErr))
-		}
-	}
-
-	if len(inbounds) == 0 {
-		return setRuntimeStatus(RuntimeStatus{
-			Running:   false,
-			State:     "stopped",
-			Inbounds:  []RuntimeInbound{},
-			UpdatedAt: time.Now(),
-		}), nil
-	}
-
-	instance, err := box.New(box.Options{
-		Options: options,
-		Context: singBoxContext(context.Background()),
 	})
-	if err != nil {
-		status := setRuntimeError(err)
-		return status, err
-	}
-	if err := instance.Start(); err != nil {
-		_ = instance.Close()
-		status := setRuntimeError(err)
-		return status, err
+
+	if closeErr := closeRuntimeInstances(oldInstances); closeErr != nil {
+		utils.Logger.Warn("关闭旧 sing-box 实例失败", zap.Error(closeErr))
 	}
 
-	return setRuntimeInstance(instance, RuntimeStatus{
-		Running:   true,
-		State:     "running",
-		Inbounds:  inbounds,
-		UpdatedAt: time.Now(),
-	}), nil
+	instances := make(map[string]*box.Box, len(mappings))
+	inbounds := make([]RuntimeInbound, 0, len(mappings))
+	failures := make([]RuntimeInboundFailure, 0)
+
+	for _, mapping := range mappings {
+		options, mappingInbounds, err := buildSingBoxOptionsFromMappings(ctx, nil, []*tables.PortMappingTable{mapping})
+		if err != nil {
+			failures = append(failures, runtimeFailureFromMapping(mapping, err))
+			continue
+		}
+		if len(mappingInbounds) == 0 {
+			failures = append(failures, runtimeFailureFromMapping(mapping, errors.New("runtime inbound was not created")))
+			continue
+		}
+
+		inbound := mappingInbounds[0]
+		instance, err := box.New(box.Options{
+			Options: options,
+			Context: singBoxContext(context.Background()),
+		})
+		if err != nil {
+			failures = append(failures, runtimeFailureFromInbound(inbound, err))
+			continue
+		}
+		if err := instance.Start(); err != nil {
+			_ = instance.Close()
+			failures = append(failures, runtimeFailureFromInbound(inbound, err))
+			continue
+		}
+
+		instances[mapping.ID] = instance
+		inbounds = append(inbounds, inbound)
+	}
+
+	return setRuntimeInstances(instances, runtimeStatusFromResults(len(mappings), inbounds, failures)), nil
 }
 
 func RuntimeStop() error {
-	singBoxRuntime.mu.Lock()
-	instance := singBoxRuntime.instance
-	singBoxRuntime.instance = nil
-	singBoxRuntime.status = RuntimeStatus{
+	instances := replaceRuntimeInstances(RuntimeStatus{
 		Running:   false,
 		State:     "stopped",
 		Inbounds:  []RuntimeInbound{},
+		Failures:  []RuntimeInboundFailure{},
 		UpdatedAt: time.Now(),
-	}
-	singBoxRuntime.mu.Unlock()
+	})
 
-	if instance != nil {
-		return instance.Close()
-	}
-	return nil
+	return closeRuntimeInstances(instances)
 }
 
 func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []RuntimeInbound, error) {
+	mappings, err := enabledRuntimeMappings(ctx, tx)
+	if err != nil {
+		return option.Options{}, nil, err
+	}
+	return buildSingBoxOptionsFromMappings(ctx, tx, mappings)
+}
+
+func enabledRuntimeMappings(ctx context.Context, tx model.DBTx) ([]*tables.PortMappingTable, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	tx = model.GetTx(tx).WithContext(ctx)
 
 	var mappings []*tables.PortMappingTable
 	if err := tx.Where("enabled = ?", true).Order(mappingOrderClause()).Find(&mappings).Error; err != nil {
-		return option.Options{}, nil, err
+		return nil, err
 	}
+	return mappings, nil
+}
 
+func buildSingBoxOptionsFromMappings(
+	ctx context.Context,
+	tx model.DBTx,
+	mappings []*tables.PortMappingTable,
+) (option.Options, []RuntimeInbound, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
 	outbounds := []option.Outbound{
 		{
 			Type:    constant.TypeDirect,
@@ -177,6 +207,8 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 		constant.TypeDirect: {},
 		constant.TypeBlock:  {},
 	}
+	nodeCache := map[string]*tables.ProxyNodeTable{}
+	groupCache := map[string]*tables.ProxyGroupTable{}
 	inbounds := make([]option.Inbound, 0, len(mappings))
 	rules := make([]option.Rule, 0, len(mappings))
 	statusInbounds := make([]RuntimeInbound, 0, len(mappings))
@@ -187,10 +219,11 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 			return option.Options{}, nil, err
 		}
 
-		nodeTags := make([]string, 0, len(nodes))
+		memberTags := make([]string, 0, len(nodes))
 		for _, node := range nodes {
+			nodeCache[node.ID] = node
 			tag := nodeOutboundTag(node.ID)
-			nodeTags = append(nodeTags, tag)
+			memberTags = append(memberTags, tag)
 			if _, exists := outboundTags[tag]; exists {
 				continue
 			}
@@ -202,7 +235,28 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 			outboundTags[tag] = struct{}{}
 		}
 
-		routeTag, groupOutbound := buildMappingOutbound(mapping, nodeTags)
+		groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
+		if err != nil {
+			return option.Options{}, nil, err
+		}
+		for _, proxyGroup := range groups {
+			groupTag, groupOutbounds, err := buildProxyGroupOutbounds(
+				ctx,
+				tx,
+				proxyGroup,
+				outboundTags,
+				nodeCache,
+				groupCache,
+				map[string]bool{},
+			)
+			if err != nil {
+				return option.Options{}, nil, err
+			}
+			memberTags = append(memberTags, groupTag)
+			outbounds = append(outbounds, groupOutbounds...)
+		}
+
+		routeTag, groupOutbound := buildMappingOutbound(mapping, memberTags)
 		if groupOutbound != nil {
 			if _, exists := outboundTags[routeTag]; !exists {
 				outbounds = append(outbounds, *groupOutbound)
@@ -219,7 +273,7 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 		statusInbounds = append(statusInbounds, RuntimeInbound{
 			MappingID: mapping.ID,
 			Tag:       inbound.Tag,
-			Listen:    fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort),
+			Listen:    mappingRuntimeListen(mapping),
 			Outbound:  routeTag,
 		})
 	}
@@ -323,7 +377,10 @@ func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (
 	}
 
 	activeTag := ""
-	if mapping.ActiveNodeID != "" {
+	if mapping.ActiveGroupID != "" {
+		activeTag = proxyGroupOutboundTag(mapping.ActiveGroupID)
+	}
+	if activeTag == "" && mapping.ActiveNodeID != "" {
 		activeTag = nodeOutboundTag(mapping.ActiveNodeID)
 	}
 	if activeTag == "" || !containsString(nodeTags, activeTag) {
@@ -352,6 +409,107 @@ func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (
 				Default:   activeTag,
 			},
 		}
+	}
+}
+
+func buildProxyGroupOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	proxyGroup *tables.ProxyGroupTable,
+	outboundTags map[string]struct{},
+	nodeCache map[string]*tables.ProxyNodeTable,
+	groupCache map[string]*tables.ProxyGroupTable,
+	visiting map[string]bool,
+) (string, []option.Outbound, error) {
+	if proxyGroup == nil {
+		return constant.TypeBlock, nil, nil
+	}
+	tag := proxyGroupOutboundTag(proxyGroup.ID)
+	if _, exists := outboundTags[tag]; exists {
+		return tag, nil, nil
+	}
+	if visiting[proxyGroup.ID] {
+		return "", nil, fmt.Errorf("%w: cyclic group %s", ErrInvalidGroup, proxyGroup.Name)
+	}
+	visiting[proxyGroup.ID] = true
+	defer delete(visiting, proxyGroup.ID)
+
+	memberTags := make([]string, 0)
+	outbounds := make([]option.Outbound, 0)
+
+	for _, builtin := range decodeStringSlice(proxyGroup.BuiltinTagsJSON) {
+		switch builtin {
+		case constantDirect:
+			memberTags = append(memberTags, constant.TypeDirect)
+		case constantReject, constantRejectDrop:
+			memberTags = append(memberTags, constant.TypeBlock)
+		}
+	}
+
+	nodes, err := findNodesByGroupOrIDs(ctx, tx, proxyGroup.ID, decodeStringSlice(proxyGroup.NodeIDsJSON))
+	if err != nil {
+		return "", nil, err
+	}
+	for _, node := range nodes {
+		nodeCache[node.ID] = node
+		nodeTag := nodeOutboundTag(node.ID)
+		memberTags = append(memberTags, nodeTag)
+		if _, exists := outboundTags[nodeTag]; exists {
+			continue
+		}
+		outbound, err := buildNodeOutbound(node, nodeTag)
+		if err != nil {
+			return "", nil, fmt.Errorf("节点 %s 配置无效: %w", node.Name, err)
+		}
+		outbounds = append(outbounds, outbound)
+		outboundTags[nodeTag] = struct{}{}
+	}
+
+	childGroups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(proxyGroup.GroupIDsJSON))
+	if err != nil {
+		return "", nil, err
+	}
+	for _, childGroup := range childGroups {
+		groupCache[childGroup.ID] = childGroup
+		childTag, childOutbounds, err := buildProxyGroupOutbounds(ctx, tx, childGroup, outboundTags, nodeCache, groupCache, visiting)
+		if err != nil {
+			return "", nil, err
+		}
+		memberTags = append(memberTags, childTag)
+		outbounds = append(outbounds, childOutbounds...)
+	}
+
+	memberTags = uniqueNonEmpty(memberTags)
+	if len(memberTags) == 0 {
+		memberTags = []string{constant.TypeBlock}
+	}
+	groupOutbound := buildProxyGroupOutbound(proxyGroup, tag, memberTags)
+	outbounds = append(outbounds, groupOutbound)
+	outboundTags[tag] = struct{}{}
+	return tag, outbounds, nil
+}
+
+func buildProxyGroupOutbound(proxyGroup *tables.ProxyGroupTable, tag string, memberTags []string) option.Outbound {
+	if normalizeGroupStrategy(proxyGroup.Strategy) == GroupStrategyURLTest {
+		return option.Outbound{
+			Type: constant.TypeURLTest,
+			Tag:  tag,
+			Options: &option.URLTestOutboundOptions{
+				Outbounds:   memberTags,
+				URL:         urlTestLink,
+				Interval:    badoption.Duration(3 * time.Minute),
+				IdleTimeout: badoption.Duration(30 * time.Minute),
+			},
+		}
+	}
+	defaultTag := memberTags[0]
+	return option.Outbound{
+		Type: constant.TypeSelector,
+		Tag:  tag,
+		Options: &option.SelectorOutboundOptions{
+			Outbounds: memberTags,
+			Default:   defaultTag,
+		},
 	}
 }
 
@@ -690,11 +848,83 @@ func mappingOutboundTag(id string) string {
 	return "mapping-out-" + id
 }
 
-func setRuntimeInstance(instance *box.Box, status RuntimeStatus) RuntimeStatus {
+func proxyGroupOutboundTag(id string) string {
+	return "group-" + id
+}
+
+func runtimeFailureFromMapping(mapping *tables.PortMappingTable, err error) RuntimeInboundFailure {
+	return RuntimeInboundFailure{
+		MappingID: mapping.ID,
+		Tag:       mappingInboundTag(mapping.ID),
+		Listen:    mappingRuntimeListen(mapping),
+		Error:     err.Error(),
+	}
+}
+
+func runtimeFailureFromInbound(inbound RuntimeInbound, err error) RuntimeInboundFailure {
+	return RuntimeInboundFailure{
+		MappingID: inbound.MappingID,
+		Tag:       inbound.Tag,
+		Listen:    inbound.Listen,
+		Error:     err.Error(),
+	}
+}
+
+func mappingRuntimeListen(mapping *tables.PortMappingTable) string {
+	if mapping == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort)
+}
+
+func runtimeStatusFromResults(
+	total int,
+	inbounds []RuntimeInbound,
+	failures []RuntimeInboundFailure,
+) RuntimeStatus {
+	state := "stopped"
+	errorMessage := ""
+	switch {
+	case total == 0:
+		state = "stopped"
+	case len(inbounds) > 0 && len(failures) == 0:
+		state = "running"
+	case len(inbounds) > 0:
+		state = "degraded"
+	default:
+		state = "error"
+		errorMessage = "all proxy runtime inbounds failed to start"
+	}
+
+	return RuntimeStatus{
+		Running:   len(inbounds) > 0,
+		State:     state,
+		Error:     errorMessage,
+		Inbounds:  append([]RuntimeInbound(nil), inbounds...),
+		Failures:  append([]RuntimeInboundFailure(nil), failures...),
+		UpdatedAt: time.Now(),
+	}
+}
+
+func replaceRuntimeInstances(status RuntimeStatus) map[string]*box.Box {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
-	singBoxRuntime.instance = instance
+	old := singBoxRuntime.instances
+	singBoxRuntime.instances = map[string]*box.Box{}
+	singBoxRuntime.status = normalizeRuntimeStatus(status)
+	return old
+}
+
+func setRuntimeInstances(instances map[string]*box.Box, status RuntimeStatus) RuntimeStatus {
+	singBoxRuntime.mu.Lock()
+	defer singBoxRuntime.mu.Unlock()
+
+	if instances == nil {
+		instances = map[string]*box.Box{}
+	}
+	status = normalizeRuntimeStatus(status)
+	singBoxRuntime.instances = instances
 	singBoxRuntime.status = status
 	return status
 }
@@ -703,7 +933,21 @@ func setRuntimeStatus(status RuntimeStatus) RuntimeStatus {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
+	status = normalizeRuntimeStatus(status)
 	singBoxRuntime.status = status
+	return status
+}
+
+func normalizeRuntimeStatus(status RuntimeStatus) RuntimeStatus {
+	if status.Inbounds == nil {
+		status.Inbounds = []RuntimeInbound{}
+	}
+	if status.Failures == nil {
+		status.Failures = []RuntimeInboundFailure{}
+	}
+	if status.UpdatedAt.IsZero() {
+		status.UpdatedAt = time.Now()
+	}
 	return status
 }
 
@@ -712,7 +956,22 @@ func setRuntimeError(err error) RuntimeStatus {
 		Running:   false,
 		State:     "error",
 		Error:     err.Error(),
+		Inbounds:  []RuntimeInbound{},
+		Failures:  []RuntimeInboundFailure{},
 		UpdatedAt: time.Now(),
 	}
 	return setRuntimeStatus(status)
+}
+
+func closeRuntimeInstances(instances map[string]*box.Box) error {
+	errs := make([]error, 0)
+	for id, instance := range instances {
+		if instance == nil {
+			continue
+		}
+		if err := instance.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
 }
