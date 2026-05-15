@@ -1,0 +1,832 @@
+package proxy
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"proxy-hub/model"
+	"proxy-hub/model/tables"
+
+	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
+)
+
+const (
+	subscriptionHTTPTimeout = 30 * time.Second
+	subscriptionMaxBytes    = 10 << 20
+	constantDirect          = "DIRECT"
+	constantReject          = "REJECT"
+	constantRejectDrop      = "REJECT-DROP"
+)
+
+type subscriptionConfig struct {
+	Proxies     []map[string]any `yaml:"proxies"`
+	ProxyGroups []map[string]any `yaml:"proxy-groups"`
+}
+
+type parsedSubscriptionNode struct {
+	Name      string
+	SourceKey string
+	RawURI    string
+}
+
+type parsedSubscriptionGroup struct {
+	Name        string
+	SourceKey   string
+	Strategy    string
+	NodeNames   []string
+	GroupNames  []string
+	BuiltinTags []string
+	IncludesAll bool
+	Filter      string
+}
+
+type parsedSubscription struct {
+	Nodes    []parsedSubscriptionNode
+	Groups   []parsedSubscriptionGroup
+	Failures []NodeImportFailure
+}
+
+func SubscriptionCreate(ctx context.Context, tx model.DBTx, req SubscriptionUpsertRequest) (*tables.ProxySubscriptionTable, error) {
+	if tx != nil {
+		return subscriptionCreateInTx(ctx, tx, req)
+	}
+	var subscription *tables.ProxySubscriptionTable
+	err := model.Transaction(ctx, func(inner model.DBTx) error {
+		created, err := subscriptionCreateInTx(ctx, inner, req)
+		if err != nil {
+			return err
+		}
+		subscription = created
+		return nil
+	})
+	return subscription, err
+}
+
+func subscriptionCreateInTx(ctx context.Context, tx model.DBTx, req SubscriptionUpsertRequest) (*tables.ProxySubscriptionTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	normalized, err := normalizeSubscriptionRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	groupID, err := ensureSubscriptionRootGroup(ctx, tx, normalized.Name, normalized.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	subscription := &tables.ProxySubscriptionTable{
+		Name:    normalized.Name,
+		URL:     normalized.URL,
+		GroupID: groupID,
+		Remark:  normalized.Remark,
+	}
+	if err := tx.Create(subscription).Error; err != nil {
+		return nil, err
+	}
+	return subscription, nil
+}
+
+func SubscriptionUpdate(ctx context.Context, tx model.DBTx, id string, req SubscriptionUpsertRequest) (*tables.ProxySubscriptionTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var subscription tables.ProxySubscriptionTable
+	if err := tx.First(&subscription, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrSubscriptionNotFound
+		}
+		return nil, err
+	}
+	normalized, err := normalizeSubscriptionRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	groupID, err := ensureSubscriptionRootGroup(ctx, tx, normalized.Name, normalized.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Model(&subscription).Updates(map[string]any{
+		"name":       normalized.Name,
+		"url":        normalized.URL,
+		"group_id":   groupID,
+		"remark":     normalized.Remark,
+		"updated_at": time.Now(),
+	}).Error; err != nil {
+		return nil, err
+	}
+	return SubscriptionGet(ctx, tx, id)
+}
+
+func SubscriptionGet(ctx context.Context, tx model.DBTx, id string) (*tables.ProxySubscriptionTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var subscription tables.ProxySubscriptionTable
+	if err := tx.First(&subscription, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrSubscriptionNotFound
+		}
+		return nil, err
+	}
+	return &subscription, nil
+}
+
+func SubscriptionList(ctx context.Context, tx model.DBTx) ([]*tables.ProxySubscriptionTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var subscriptions []*tables.ProxySubscriptionTable
+	if err := tx.Order("created_at DESC").Find(&subscriptions).Error; err != nil {
+		return nil, err
+	}
+	return subscriptions, nil
+}
+
+func SubscriptionDelete(ctx context.Context, tx model.DBTx, id string) error {
+	if tx != nil {
+		return subscriptionDeleteInTx(ctx, tx, id)
+	}
+	return model.Transaction(ctx, func(inner model.DBTx) error {
+		return subscriptionDeleteInTx(ctx, inner, id)
+	})
+}
+
+func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var subscription tables.ProxySubscriptionTable
+	if err := tx.First(&subscription, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrSubscriptionNotFound
+		}
+		return err
+	}
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Where("subscription_id = ?", id).Find(&groups).Error; err != nil {
+		return err
+	}
+	groupIDs := make([]string, 0, len(groups))
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.ID)
+	}
+	if err := cleanupGroupReferences(ctx, tx, groupIDs); err != nil {
+		return err
+	}
+	if len(groupIDs) > 0 {
+		if err := tx.Where("id IN ?", groupIDs).Delete(&tables.ProxyGroupTable{}).Error; err != nil {
+			return err
+		}
+	}
+
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.Where("subscription_id = ?", id).Find(&nodes).Error; err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if err := nodeDeleteInTx(ctx, tx, node.ID); err != nil && !errors.Is(err, ErrNodeNotFound) {
+			return err
+		}
+	}
+	return tx.Delete(&subscription).Error
+}
+
+func SubscriptionSync(ctx context.Context, tx model.DBTx, id string, req SubscriptionSyncRequest) (*NodeImportResult, error) {
+	if tx != nil {
+		return subscriptionSyncInTx(ctx, tx, id, req)
+	}
+	var result *NodeImportResult
+	err := model.Transaction(ctx, func(inner model.DBTx) error {
+		synced, err := subscriptionSyncInTx(ctx, inner, id, req)
+		if err != nil {
+			return err
+		}
+		result = synced
+		return nil
+	})
+	if err != nil && !errors.Is(err, ErrSubscriptionNotFound) {
+		_ = markSubscriptionSyncFailure(ctx, nil, id, err)
+	}
+	return result, err
+}
+
+func markSubscriptionSyncFailure(ctx context.Context, tx model.DBTx, id string, syncErr error) error {
+	if syncErr == nil {
+		return nil
+	}
+	now := time.Now()
+	return model.GetTx(tx).WithContext(ctx).Model(&tables.ProxySubscriptionTable{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"last_synced_at":   &now,
+			"last_sync_status": SubscriptionSyncStatusFailed,
+			"last_sync_error":  syncErr.Error(),
+			"updated_at":       now,
+		}).Error
+}
+
+func subscriptionSyncInTx(ctx context.Context, tx model.DBTx, id string, req SubscriptionSyncRequest) (*NodeImportResult, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var subscription tables.ProxySubscriptionTable
+	if err := tx.First(&subscription, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrSubscriptionNotFound
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(subscription.GroupID) == "" {
+		groupID, err := ensureSubscriptionRootGroup(ctx, tx, subscription.Name, "")
+		if err != nil {
+			return nil, err
+		}
+		subscription.GroupID = groupID
+		if err := tx.Model(&subscription).Updates(map[string]any{
+			"group_id":   groupID,
+			"updated_at": time.Now(),
+		}).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	raw := strings.TrimSpace(req.Raw)
+	if raw == "" {
+		fetched, err := fetchSubscription(ctx, subscription.URL)
+		if err != nil {
+			now := time.Now()
+			_ = tx.Model(&subscription).Updates(map[string]any{
+				"last_synced_at":   &now,
+				"last_sync_status": SubscriptionSyncStatusFailed,
+				"last_sync_error":  err.Error(),
+				"updated_at":       now,
+			}).Error
+			return nil, err
+		}
+		raw = fetched
+	}
+
+	result, syncErr := syncSubscriptionRaw(ctx, tx, &subscription, raw)
+	now := time.Now()
+	status := SubscriptionSyncStatusSuccess
+	errorText := ""
+	if syncErr != nil {
+		status = SubscriptionSyncStatusFailed
+		errorText = syncErr.Error()
+	}
+	if err := tx.Model(&subscription).Updates(map[string]any{
+		"last_synced_at":   &now,
+		"last_sync_status": status,
+		"last_sync_error":  errorText,
+		"updated_at":       now,
+	}).Error; err != nil && syncErr == nil {
+		syncErr = err
+	}
+	return result, syncErr
+}
+
+func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *tables.ProxySubscriptionTable, raw string) (*NodeImportResult, error) {
+	parsed, err := parseSubscription(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &NodeImportResult{
+		Total:    len(parsed.Nodes),
+		Failures: append([]NodeImportFailure(nil), parsed.Failures...),
+		Skipped:  len(parsed.Failures),
+	}
+	existingNodes, err := nodesBySubscriptionSource(ctx, tx, subscription.ID)
+	if err != nil {
+		return nil, err
+	}
+	seenNodeKeys := map[string]struct{}{}
+	nodeIDByName := map[string]string{}
+
+	for _, parsedNode := range parsed.Nodes {
+		seenNodeKeys[parsedNode.SourceKey] = struct{}{}
+		nodeReq, err := ParseNodeURI(parsedNode.RawURI)
+		if err != nil {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			result.Skipped++
+			continue
+		}
+		nodeReq.SubscriptionID = subscription.ID
+		nodeReq.GroupID = subscription.GroupID
+		nodeReq.SourceKey = parsedNode.SourceKey
+		node, existed, err := upsertSubscriptionNode(ctx, tx, existingNodes[parsedNode.SourceKey], *nodeReq)
+		if err != nil {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			continue
+		}
+		if existed {
+			result.Updated++
+		} else {
+			result.Imported++
+		}
+		result.Items = append(result.Items, ToNodeDTO(node))
+		nodeIDByName[node.Name] = node.ID
+		nodeIDByName[parsedNode.Name] = node.ID
+	}
+
+	deletedNodeIDs := make([]string, 0)
+	for sourceKey, node := range existingNodes {
+		if _, ok := seenNodeKeys[sourceKey]; ok {
+			continue
+		}
+		deletedNodeIDs = append(deletedNodeIDs, node.ID)
+		if err := nodeDeleteInTx(ctx, tx, node.ID); err != nil && !errors.Is(err, ErrNodeNotFound) {
+			return result, err
+		}
+		result.Deleted++
+	}
+
+	existingGroups, err := groupsBySubscriptionSource(ctx, tx, subscription.ID)
+	if err != nil {
+		return nil, err
+	}
+	seenGroupKeys := map[string]struct{}{}
+	groupIDByName := map[string]string{}
+	for _, parsedGroup := range parsed.Groups {
+		seenGroupKeys[parsedGroup.SourceKey] = struct{}{}
+		group, err := ensureSubscriptionGroupShell(ctx, tx, subscription.ID, existingGroups[parsedGroup.SourceKey], parsedGroup)
+		if err != nil {
+			return result, err
+		}
+		groupIDByName[group.Name] = group.ID
+	}
+
+	for _, parsedGroup := range parsed.Groups {
+		group := existingGroups[parsedGroup.SourceKey]
+		if group == nil {
+			if err := tx.Where("subscription_id = ? AND source_key = ?", subscription.ID, parsedGroup.SourceKey).First(&group).Error; err != nil {
+				return result, err
+			}
+		}
+		nodeIDs, groupIDs := subscriptionGroupMembers(parsedGroup, nodeIDByName, groupIDByName)
+		if err := tx.Model(group).Updates(map[string]any{
+			"strategy":          parsedGroup.Strategy,
+			"node_ids_json":     encodeStringSlice(nodeIDs),
+			"group_ids_json":    encodeStringSlice(removeString(groupIDs, group.ID)),
+			"builtin_tags_json": encodeStringSlice(parsedGroup.BuiltinTags),
+			"includes_all":      parsedGroup.IncludesAll,
+			"filter":            parsedGroup.Filter,
+			"updated_at":        time.Now(),
+		}).Error; err != nil {
+			return result, err
+		}
+		refreshed, err := GroupGet(ctx, tx, group.ID)
+		if err != nil {
+			return result, err
+		}
+		result.Groups = append(result.Groups, ToGroupDTO(refreshed))
+	}
+
+	deletedGroupIDs := make([]string, 0)
+	for sourceKey, group := range existingGroups {
+		if _, ok := seenGroupKeys[sourceKey]; ok {
+			continue
+		}
+		deletedGroupIDs = append(deletedGroupIDs, group.ID)
+	}
+	if err := cleanupGroupReferences(ctx, tx, deletedGroupIDs); err != nil {
+		return result, err
+	}
+	if len(deletedGroupIDs) > 0 {
+		if err := tx.Where("id IN ?", deletedGroupIDs).Delete(&tables.ProxyGroupTable{}).Error; err != nil {
+			return result, err
+		}
+		result.Deleted += len(deletedGroupIDs)
+	}
+	if err := updateRootGroupFromSubscription(ctx, tx, subscription.GroupID, result.Items, result.Groups); err != nil {
+		return result, err
+	}
+	result.Failed = len(result.Failures)
+	return result, nil
+}
+
+func upsertSubscriptionNode(ctx context.Context, tx model.DBTx, existing *tables.ProxyNodeTable, req NodeUpsertRequest) (*tables.ProxyNodeTable, bool, error) {
+	normalized, err := normalizeNodeRequest(req)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing == nil {
+		node := &tables.ProxyNodeTable{
+			Name:           normalized.Name,
+			Protocol:       normalized.Protocol,
+			Server:         normalized.Server,
+			Port:           normalized.Port,
+			Username:       normalized.Username,
+			Password:       normalized.Password,
+			RawURI:         normalized.RawURI,
+			TagsJSON:       encodeStringSlice(normalized.Tags),
+			Remark:         normalized.Remark,
+			SubscriptionID: req.SubscriptionID,
+			GroupID:        req.GroupID,
+			SourceKey:      req.SourceKey,
+		}
+		if err := tx.WithContext(ctx).Create(node).Error; err != nil {
+			return nil, false, err
+		}
+		if req.GroupID != "" {
+			if err := addNodesToGroupMembership(ctx, tx, req.GroupID, []string{node.ID}); err != nil {
+				return nil, false, err
+			}
+		}
+		return node, false, nil
+	}
+	previousGroupID := strings.TrimSpace(existing.GroupID)
+	if previousGroupID != "" && previousGroupID != req.GroupID {
+		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, []string{existing.ID}); err != nil {
+			return nil, true, err
+		}
+	}
+	if req.GroupID != "" {
+		if err := addNodesToGroupMembership(ctx, tx, req.GroupID, []string{existing.ID}); err != nil {
+			return nil, true, err
+		}
+	}
+	if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
+		"name":            normalized.Name,
+		"protocol":        normalized.Protocol,
+		"server":          normalized.Server,
+		"port":            normalized.Port,
+		"username":        normalized.Username,
+		"password":        normalized.Password,
+		"raw_uri":         normalized.RawURI,
+		"tags_json":       encodeStringSlice(normalized.Tags),
+		"remark":          normalized.Remark,
+		"subscription_id": req.SubscriptionID,
+		"group_id":        req.GroupID,
+		"source_key":      req.SourceKey,
+		"updated_at":      time.Now(),
+	}).Error; err != nil {
+		return nil, true, err
+	}
+	node, err := NodeGet(ctx, tx, existing.ID)
+	return node, true, err
+}
+
+func ensureSubscriptionGroupShell(ctx context.Context, tx model.DBTx, subscriptionID string, existing *tables.ProxyGroupTable, parsedGroup parsedSubscriptionGroup) (*tables.ProxyGroupTable, error) {
+	if existing != nil {
+		if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
+			"name":            parsedGroup.Name,
+			"type":            GroupTypeSubscription,
+			"strategy":        parsedGroup.Strategy,
+			"subscription_id": subscriptionID,
+			"source_key":      parsedGroup.SourceKey,
+			"updated_at":      time.Now(),
+		}).Error; err != nil {
+			return nil, err
+		}
+		return GroupGet(ctx, tx, existing.ID)
+	}
+	group := &tables.ProxyGroupTable{
+		Name:            parsedGroup.Name,
+		Type:            GroupTypeSubscription,
+		Strategy:        parsedGroup.Strategy,
+		SubscriptionID:  subscriptionID,
+		SourceKey:       parsedGroup.SourceKey,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice(nil),
+		BuiltinTagsJSON: encodeStringSlice(nil),
+		IncludesAll:     parsedGroup.IncludesAll,
+		Filter:          parsedGroup.Filter,
+	}
+	if err := tx.WithContext(ctx).Create(group).Error; err != nil {
+		return nil, err
+	}
+	return group, nil
+}
+
+func subscriptionGroupMembers(parsedGroup parsedSubscriptionGroup, nodeIDByName, groupIDByName map[string]string) ([]string, []string) {
+	nodeIDs := make([]string, 0, len(parsedGroup.NodeNames))
+	groupIDs := make([]string, 0, len(parsedGroup.GroupNames))
+	for _, name := range parsedGroup.NodeNames {
+		if id := nodeIDByName[name]; id != "" {
+			nodeIDs = append(nodeIDs, id)
+		}
+	}
+	for _, name := range parsedGroup.GroupNames {
+		if id := groupIDByName[name]; id != "" {
+			groupIDs = append(groupIDs, id)
+		}
+	}
+	return uniqueNonEmpty(nodeIDs), uniqueNonEmpty(groupIDs)
+}
+
+func nodesBySubscriptionSource(ctx context.Context, tx model.DBTx, subscriptionID string) (map[string]*tables.ProxyNodeTable, error) {
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.WithContext(ctx).Where("subscription_id = ?", subscriptionID).Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	bySource := make(map[string]*tables.ProxyNodeTable, len(nodes))
+	for _, node := range nodes {
+		bySource[node.SourceKey] = node
+	}
+	return bySource, nil
+}
+
+func groupsBySubscriptionSource(ctx context.Context, tx model.DBTx, subscriptionID string) (map[string]*tables.ProxyGroupTable, error) {
+	var groups []*tables.ProxyGroupTable
+	if err := tx.WithContext(ctx).Where("subscription_id = ?", subscriptionID).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	bySource := make(map[string]*tables.ProxyGroupTable, len(groups))
+	for _, group := range groups {
+		bySource[group.SourceKey] = group
+	}
+	return bySource, nil
+}
+
+func ensureSubscriptionRootGroup(ctx context.Context, tx model.DBTx, subscriptionName string, groupID string) (string, error) {
+	groupID = strings.TrimSpace(groupID)
+	if groupID != "" {
+		group, err := GroupGet(ctx, tx, groupID)
+		if err != nil {
+			return "", err
+		}
+		if group.Type == GroupTypeSubscription {
+			return "", ErrInvalidGroup
+		}
+		return group.ID, nil
+	}
+
+	group := &tables.ProxyGroupTable{
+		Name:            strings.TrimSpace(subscriptionName),
+		Type:            GroupTypeManual,
+		Strategy:        GroupStrategySelector,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice(nil),
+		BuiltinTagsJSON: encodeStringSlice(nil),
+	}
+	if group.Name == "" {
+		group.Name = "订阅分组"
+	}
+	if err := tx.WithContext(ctx).Create(group).Error; err != nil {
+		return "", err
+	}
+	return group.ID, nil
+}
+
+func updateRootGroupFromSubscription(ctx context.Context, tx model.DBTx, groupID string, nodeDTOs []*ProxyNodeDTO, groupDTOs []*ProxyGroupDTO) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil
+	}
+	nodeIDs := make([]string, 0, len(nodeDTOs))
+	for _, node := range nodeDTOs {
+		if node != nil {
+			nodeIDs = append(nodeIDs, node.ID)
+		}
+	}
+	groupIDs := make([]string, 0, len(groupDTOs))
+	for _, group := range groupDTOs {
+		if group != nil && group.ID != groupID {
+			groupIDs = append(groupIDs, group.ID)
+		}
+	}
+	return tx.WithContext(ctx).Model(&tables.ProxyGroupTable{}).
+		Where("id = ?", groupID).
+		Updates(map[string]any{
+			"node_ids_json":  encodeStringSlice(nodeIDs),
+			"group_ids_json": encodeStringSlice(groupIDs),
+			"updated_at":     time.Now(),
+		}).Error
+}
+
+func normalizeSubscriptionRequest(req SubscriptionUpsertRequest) (*SubscriptionUpsertRequest, error) {
+	normalized := req
+	normalized.Name = strings.TrimSpace(normalized.Name)
+	normalized.URL = strings.TrimSpace(normalized.URL)
+	normalized.GroupID = strings.TrimSpace(normalized.GroupID)
+	normalized.Remark = strings.TrimSpace(normalized.Remark)
+	if normalized.URL == "" {
+		return nil, ErrInvalidSubscription
+	}
+	parsed, err := url.Parse(normalized.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, ErrInvalidSubscription
+	}
+	if normalized.Name == "" {
+		normalized.Name = parsed.Host
+	}
+	return &normalized, nil
+}
+
+func isLikelySubscriptionURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	path := strings.ToLower(parsed.Path)
+	if strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".txt") {
+		return true
+	}
+	return strings.Contains(path, "/sub") || strings.Contains(path, "subscription")
+}
+
+func fetchSubscription(ctx context.Context, subscriptionURL string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, subscriptionURL, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "ProxyHub/1.0")
+	client := &http.Client{Timeout: subscriptionHTTPTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("%w: status %d", ErrInvalidSubscription, response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, subscriptionMaxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(body) > subscriptionMaxBytes {
+		return "", fmt.Errorf("%w: response too large", ErrInvalidSubscription)
+	}
+	return string(body), nil
+}
+
+func parseSubscription(raw string) (*parsedSubscription, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, ErrInvalidSubscription
+	}
+	if strings.Contains(raw, "proxies:") || strings.Contains(raw, "proxy-groups:") {
+		return parseClashSubscription(raw)
+	}
+
+	nodes := make([]parsedSubscriptionNode, 0)
+	failures := make([]NodeImportFailure, 0)
+	for _, rawURI := range normalizeImportURIs(NodeImportRequest{Raw: raw}) {
+		parsed, err := ParseNodeURI(rawURI)
+		if err != nil {
+			failures = append(failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
+			continue
+		}
+		nodes = append(nodes, parsedSubscriptionNode{
+			Name:      parsed.Name,
+			SourceKey: sourceKey("node", parsed.Name),
+			RawURI:    rawURI,
+		})
+	}
+	return &parsedSubscription{Nodes: nodes, Failures: failures}, nil
+}
+
+func parseClashSubscription(raw string) (*parsedSubscription, error) {
+	var config subscriptionConfig
+	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
+		return nil, err
+	}
+	result := &parsedSubscription{
+		Nodes:  make([]parsedSubscriptionNode, 0, len(config.Proxies)),
+		Groups: make([]parsedSubscriptionGroup, 0, len(config.ProxyGroups)),
+	}
+	nodeNames := map[string]struct{}{}
+	for _, proxy := range config.Proxies {
+		name := stringFromMap(proxy, "name")
+		if name == "" {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: "proxy", Message: "missing proxy name"})
+			continue
+		}
+		rawURI := clashProxyToURI(proxy)
+		if rawURI == "" {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: name, Message: fmt.Sprintf("%s: %s", ErrUnsupportedProtocol, stringFromMap(proxy, "type"))})
+			continue
+		}
+		result.Nodes = append(result.Nodes, parsedSubscriptionNode{
+			Name:      name,
+			SourceKey: sourceKey("node", name),
+			RawURI:    rawURI,
+		})
+		nodeNames[name] = struct{}{}
+	}
+	groupNames := map[string]struct{}{}
+	for _, group := range config.ProxyGroups {
+		if name := stringFromMap(group, "name"); name != "" {
+			groupNames[name] = struct{}{}
+		}
+	}
+	for _, group := range config.ProxyGroups {
+		parsedGroup := parseClashProxyGroup(group, nodeNames, groupNames, result.Nodes)
+		if parsedGroup.Name == "" {
+			continue
+		}
+		result.Groups = append(result.Groups, parsedGroup)
+	}
+	return result, nil
+}
+
+func parseClashProxyGroup(group map[string]any, nodeNames map[string]struct{}, groupNames map[string]struct{}, nodes []parsedSubscriptionNode) parsedSubscriptionGroup {
+	name := stringFromMap(group, "name")
+	strategy := normalizeClashGroupStrategy(stringFromMap(group, "type"))
+	proxyNames := stringSliceFromMap(group, "proxies")
+	includesAll := boolValueFromMap(group, "include-all", "include_all")
+	filter := stringFromMap(group, "filter")
+
+	nodeMembers := make([]string, 0)
+	groupMembers := make([]string, 0)
+	builtinTags := make([]string, 0)
+	if includesAll {
+		for _, node := range nodes {
+			if subscriptionFilterMatch(filter, node.Name) {
+				nodeMembers = append(nodeMembers, node.Name)
+			}
+		}
+	}
+	for _, proxyName := range proxyNames {
+		switch proxyName {
+		case constantDirect:
+			builtinTags = append(builtinTags, constantDirect)
+		case constantReject, constantRejectDrop:
+			builtinTags = append(builtinTags, constantReject)
+		default:
+			if _, ok := nodeNames[proxyName]; ok {
+				nodeMembers = append(nodeMembers, proxyName)
+				continue
+			}
+			if _, ok := groupNames[proxyName]; ok {
+				groupMembers = append(groupMembers, proxyName)
+			}
+		}
+	}
+	return parsedSubscriptionGroup{
+		Name:        name,
+		SourceKey:   sourceKey("group", name),
+		Strategy:    strategy,
+		NodeNames:   uniqueNonEmpty(nodeMembers),
+		GroupNames:  uniqueNonEmpty(groupMembers),
+		BuiltinTags: uniqueNonEmpty(builtinTags),
+		IncludesAll: includesAll,
+		Filter:      filter,
+	}
+}
+
+func normalizeClashGroupStrategy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GroupStrategyURLTest:
+		return GroupStrategyURLTest
+	default:
+		return GroupStrategySelector
+	}
+}
+
+func sourceKey(parts ...string) string {
+	hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(hash[:])
+}
+
+func stringSliceFromMap(values map[string]any, key string) []string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
+	case []string:
+		return uniqueNonEmpty(typed)
+	default:
+		return uniqueNonEmpty([]string{fmt.Sprint(typed)})
+	}
+}
+
+func boolValueFromMap(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		value, ok := boolFromMap(values, key)
+		if ok {
+			return value
+		}
+	}
+	return false
+}
+
+func subscriptionFilterMatch(filter string, nodeName string) bool {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return true
+	}
+	matcher, err := regexp.Compile(filter)
+	if err != nil {
+		return strings.Contains(strings.ToLower(nodeName), strings.ToLower(filter))
+	}
+	return matcher.MatchString(nodeName)
+}

@@ -16,6 +16,8 @@ type PortMappingTable struct {
 	Strategy         string `gorm:"type:text;not null" json:"strategy"`
 	NodeIDsJSON      string `gorm:"type:text" json:"-"`
 	ActiveNodeID     string `gorm:"type:text" json:"activeNodeId"`
+	GroupIDsJSON     string `gorm:"type:text" json:"-"`
+	ActiveGroupID    string `gorm:"type:text" json:"activeGroupId"`
 	Remark           string `gorm:"type:text" json:"remark"`
 }
 

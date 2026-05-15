@@ -8,7 +8,9 @@ func GetAllModels() []any {
 	return []any{
 		&tables.UserTable{},
 		&tables.UserAccessTokenTable{},
+		&tables.ProxySubscriptionTable{},
 		&tables.ProxyNodeTable{},
+		&tables.ProxyGroupTable{},
 		&tables.PortMappingTable{},
 	}
 }

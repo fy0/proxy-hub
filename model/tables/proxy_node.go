@@ -16,6 +16,10 @@ type ProxyNodeTable struct {
 	RawURI   string `gorm:"type:text" json:"rawUri"`
 	TagsJSON string `gorm:"type:text" json:"-"`
 	Remark   string `gorm:"type:text" json:"remark"`
+
+	SubscriptionID string `gorm:"type:text;index" json:"subscriptionId"`
+	GroupID        string `gorm:"type:text;index" json:"groupId"`
+	SourceKey      string `gorm:"type:text;index" json:"sourceKey"`
 }
 
 func (*ProxyNodeTable) TableName() string {

@@ -21,20 +21,34 @@ func NodeCreate(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) (*tab
 	if err != nil {
 		return nil, err
 	}
+	groupID := strings.TrimSpace(req.GroupID)
+	if groupID != "" {
+		if _, err := GroupGet(ctx, tx, groupID); err != nil {
+			return nil, err
+		}
+	}
 
 	node := &tables.ProxyNodeTable{
-		Name:     normalized.Name,
-		Protocol: normalized.Protocol,
-		Server:   normalized.Server,
-		Port:     normalized.Port,
-		Username: normalized.Username,
-		Password: normalized.Password,
-		RawURI:   normalized.RawURI,
-		TagsJSON: encodeStringSlice(normalized.Tags),
-		Remark:   normalized.Remark,
+		Name:           normalized.Name,
+		Protocol:       normalized.Protocol,
+		Server:         normalized.Server,
+		Port:           normalized.Port,
+		Username:       normalized.Username,
+		Password:       normalized.Password,
+		RawURI:         normalized.RawURI,
+		TagsJSON:       encodeStringSlice(normalized.Tags),
+		Remark:         normalized.Remark,
+		SubscriptionID: strings.TrimSpace(req.SubscriptionID),
+		GroupID:        groupID,
+		SourceKey:      strings.TrimSpace(req.SourceKey),
 	}
 	if err := tx.Create(node).Error; err != nil {
 		return nil, err
+	}
+	if groupID != "" {
+		if err := addNodesToGroupMembership(ctx, tx, groupID, []string{node.ID}); err != nil {
+			return nil, err
+		}
 	}
 	return node, nil
 }
@@ -54,6 +68,24 @@ func NodeUpdate(ctx context.Context, tx model.DBTx, id string, req NodeUpsertReq
 	if err != nil {
 		return nil, err
 	}
+	groupID := strings.TrimSpace(req.GroupID)
+	if groupID != "" {
+		if _, err := GroupGet(ctx, tx, groupID); err != nil {
+			return nil, err
+		}
+	}
+
+	previousGroupID := strings.TrimSpace(node.GroupID)
+	if previousGroupID != "" && previousGroupID != groupID {
+		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, []string{node.ID}); err != nil {
+			return nil, err
+		}
+	}
+	if groupID != "" {
+		if err := addNodesToGroupMembership(ctx, tx, groupID, []string{node.ID}); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := tx.Model(&node).Updates(map[string]any{
 		"name":       normalized.Name,
@@ -65,6 +97,7 @@ func NodeUpdate(ctx context.Context, tx model.DBTx, id string, req NodeUpsertReq
 		"raw_uri":    normalized.RawURI,
 		"tags_json":  encodeStringSlice(normalized.Tags),
 		"remark":     normalized.Remark,
+		"group_id":   groupID,
 		"updated_at": time.Now(),
 	}).Error; err != nil {
 		return nil, err
@@ -138,20 +171,41 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		}
 	}
 
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return err
+	}
+	for _, group := range groups {
+		nodeIDs := removeString(decodeStringSlice(group.NodeIDsJSON), id)
+		if err := tx.Model(group).Updates(map[string]any{
+			"node_ids_json": encodeStringSlice(nodeIDs),
+			"updated_at":    time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+	}
+
 	return tx.Delete(&node).Error
 }
 
 func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*NodeImportResult, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
+	req.GroupID = strings.TrimSpace(req.GroupID)
+	if req.GroupID != "" {
+		if _, err := GroupGet(ctx, tx, req.GroupID); err != nil {
+			return nil, err
+		}
+	}
 
-	uris := normalizeImportURIs(req)
-	result := &NodeImportResult{Total: len(uris)}
+	uris, fetchFailures := normalizeImportURIsWithFetch(ctx, req)
+	result := &NodeImportResult{Total: len(uris), Failures: fetchFailures, Skipped: len(fetchFailures)}
 	for _, rawURI := range uris {
 		parsed, err := ParseNodeURI(rawURI)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
 			continue
 		}
+		parsed.GroupID = req.GroupID
 		node, err := NodeCreate(ctx, tx, *parsed)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
@@ -187,6 +241,8 @@ func MappingCreate(ctx context.Context, tx model.DBTx, req MappingUpsertRequest)
 		Strategy:         normalized.Strategy,
 		NodeIDsJSON:      encodeStringSlice(normalized.NodeIDs),
 		ActiveNodeID:     valueOrEmpty(normalized.ActiveNodeID),
+		GroupIDsJSON:     encodeStringSlice(normalized.GroupIDs),
+		ActiveGroupID:    valueOrEmpty(normalized.ActiveGroupID),
 		Remark:           normalized.Remark,
 	}
 	if err := tx.Create(mapping).Error; err != nil {
@@ -224,6 +280,8 @@ func MappingUpdate(ctx context.Context, tx model.DBTx, id string, req MappingUps
 		"strategy":          normalized.Strategy,
 		"node_ids_json":     encodeStringSlice(normalized.NodeIDs),
 		"active_node_id":    valueOrEmpty(normalized.ActiveNodeID),
+		"group_ids_json":    encodeStringSlice(normalized.GroupIDs),
+		"active_group_id":   valueOrEmpty(normalized.ActiveGroupID),
 		"remark":            normalized.Remark,
 		"updated_at":        time.Now(),
 	}).Error; err != nil {
@@ -277,15 +335,25 @@ func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error
 	if err != nil {
 		return nil, err
 	}
+	groups, err := GroupList(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	subscriptions, err := SubscriptionList(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	mappings, err := MappingList(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 	return &StateSnapshotDTO{
-		Nodes:       ToNodeDTOs(nodes),
-		Mappings:    ToMappingDTOs(mappings),
-		Runtime:     RuntimeStatusGet(),
-		LastSavedAt: time.Now(),
+		Nodes:         ToNodeDTOs(nodes),
+		Groups:        ToGroupDTOs(groups),
+		Subscriptions: ToSubscriptionDTOs(subscriptions),
+		Mappings:      ToMappingDTOs(mappings),
+		Runtime:       RuntimeStatusGet(),
+		LastSavedAt:   time.Now(),
 	}, nil
 }
 
@@ -341,6 +409,71 @@ func findNodesByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables
 	for _, id := range ids {
 		if node := byID[id]; node != nil {
 			ordered = append(ordered, node)
+		}
+	}
+	return ordered, nil
+}
+
+func findNodesByGroupOrIDs(ctx context.Context, tx model.DBTx, groupID string, ids []string) ([]*tables.ProxyNodeTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	groupID = strings.TrimSpace(groupID)
+	ids = uniqueNonEmpty(ids)
+	if groupID == "" {
+		return findNodesByIDs(ctx, tx, ids)
+	}
+
+	var nodes []*tables.ProxyNodeTable
+	query := tx.Where("group_id = ?", groupID)
+	if len(ids) > 0 {
+		query = tx.Where("id IN ? OR group_id = ?", ids, groupID)
+	}
+	if err := query.Order("created_at DESC").Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]*tables.ProxyNodeTable, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	ordered := make([]*tables.ProxyNodeTable, 0, len(nodes))
+	seen := make(map[string]struct{}, len(nodes))
+	for _, id := range ids {
+		node := byID[id]
+		if node == nil {
+			continue
+		}
+		ordered = append(ordered, node)
+		seen[node.ID] = struct{}{}
+	}
+	for _, node := range nodes {
+		if _, ok := seen[node.ID]; ok {
+			continue
+		}
+		ordered = append(ordered, node)
+	}
+	return ordered, nil
+}
+
+func findGroupsByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.ProxyGroupTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	ids = uniqueNonEmpty(ids)
+	if len(ids) == 0 {
+		return []*tables.ProxyGroupTable{}, nil
+	}
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Where("id IN ?", ids).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]*tables.ProxyGroupTable, len(groups))
+	for _, group := range groups {
+		byID[group.ID] = group
+	}
+	ordered := make([]*tables.ProxyGroupTable, 0, len(groups))
+	for _, id := range ids {
+		if group := byID[id]; group != nil {
+			ordered = append(ordered, group)
 		}
 	}
 	return ordered, nil
@@ -427,6 +560,26 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	}
 	normalized.ActiveNodeID = stringPtrOrNil(active)
 
+	groups, err := findGroupsByIDs(ctx, tx, normalized.GroupIDs)
+	if err != nil {
+		return nil, err
+	}
+	normalized.GroupIDs = make([]string, 0, len(groups))
+	for _, group := range groups {
+		normalized.GroupIDs = append(normalized.GroupIDs, group.ID)
+	}
+	activeGroup := ""
+	if normalized.ActiveGroupID != nil {
+		activeGroup = strings.TrimSpace(*normalized.ActiveGroupID)
+	}
+	if activeGroup != "" && !containsString(normalized.GroupIDs, activeGroup) {
+		activeGroup = ""
+	}
+	if activeGroup == "" && len(normalized.GroupIDs) > 0 {
+		activeGroup = normalized.GroupIDs[0]
+	}
+	normalized.ActiveGroupID = stringPtrOrNil(activeGroup)
+
 	if err := ensureListenPortAvailable(ctx, tx, mappingID, normalized.ListenPort); err != nil {
 		return nil, err
 	}
@@ -460,6 +613,30 @@ func normalizeImportURIs(req NodeImportRequest) []string {
 		expanded = append(expanded, expandImportValue(value)...)
 	}
 	return uniqueNonEmpty(expanded)
+}
+
+func normalizeImportURIsWithFetch(ctx context.Context, req NodeImportRequest) ([]string, []NodeImportFailure) {
+	values := make([]string, 0, len(req.URIs)+1)
+	values = append(values, req.URIs...)
+	if raw := strings.TrimSpace(req.Raw); raw != "" {
+		values = append(values, raw)
+	}
+
+	expanded := make([]string, 0, len(values))
+	failures := make([]NodeImportFailure, 0)
+	for _, value := range uniqueNonEmpty(values) {
+		if isLikelySubscriptionURL(value) {
+			raw, err := fetchSubscription(ctx, value)
+			if err != nil {
+				failures = append(failures, NodeImportFailure{URI: value, Message: err.Error()})
+				continue
+			}
+			expanded = append(expanded, expandImportValue(raw)...)
+			continue
+		}
+		expanded = append(expanded, expandImportValue(value)...)
+	}
+	return uniqueNonEmpty(expanded), failures
 }
 
 func normalizeProtocol(protocol string) string {
@@ -498,6 +675,24 @@ func normalizeStrategy(strategy string) string {
 		return StrategyManual
 	default:
 		return StrategyManual
+	}
+}
+
+func normalizeGroupStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case GroupStrategyURLTest, StrategyFailover, StrategyLoadBalance:
+		return GroupStrategyURLTest
+	default:
+		return GroupStrategySelector
+	}
+}
+
+func normalizeGroupType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GroupTypeSubscription:
+		return GroupTypeSubscription
+	default:
+		return GroupTypeManual
 	}
 }
 
