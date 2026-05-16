@@ -26,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import ActionTooltip from '@/components/ActionTooltip.vue';
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
 import { useI18n } from '@/i18n';
 import { useAppStore } from '@/stores/app';
@@ -1401,7 +1402,11 @@ function routeFailureLabel(node: ProxyNode): string {
         </div>
 
         <div class="brand-actions">
-          <RouterLink class="settings-link" :to="{ name: 'settings' }" :title="t('common.settings')">
+          <RouterLink
+            class="settings-link"
+            :to="{ name: 'settings' }"
+            :title="t('common.settings')"
+          >
             <Settings class="size-4" aria-hidden="true" />
             <span>{{ t('common.settings') }}</span>
           </RouterLink>
@@ -1543,7 +1548,7 @@ function routeFailureLabel(node: ProxyNode): string {
 
               <div class="card-actions port-card-actions">
                 <div class="port-action-icons">
-                  <span class="action-popover" :data-popover="t('common.editPort')">
+                  <ActionTooltip :label="t('common.editPort')">
                     <Button
                       type="button"
                       variant="ghost"
@@ -1553,8 +1558,8 @@ function routeFailureLabel(node: ProxyNode): string {
                     >
                       <Edit3 class="size-4" aria-hidden="true" />
                     </Button>
-                  </span>
-                  <span class="action-popover" :data-popover="copyPopoverText(mapping.id)">
+                  </ActionTooltip>
+                  <ActionTooltip :label="copyPopoverText(mapping.id)">
                     <Button
                       type="button"
                       variant="ghost"
@@ -1564,18 +1569,20 @@ function routeFailureLabel(node: ProxyNode): string {
                     >
                       <Copy class="size-4" aria-hidden="true" />
                     </Button>
-                  </span>
+                  </ActionTooltip>
                   <DropdownMenu>
-                    <DropdownMenuTrigger as-child>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        :aria-label="t('home.aria.moreActions')"
-                      >
-                        <MoreVertical class="size-4" aria-hidden="true" />
-                      </Button>
-                    </DropdownMenuTrigger>
+                    <ActionTooltip :label="t('home.aria.moreActions')" wrap>
+                      <DropdownMenuTrigger as-child>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          :aria-label="t('home.aria.moreActions')"
+                        >
+                          <MoreVertical class="size-4" aria-hidden="true" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                    </ActionTooltip>
                     <DropdownMenuContent align="end" :side-offset="8" class="port-actions-menu">
                       <DropdownMenuItem
                         class="port-actions-menu-item"
@@ -1596,18 +1603,22 @@ function routeFailureLabel(node: ProxyNode): string {
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-                <span
-                  class="action-popover port-status-popover"
-                  :class="{ active: portRuntimeState(mapping) === 'failed' }"
-                  :data-popover="portFailureReason(mapping)"
-                  :aria-label="portStatusTitle(mapping)"
-                  :tabindex="portRuntimeState(mapping) === 'failed' ? 0 : -1"
+                <ActionTooltip
+                  :label="portFailureReason(mapping)"
+                  :disabled="portRuntimeState(mapping) !== 'failed'"
+                  side="bottom"
+                  align="end"
                 >
-                  <small class="port-status-chip" :class="`status-${portRuntimeState(mapping)}`">
+                  <small
+                    class="port-status-chip"
+                    :class="`status-${portRuntimeState(mapping)}`"
+                    :aria-label="portStatusTitle(mapping)"
+                    :tabindex="portRuntimeState(mapping) === 'failed' ? 0 : -1"
+                  >
                     <i aria-hidden="true"></i>
                     {{ portStatusLabel(mapping) }}
                   </small>
-                </span>
+                </ActionTooltip>
               </div>
             </div>
 
@@ -1618,10 +1629,7 @@ function routeFailureLabel(node: ProxyNode): string {
                 class="inner-route-card"
               >
                 <div class="route-card-actions" @click.stop>
-                  <span
-                    class="action-popover mini-action"
-                    :data-popover="t('home.aria.moreActions')"
-                  >
+                  <ActionTooltip :label="t('home.aria.moreActions')" align="end">
                     <button
                       type="button"
                       class="mini-menu-button"
@@ -1632,7 +1640,7 @@ function routeFailureLabel(node: ProxyNode): string {
                     >
                       <MoreVertical class="size-3" aria-hidden="true" />
                     </button>
-                  </span>
+                  </ActionTooltip>
                   <div
                     v-if="isRouteActionMenuOpen(mapping, 'node', node.id)"
                     class="route-action-menu"
@@ -1677,10 +1685,7 @@ function routeFailureLabel(node: ProxyNode): string {
                 class="inner-route-card group-route-card"
               >
                 <div class="route-card-actions" @click.stop>
-                  <span
-                    class="action-popover mini-action"
-                    :data-popover="t('home.aria.moreActions')"
-                  >
+                  <ActionTooltip :label="t('home.aria.moreActions')" align="end">
                     <button
                       type="button"
                       class="mini-menu-button"
@@ -1691,7 +1696,7 @@ function routeFailureLabel(node: ProxyNode): string {
                     >
                       <MoreVertical class="size-3" aria-hidden="true" />
                     </button>
-                  </span>
+                  </ActionTooltip>
                   <div
                     v-if="isRouteActionMenuOpen(mapping, 'group', group.id)"
                     class="route-action-menu"
@@ -1727,17 +1732,18 @@ function routeFailureLabel(node: ProxyNode): string {
 
             <div class="port-card-footer">
               <span>{{ mapping.remark || t('common.noRemark') }}</span>
-              <span class="action-popover danger-popover" :data-popover="t('common.deletePort')">
+              <ActionTooltip :label="t('common.deletePort')" side="left" align="center">
                 <Button
                   type="button"
                   variant="destructive"
                   size="icon"
+                  class="danger-popover"
                   :aria-label="t('common.deletePort')"
                   @click="requestRemoveMapping(mapping)"
                 >
                   <Trash2 class="size-4" aria-hidden="true" />
                 </Button>
-              </span>
+              </ActionTooltip>
             </div>
           </article>
         </div>
@@ -1801,7 +1807,7 @@ function routeFailureLabel(node: ProxyNode): string {
                 <span>{{ nodeEndpointLabel(node) }}</span>
               </div>
               <div class="node-row-actions">
-                <span class="action-popover" :data-popover="nodeUriPopoverText(node)">
+                <ActionTooltip :label="nodeUriPopoverText(node)">
                   <Button
                     type="button"
                     variant="ghost"
@@ -1812,8 +1818,8 @@ function routeFailureLabel(node: ProxyNode): string {
                   >
                     <Copy class="size-4" aria-hidden="true" />
                   </Button>
-                </span>
-                <span class="action-popover" :data-popover="t('common.editNode')">
+                </ActionTooltip>
+                <ActionTooltip :label="t('common.editNode')">
                   <Button
                     type="button"
                     variant="ghost"
@@ -1823,8 +1829,8 @@ function routeFailureLabel(node: ProxyNode): string {
                   >
                     <Edit3 class="size-4" aria-hidden="true" />
                   </Button>
-                </span>
-                <span class="action-popover" :data-popover="t('common.deleteNode')">
+                </ActionTooltip>
+                <ActionTooltip :label="t('common.deleteNode')">
                   <Button
                     type="button"
                     variant="ghost"
@@ -1834,7 +1840,7 @@ function routeFailureLabel(node: ProxyNode): string {
                   >
                     <Trash2 class="size-4" aria-hidden="true" />
                   </Button>
-                </span>
+                </ActionTooltip>
               </div>
               <div class="node-meta">
                 <small v-if="node.protocol === 'chain'">{{
