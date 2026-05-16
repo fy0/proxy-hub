@@ -30,7 +30,7 @@ ARG TARGETARCH
 COPY . ./
 RUN rm -rf ./static/*
 COPY --from=ui-builder /build/ui/dist/. ./static/
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags with_utls -trimpath -ldflags="-s -w" -o /build/app .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags with_utls -trimpath -ldflags="-s -w" -o /build/proxy-hub .
 
 FROM alpine:3.21 AS runner
 
@@ -40,7 +40,7 @@ WORKDIR /app
 
 COPY --from=go-base /etc/ssl /etc/ssl
 COPY --from=go-base /usr/share/zoneinfo /usr/share/zoneinfo
-COPY --from=backend-builder /build/app /app/app
+COPY --from=backend-builder /build/proxy-hub /app/app
 
 EXPOSE 3020
 VOLUME ["/app/data"]
