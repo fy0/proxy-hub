@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"fmt"
 	"os"
 
 	"github.com/jessevdk/go-flags"
@@ -18,6 +19,7 @@ var embedStatic embed.FS
 
 func main() {
 	var opts struct {
+		Version      bool   `short:"v" long:"version" description:"显示版本信息"`
 		Install      bool   `short:"i" long:"install" description:"安装为系统服务"`
 		Uninstall    bool   `long:"uninstall" description:"卸载系统服务"`
 		ForceMigrate bool   `short:"m" long:"migrate" description:"强制执行数据库迁移"`
@@ -26,6 +28,12 @@ func main() {
 	}
 
 	if _, err := flags.ParseArgs(&opts, os.Args); err != nil {
+		return
+	}
+
+	if opts.Version {
+		fmt.Printf("%s v%s\n", APPNAME, VERSION.String())
+		fmt.Printf("Channel: %s\n", APP_CHANNEL)
 		return
 	}
 
@@ -68,14 +76,25 @@ func run(forceMigrate, migrateOnly bool, genOpenAPI string) {
 		if outputPath == "" {
 			outputPath = "./openapi.json"
 		}
-		api.GenOpenAPI(context.Background(), cfg, embedStatic, outputPath)
+		api.GenOpenAPI(context.Background(), cfg, embedStatic, outputPath, defaultAppInfo())
 		logger.Info("OpenAPI JSON 生成完成", zap.String("path", outputPath))
 		return
 	}
 
 	logger.Info("服务启动中", zap.String("listen", cfg.ServeAt))
+	checker := utils.NewVersionChecker(VERSION.String(), PACKAGE_NAME)
+	checker.CheckAsync()
 
-	if err := api.Init(context.Background(), cfg, embedStatic); err != nil {
+	if err := api.Init(context.Background(), cfg, embedStatic, defaultAppInfo()); err != nil {
 		logger.Fatal("服务启动失败", zap.Error(err))
+	}
+}
+
+func defaultAppInfo() *api.AppInfo {
+	return &api.AppInfo{
+		Name:        APPNAME,
+		Version:     VERSION.String(),
+		Channel:     APP_CHANNEL,
+		PackageName: PACKAGE_NAME,
 	}
 }

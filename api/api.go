@@ -29,9 +29,20 @@ import (
 
 const staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
 
+// AppInfo contains build-time application metadata exposed by system routes.
+type AppInfo struct {
+	Name        string
+	Version     string
+	Channel     string
+	PackageName string
+}
+
+var appInfo *AppInfo
+
 // Init 初始化 Fiber + Huma 的初始化，启动 HTTP 服务
-func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
+func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, info *AppInfo) error {
 	_ = ctx
+	appInfo = info
 	theLogger := utils.Logger
 
 	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
@@ -103,6 +114,7 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 
 	api, v1 := h.NewAPI(app, cfg)
 	registerHealthRoute(api, "/health", "health-get")
+	registerSystemRoutes(v1)
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 
@@ -202,8 +214,10 @@ func setNoCacheHeaders(c *fiber.Ctx) {
 }
 
 // GenOpenAPI 生成 OpenAPI JSON/YAML 文件
-func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outputPath string) {
+func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outputPath string, info *AppInfo) {
 	_ = ctx
+	_ = assets
+	appInfo = info
 	theLogger := utils.Logger
 
 	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
@@ -226,6 +240,7 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 	user.Register(v1)
 	proxyAPI.Register(v1)
 	registerHealthRoute(api, "/health", "health-get")
+	registerSystemRoutes(v1)
 
 	// 获取 OpenAPI 规范
 	openapi := api.OpenAPI()

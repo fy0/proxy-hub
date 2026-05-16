@@ -3,6 +3,7 @@ module proxy-hub
 go 1.24.7
 
 require (
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/danielgtaylor/huma/v2 v2.34.1
 	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/jackc/pgx/v5 v5.6.0

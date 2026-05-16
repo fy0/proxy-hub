@@ -26,6 +26,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
 import { useI18n } from '@/i18n';
+import { useAppStore } from '@/stores/app';
+import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import type {
   ImportPreviewResult,
   OutboundProtocol,
@@ -72,6 +74,7 @@ interface NodeGroupSummaryItem {
 }
 
 const { formatDateTime, t } = useI18n();
+const appStore = useAppStore();
 
 const protocolLabels = computed<Record<ProxyProtocol, string>>(() => ({
   vless: t('home.protocol.vless'),
@@ -182,6 +185,7 @@ const routeSourceOptions = computed(() => [
   { value: 'node' as const, label: t('home.routeSource.node'), icon: Server },
   { value: 'group' as const, label: t('home.routeSource.group'), icon: Users },
 ]);
+const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
 
 const manualNodeForm = reactive({
   name: '',
@@ -1357,7 +1361,7 @@ function routeFailureLabel(node: ProxyNode): string {
             <span class="brand-logo-core"></span>
           </span>
           <span class="brand-name">{{ t('app.name') }}</span>
-          <span class="brand-version">v0.1.0</span>
+          <span class="brand-version">v{{ displayAppVersion }}</span>
         </div>
 
         <Button

@@ -15,6 +15,10 @@ permissions:
 
 env:
   APP_NAME: proxy-hub
+  VERSION_MAIN: 0.1.0
+  VERSION_PRERELEASE: -dev
+  VERSION_BUILD_METADATA: ""
+  APP_CHANNEL: dev
 
 jobs:
   publish-dev-release:
@@ -66,7 +70,8 @@ jobs:
             rm -rf "$stage"
             mkdir -p "$stage"
 
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags with_utls -trimpath -ldflags="-s -w" -o "$stage/${APP_NAME}$ext" .
+            local ldflags="-s -w -X 'main.VERSION_MAIN=${VERSION_MAIN}' -X 'main.VERSION_PRERELEASE=${VERSION_PRERELEASE}' -X 'main.VERSION_BUILD_METADATA=${VERSION_BUILD_METADATA}' -X 'main.APP_CHANNEL=${APP_CHANNEL}'"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags with_utls -trimpath -ldflags="$ldflags" -o "$stage/${APP_NAME}$ext" .
             cp README.md "$stage/README.md"
 
             if [ "$archive" = "zip" ]; then
