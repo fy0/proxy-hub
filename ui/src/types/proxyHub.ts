@@ -1,4 +1,16 @@
-export type ProxyProtocol = 'vless' | 'vmess' | 'trojan' | 'socks5' | 'http' | 'unknown';
+export type ProxyProtocol =
+  | 'vless'
+  | 'vmess'
+  | 'trojan'
+  | 'socks5'
+  | 'http'
+  | 'shadowsocks'
+  | 'hysteria'
+  | 'hysteria2'
+  | 'tuic'
+  | 'ssh'
+  | 'chain'
+  | 'unknown';
 
 export type OutboundProtocol = 'mixed' | 'socks5' | 'http';
 
@@ -7,6 +19,43 @@ export type RouteStrategy = 'failover' | 'load-balance' | 'manual';
 export type ProxyGroupType = 'manual' | 'subscription';
 
 export type ProxyGroupStrategy = 'selector' | 'url-test';
+
+export type ImportPreviewType = 'node' | 'group' | 'builtin' | 'failure';
+
+export type ImportPreviewAction = 'import' | 'update' | 'skip' | 'fail';
+
+export interface ImportPreviewItem {
+  type: ImportPreviewType;
+  name: string;
+  action: ImportPreviewAction;
+  reason: string;
+  detail: string;
+}
+
+export interface ImportPreviewResult {
+  items: ImportPreviewItem[];
+  total: number;
+  imported: number;
+  failed: number;
+  updated: number;
+  deleted: number;
+  skipped: number;
+}
+
+export interface ProxyNodeHealth {
+  nodeId: string;
+  available: boolean;
+  failureCount: number;
+  successCount: number;
+  blacklisted: boolean;
+  blacklistedUntil: string | null;
+  lastLatencyMs: number;
+  lastError: string;
+  lastCheckedAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  updatedAt: string;
+}
 
 export interface ProxyNode {
   id: string;
@@ -19,9 +68,12 @@ export interface ProxyNode {
   rawUri: string;
   tags: string[];
   remark: string;
+  chainNodeIds: string[];
   subscriptionId: string;
   groupId: string;
+  groupIds: string[];
   sourceKey: string;
+  health: ProxyNodeHealth | null;
   createdAt: string;
   updatedAt: string;
 }

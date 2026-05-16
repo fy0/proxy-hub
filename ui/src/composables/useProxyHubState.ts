@@ -10,7 +10,9 @@ import {
   postProxyMappings,
   postProxyNodes,
   postProxyNodesImport,
+  postProxyNodesImportPreview,
   postProxySubscriptions,
+  postProxySubscriptionsPreview,
   postProxySubscriptionsByIdSync,
   putProxyGroupsById,
   putProxyMappingsById,
@@ -19,6 +21,8 @@ import {
 } from '@/api/generated';
 import type {
   GroupUpsertRequestWritable,
+  NodeImportPreviewItem,
+  NodeImportResult,
   MappingUpsertRequestWritable,
   NodeUpsertRequestWritable,
   PortMappingDto,
@@ -32,12 +36,17 @@ import type {
 import { isAuthCredentialError } from '@/api/auth';
 import type {
   OutboundProtocol,
+  ImportPreviewAction,
+  ImportPreviewItem,
+  ImportPreviewResult,
+  ImportPreviewType,
   PortMapping,
   ProxyGroup,
   ProxyGroupStrategy,
   ProxyGroupType,
   ProxyHubStateSnapshot,
   ProxyNode,
+  ProxyNodeHealth,
   ProxyProtocol,
   ProxySubscription,
   RouteStrategy,
@@ -53,7 +62,9 @@ interface NodeInput {
   password: string;
   rawUri: string;
   tags: string[];
+  chainNodeIds: string[];
   groupId: string;
+  groupIds: string[];
   remark: string;
 }
 
@@ -87,6 +98,12 @@ interface SubscriptionInput {
   remark: string;
 }
 
+export interface ImportNodesResult {
+  nodes: ProxyNode[];
+  groups: ProxyGroup[];
+  preview: ImportPreviewResult;
+}
+
 const nodes = ref<ProxyNode[]>([]);
 const groups = ref<ProxyGroup[]>([]);
 const subscriptions = ref<ProxySubscription[]>([]);
@@ -107,12 +124,20 @@ function normalizeProtocol(value: string | null | undefined): ProxyProtocol {
 
   if (protocol === 'https') return 'http';
   if (protocol === 'socks') return 'socks5';
+  if (protocol === 'ss') return 'shadowsocks';
+  if (protocol === 'hy2') return 'hysteria2';
   if (
     protocol === 'vless' ||
     protocol === 'vmess' ||
     protocol === 'trojan' ||
     protocol === 'socks5' ||
-    protocol === 'http'
+    protocol === 'http' ||
+    protocol === 'shadowsocks' ||
+    protocol === 'hysteria' ||
+    protocol === 'hysteria2' ||
+    protocol === 'tuic' ||
+    protocol === 'ssh' ||
+    protocol === 'chain'
   ) {
     return protocol;
   }
@@ -146,6 +171,16 @@ function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
 
 function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
   return value === 'url-test' ? 'url-test' : 'selector';
+}
+
+function normalizePreviewType(value: string | null | undefined): ImportPreviewType {
+  if (value === 'group' || value === 'builtin' || value === 'failure') return value;
+  return 'node';
+}
+
+function normalizePreviewAction(value: string | null | undefined): ImportPreviewAction {
+  if (value === 'update' || value === 'skip' || value === 'fail') return value;
+  return 'import';
 }
 
 function toPort(value: string | number | null | undefined): number | null {
@@ -216,7 +251,9 @@ function parseVmessUri(rawUri: string): NodeInput | null {
       password: '',
       rawUri,
       tags: ['vmess', transport].filter(Boolean),
+      chainNodeIds: [],
       groupId: '',
+      groupIds: [],
       remark: '',
     };
   } catch {
@@ -240,17 +277,22 @@ function parseProxyUri(rawValue: string): NodeInput {
     const name = nameFromHash || `${protocol.toUpperCase()} ${parsed.hostname || fallbackName}`;
     const username = decodeURIComponent(parsed.username || '').trim();
     const password = decodeURIComponent(parsed.password || '').trim();
+    const passwordOnlyProtocol =
+      protocol === 'trojan' || protocol === 'hysteria' || protocol === 'hysteria2';
+    const queryPassword = parsed.searchParams.get('password')?.trim() ?? '';
 
     return {
       name,
       protocol,
       server: parsed.hostname,
       port: toPort(parsed.port),
-      username: protocol === 'trojan' ? '' : username,
-      password: protocol === 'trojan' ? username : password,
+      username: passwordOnlyProtocol ? '' : username,
+      password: passwordOnlyProtocol ? username : password || (protocol === 'tuic' ? queryPassword : ''),
       rawUri,
       tags: uriTags(protocol, parsed.searchParams),
+      chainNodeIds: [],
       groupId: '',
+      groupIds: [],
       remark: '',
     };
   } catch {
@@ -265,7 +307,9 @@ function parseProxyUri(rawValue: string): NodeInput {
       password: '',
       rawUri,
       tags: [protocol].filter(tag => tag !== 'unknown'),
+      chainNodeIds: [],
       groupId: '',
+      groupIds: [],
       remark: t('state.node.unsupportedRemark'),
     };
   }
@@ -290,10 +334,32 @@ function toProxyNode(dto: ProxyNodeDto): ProxyNode {
     rawUri: dto.rawUri,
     tags: dto.tags ?? [],
     remark: dto.remark,
+    chainNodeIds: dto.chainNodeIds ?? [],
     subscriptionId: dto.subscriptionId,
     groupId: dto.groupId,
+    groupIds: dto.groupIds ?? (dto.groupId ? [dto.groupId] : []),
     sourceKey: dto.sourceKey,
+    health: toProxyNodeHealth(dto.health),
     createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+  };
+}
+
+function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null {
+  if (!dto) return null;
+
+  return {
+    nodeId: dto.nodeId,
+    available: dto.available,
+    failureCount: dto.failureCount,
+    successCount: dto.successCount,
+    blacklisted: dto.blacklisted,
+    blacklistedUntil: dto.blacklistedUntil,
+    lastLatencyMs: dto.lastLatencyMs,
+    lastError: dto.lastError,
+    lastCheckedAt: dto.lastCheckedAt,
+    lastSuccessAt: dto.lastSuccessAt,
+    lastFailureAt: dto.lastFailureAt,
     updatedAt: dto.updatedAt,
   };
 }
@@ -350,6 +416,28 @@ function toPortMapping(dto: PortMappingDto): PortMapping {
     remark: dto.remark,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
+  };
+}
+
+function toImportPreviewItem(dto: NodeImportPreviewItem): ImportPreviewItem {
+  return {
+    type: normalizePreviewType(dto.type),
+    name: dto.name,
+    action: normalizePreviewAction(dto.action),
+    reason: dto.reason ?? '',
+    detail: dto.detail ?? '',
+  };
+}
+
+function toImportPreviewResult(dto: NodeImportResult): ImportPreviewResult {
+  return {
+    items: (dto.previewItems ?? []).map(toImportPreviewItem),
+    total: dto.total,
+    imported: dto.imported,
+    failed: dto.failed,
+    updated: dto.updated,
+    deleted: dto.deleted,
+    skipped: dto.skipped,
   };
 }
 
@@ -460,7 +548,9 @@ function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
     password: input.password.trim(),
     rawUri: input.rawUri.trim(),
     tags: input.tags.map(tag => tag.trim()).filter(Boolean),
+    chainNodeIds: input.chainNodeIds.map(nodeId => nodeId.trim()).filter(Boolean),
     groupId: input.groupId.trim() || undefined,
+    groupIds: input.groupIds.map(groupId => groupId.trim()).filter(Boolean),
     remark: input.remark.trim(),
   };
 }
@@ -528,7 +618,9 @@ function mergeNodePatch(node: ProxyNode, patch: Partial<NodeInput>): NodeInput {
     password: patch.password ?? node.password,
     rawUri: patch.rawUri ?? node.rawUri,
     tags: patch.tags ?? node.tags,
+    chainNodeIds: patch.chainNodeIds ?? node.chainNodeIds,
     groupId: patch.groupId ?? node.groupId,
+    groupIds: patch.groupIds ?? node.groupIds,
     remark: patch.remark ?? node.remark,
   };
 }
@@ -562,7 +654,14 @@ function removeGroupFromLocalState(id: string): void {
       updatedAt: new Date().toISOString(),
     }));
   nodes.value = nodes.value.map(node =>
-    node.groupId === id ? { ...node, groupId: '', updatedAt: new Date().toISOString() } : node
+    node.groupId === id || node.groupIds.includes(id)
+      ? {
+          ...node,
+          groupId: node.groupId === id ? '' : node.groupId,
+          groupIds: node.groupIds.filter(groupId => groupId !== id),
+          updatedAt: new Date().toISOString(),
+        }
+      : node
   );
   mappings.value = mappings.value.map(mapping => {
     const groupIds = mapping.groupIds.filter(groupId => groupId !== id);
@@ -634,10 +733,21 @@ async function addNodeFromUri(rawUri: string, nameOverride = '', groupId = ''): 
     ...input,
     name: name || input.name,
     groupId,
+    groupIds: groupId ? [groupId] : [],
   });
 }
 
-async function importNodes(raw: string, groupId = ''): Promise<ProxyNode[]> {
+async function previewImportNodes(raw: string, groupId = ''): Promise<ImportPreviewResult> {
+  return runMutation(async () => {
+    const { data } = await postProxyNodesImportPreview({
+      body: { raw, groupId: groupId.trim() || undefined },
+      throwOnError: true,
+    });
+    return toImportPreviewResult(data);
+  });
+}
+
+async function importNodes(raw: string, groupId = ''): Promise<ImportNodesResult> {
   return runMutation(async () => {
     const { data } = await postProxyNodesImport({
       body: { raw, groupId: groupId.trim() || undefined },
@@ -658,7 +768,11 @@ async function importNodes(raw: string, groupId = ''): Promise<ProxyNode[]> {
     if (data.failures?.length) {
       errorMessage.value = data.failures.map(failure => failure.message).join('\n');
     }
-    return imported;
+    return {
+      nodes: imported,
+      groups: importedGroups,
+      preview: toImportPreviewResult(data),
+    };
   });
 }
 
@@ -736,6 +850,16 @@ async function addSubscription(input: SubscriptionInput): Promise<ProxySubscript
     upsertSubscription(subscription);
     markSaved(subscription.updatedAt);
     return subscription;
+  });
+}
+
+async function previewSubscription(input: SubscriptionInput): Promise<ImportPreviewResult> {
+  return runMutation(async () => {
+    const { data } = await postProxySubscriptionsPreview({
+      body: subscriptionToRequest(input),
+      throwOnError: true,
+    });
+    return toImportPreviewResult(data);
   });
 }
 
@@ -862,12 +986,14 @@ export function useProxyHubState() {
     refreshState: refreshProxyHubState,
     addNode,
     addNodeFromUri,
+    previewImportNodes,
     importNodes,
     updateNode,
     removeNode,
     addGroup,
     updateGroup,
     removeGroup,
+    previewSubscription,
     addSubscription,
     updateSubscription,
     syncSubscription,

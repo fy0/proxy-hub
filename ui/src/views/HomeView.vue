@@ -3,26 +3,31 @@ import { computed, reactive, ref, watch } from 'vue';
 import {
   Check,
   Copy,
-  Database,
   Edit3,
-  FileInput,
   Import,
-  Info,
-  Layers3,
   Link2,
   MoreVertical,
   Plus,
   Power,
   RefreshCw,
+  Route,
   Server,
   Trash2,
   Users,
   X,
 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
 import { useI18n } from '@/i18n';
 import type {
+  ImportPreviewResult,
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
@@ -35,6 +40,19 @@ import './home.css';
 type TabKey = 'mappings' | 'nodes' | 'subscriptions' | 'import';
 type NodeGroupFilterKey = 'all' | 'summary' | 'default' | `group:${string}`;
 type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
+type RouteActionTargetType = 'node' | 'group';
+type RouteNodeMode = 'uri' | 'node' | 'group';
+
+interface ConfirmationDialog {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+}
+
+interface DuplicateRouteNodeDialog {
+  node: ProxyNode;
+}
 
 interface NodeGroupFilterOption {
   key: NodeGroupFilterKey;
@@ -61,6 +79,12 @@ const protocolLabels = computed<Record<ProxyProtocol, string>>(() => ({
   trojan: t('home.protocol.trojan'),
   socks5: t('home.protocol.socks5'),
   http: t('home.protocol.http'),
+  shadowsocks: t('home.protocol.shadowsocks'),
+  hysteria: t('home.protocol.hysteria'),
+  hysteria2: t('home.protocol.hysteria2'),
+  tuic: t('home.protocol.tuic'),
+  ssh: t('home.protocol.ssh'),
+  chain: t('home.protocol.chain'),
   unknown: t('home.protocol.unknown'),
 }));
 
@@ -90,7 +114,6 @@ const {
   enabledMappings,
   nodeById,
   groupById,
-  lastSavedAt,
   runtime,
   isLoading,
   isSaving,
@@ -99,10 +122,13 @@ const {
   refreshState,
   addNode,
   addNodeFromUri,
+  previewImportNodes,
   importNodes,
+  updateNode,
   removeNode,
   addGroup,
   removeGroup,
+  previewSubscription,
   addSubscription,
   syncSubscription,
   removeSubscription,
@@ -116,12 +142,19 @@ const activeNodeGroupFilter = ref<NodeGroupFilterKey>('all');
 const hideEmptyNodeGroups = ref(false);
 const rawImport = ref('');
 const rawImportGroupId = ref('');
+const importPreview = ref<ImportPreviewResult | null>(null);
+const importPreviewSignature = ref('');
 const importMessage = ref('');
 const copyMessage = ref('');
 const copyMessageTimer = ref<number | null>(null);
 const copiedMappingId = ref<string | null>(null);
+const copiedNodeId = ref<string | null>(null);
 const editingMappingId = ref<string | null>(null);
+const editingNodeId = ref<string | null>(null);
 const routeTargetMappingId = ref<string | null>(null);
+const openRouteActionKey = ref<string | null>(null);
+const confirmationDialog = ref<ConfirmationDialog | null>(null);
+const duplicateRouteNodeDialog = ref<DuplicateRouteNodeDialog | null>(null);
 
 const emptyMappingForm = () => ({
   listenAddress: '0.0.0.0',
@@ -139,10 +172,16 @@ const routeNodeForm = reactive({
   uri: '',
   existingNodeId: '',
   groupId: '',
-  mode: 'uri' as 'uri' | 'node' | 'group',
+  mode: 'uri' as RouteNodeMode,
 });
 const routeNodeNameEdited = ref(false);
 const routeNodeError = ref('');
+
+const routeSourceOptions = computed(() => [
+  { value: 'uri' as const, label: t('home.routeSource.uri'), icon: Link2 },
+  { value: 'node' as const, label: t('home.routeSource.node'), icon: Server },
+  { value: 'group' as const, label: t('home.routeSource.group'), icon: Users },
+]);
 
 const manualNodeForm = reactive({
   name: '',
@@ -156,12 +195,29 @@ const manualNodeForm = reactive({
   remark: '',
 });
 
+const nodeEditForm = reactive({
+  name: '',
+  groupIds: [] as string[],
+  chainNodeIds: [] as string[],
+  remark: '',
+});
+const nodeEditError = ref('');
+
+const chainNodeForm = reactive({
+  name: '',
+  chainNodeIds: [] as string[],
+  groupId: '',
+  remark: '',
+});
+
 const subscriptionForm = reactive({
   name: '',
   url: '',
   groupId: '',
   remark: '',
 });
+const subscriptionPreview = ref<ImportPreviewResult | null>(null);
+const subscriptionPreviewSignature = ref('');
 
 const manualGroupForm = reactive({
   name: '',
@@ -194,6 +250,18 @@ const runtimeFailuresByMappingId = computed(
   () => new Map((runtime.value?.failures ?? []).map(failure => [failure.mappingId, failure]))
 );
 
+function runtimeFailureReason(error: string | null | undefined): string {
+  const reason = error?.trim();
+  return reason || t('home.messages.runtimeFailureUnknown');
+}
+
+function runtimeFailureDetail(failure: { listen?: string | null; error?: string | null }): string {
+  return t('home.messages.runtimeFailureDetail', {
+    port: failure.listen?.trim() || t('home.messages.runtimeFailureUnknownPort'),
+    reason: runtimeFailureReason(failure.error),
+  });
+}
+
 const portStripItems = computed(() =>
   [
     ...(runtime.value?.inbounds ?? []).map(inbound => ({
@@ -206,39 +274,18 @@ const portStripItems = computed(() =>
       key: `failed-${failure.mappingId}`,
       label: failure.listen,
       state: 'failed' as const,
-      title: failure.error,
+      title: runtimeFailureDetail(failure),
     })),
   ].sort((a, b) => a.label.localeCompare(b.label))
 );
 
-const formattedLastSaved = computed(() => {
-  if (!lastSavedAt.value) return t('common.notSaved');
-
-  return formatDateTime(lastSavedAt.value, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-});
-
 const runtimeInboundCount = computed(() => runtime.value?.inbounds?.length ?? 0);
-const runtimeFailureCount = computed(() => runtime.value?.failures?.length ?? 0);
-const hasNoticeError = computed(
-  () =>
-    Boolean(errorMessage.value) || Boolean(runtime.value?.error) || runtimeFailureCount.value > 0
-);
+const hasNoticeError = computed(() => Boolean(errorMessage.value) || Boolean(runtime.value?.error));
 
 const backendNotice = computed(() => {
   if (errorMessage.value) return errorMessage.value;
   if (isLoading.value) return t('home.messages.loadingBackend');
   if (isSaving.value) return t('home.messages.savingBackend');
-  if (runtime.value?.failures?.length) {
-    return t('home.messages.runtimeFailures', {
-      count: runtime.value.failures.length,
-      ports: runtime.value.failures.map(failure => failure.listen).join(', '),
-    });
-  }
   if (runtime.value?.error)
     return t('home.messages.runtimeError', { message: runtime.value.error });
   if (runtime.value?.running) {
@@ -256,13 +303,26 @@ const loginRoute = computed(() => ({
   },
 }));
 
-const overviewCards = computed(() => [
-  { label: t('home.status.enabledPorts'), value: enabledMappings.value.length, icon: Power },
-  { label: t('home.status.nodeCount'), value: nodes.value.length, icon: Server },
-  { label: t('home.status.groupCount'), value: groups.value.length, icon: Users },
-  { label: t('home.status.mappingCount'), value: mappings.value.length, icon: Layers3 },
-  { label: t('home.status.lastSaved'), value: formattedLastSaved.value, icon: Database },
-]);
+const nodesTabLabel = computed(() => t('home.tabs.nodesWithCount', { count: nodes.value.length }));
+const mappingCountLabel = computed(
+  () => `${enabledMappings.value.length}/${mappings.value.length}`
+);
+
+const workspaceTitle = computed(() => {
+  if (currentTab.value === 'nodes') return t('home.sections.nodesTitle');
+  if (currentTab.value === 'subscriptions') return t('home.sections.subscriptionsTitle');
+  if (currentTab.value === 'import') return t('home.sections.importTitle');
+
+  return t('home.sections.mappingsTitle');
+});
+
+const workspaceLead = computed(() => {
+  if (currentTab.value === 'nodes') return t('home.sections.nodesLead');
+  if (currentTab.value === 'subscriptions') return t('home.sections.subscriptionsLead');
+  if (currentTab.value === 'import') return t('home.sections.importLead');
+
+  return t('home.sections.mappingsLead');
+});
 
 function resetMappingForm(): void {
   Object.assign(mappingForm, emptyMappingForm());
@@ -280,6 +340,10 @@ function mappingGroups(mapping: PortMapping): ProxyGroup[] {
     .filter((group): group is ProxyGroup => Boolean(group));
 }
 
+function mappingEndpoint(mapping: PortMapping): string {
+  return `${mapping.listenAddress}:${mapping.listenPort}`;
+}
+
 const groupedNodeIds = computed(() => {
   const ids = new Set<string>();
   for (const group of groups.value) {
@@ -292,6 +356,7 @@ const defaultNodes = computed(() =>
   nodes.value.filter(node => !node.groupId && !groupedNodeIds.value.has(node.id))
 );
 const manualGroups = computed(() => groups.value.filter(group => group.type === 'manual'));
+const physicalNodes = computed(() => nodes.value.filter(node => node.protocol !== 'chain'));
 const visibleGroups = computed(() =>
   hideEmptyNodeGroups.value
     ? groups.value.filter(group => groupNodes(group).length > 0)
@@ -342,6 +407,10 @@ const selectedNodeGroupNodes = computed(() => {
   return [];
 });
 
+const editingNode = computed(() =>
+  editingNodeId.value ? (nodes.value.find(node => node.id === editingNodeId.value) ?? null) : null
+);
+
 const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
   {
     key: 'default',
@@ -375,7 +444,22 @@ watch(
 );
 
 function groupNodes(group: ProxyGroup): ProxyNode[] {
-  return nodes.value.filter(node => node.groupId === group.id || group.nodeIds.includes(node.id));
+  return nodes.value.filter(
+    node =>
+      node.groupId === group.id ||
+      node.groupIds.includes(group.id) ||
+      group.nodeIds.includes(node.id)
+  );
+}
+
+function nodeGroupIds(node: ProxyNode): string[] {
+  return Array.from(
+    new Set([
+      ...node.groupIds,
+      ...(node.groupId ? [node.groupId] : []),
+      ...groups.value.filter(group => group.nodeIds.includes(node.id)).map(group => group.id),
+    ])
+  );
 }
 
 function selectNodeGroupFilter(key: NodeGroupFilterKey): void {
@@ -391,6 +475,214 @@ function groupSummary(group: ProxyGroup): string {
 
 function subscriptionGroupName(groupId: string): string {
   return groupById.value.get(groupId)?.name || t('home.subscription.noGroup');
+}
+
+function chainNodeNames(node: ProxyNode): string {
+  return node.chainNodeIds
+    .map(id => nodeById.value.get(id)?.name)
+    .filter((name): name is string => Boolean(name))
+    .join(' -> ');
+}
+
+function chainNodeFormPreview(): string {
+  return chainNodeNamesFromIds(chainNodeForm.chainNodeIds);
+}
+
+function chainNodeNamesFromIds(nodeIds: string[]): string {
+  return nodeIds
+    .map(id => nodeById.value.get(id)?.name)
+    .filter((name): name is string => Boolean(name))
+    .join(' -> ');
+}
+
+function selectedChainNodes(): ProxyNode[] {
+  return selectedChainNodesFromIds(chainNodeForm.chainNodeIds);
+}
+
+function selectedChainNodesFromIds(nodeIds: string[]): ProxyNode[] {
+  return nodeIds
+    .map(id => nodeById.value.get(id))
+    .filter((node): node is ProxyNode => Boolean(node));
+}
+
+function removeChainNodeSelection(nodeId: string): void {
+  chainNodeForm.chainNodeIds = chainNodeForm.chainNodeIds.filter(id => id !== nodeId);
+}
+
+function toggleChainNodeSelection(nodeId: string): void {
+  if (chainNodeForm.chainNodeIds.includes(nodeId)) {
+    removeChainNodeSelection(nodeId);
+    return;
+  }
+  chainNodeForm.chainNodeIds = [...chainNodeForm.chainNodeIds, nodeId];
+}
+
+function nodeEditChainPreview(): string {
+  return chainNodeNamesFromIds(nodeEditForm.chainNodeIds);
+}
+
+function selectedNodeEditChainNodes(): ProxyNode[] {
+  return selectedChainNodesFromIds(nodeEditForm.chainNodeIds);
+}
+
+function removeNodeEditChainNodeSelection(nodeId: string): void {
+  nodeEditForm.chainNodeIds = nodeEditForm.chainNodeIds.filter(id => id !== nodeId);
+}
+
+function toggleNodeEditChainNodeSelection(nodeId: string): void {
+  if (nodeEditForm.chainNodeIds.includes(nodeId)) {
+    removeNodeEditChainNodeSelection(nodeId);
+    return;
+  }
+  nodeEditForm.chainNodeIds = [...nodeEditForm.chainNodeIds, nodeId];
+}
+
+function toggleNodeEditGroup(groupId: string): void {
+  if (nodeEditForm.groupIds.includes(groupId)) {
+    nodeEditForm.groupIds = nodeEditForm.groupIds.filter(id => id !== groupId);
+    return;
+  }
+  nodeEditForm.groupIds = [...nodeEditForm.groupIds, groupId];
+}
+
+function nodeEndpointLabel(node: ProxyNode): string {
+  if (node.protocol === 'chain') {
+    return chainNodeNames(node) || t('home.nodeMeta.chainEmpty');
+  }
+  return `${node.server}:${node.port ?? '-'}`;
+}
+
+function uriHost(server: string): string {
+  const value = server.trim();
+  return value.includes(':') && !value.startsWith('[') ? `[${value}]` : value;
+}
+
+function uriFragment(name: string): string {
+  const value = name.trim();
+  return value ? `#${encodeURIComponent(value)}` : '';
+}
+
+function uriUserInfo(username: string, password = ''): string {
+  const user = username.trim();
+  const pass = password.trim();
+  if (!user && !pass) return '';
+
+  return `${encodeURIComponent(user)}${pass ? `:${encodeURIComponent(pass)}` : ''}@`;
+}
+
+function base64EncodeUtf8(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function nodeExportUri(node: ProxyNode): string {
+  const rawUri = node.rawUri.trim();
+  if (rawUri) return rawUri;
+  if (node.protocol === 'chain' || node.protocol === 'unknown') return '';
+  if (!node.server.trim() || !node.port) return '';
+
+  const host = uriHost(node.server);
+  const fragment = uriFragment(node.name);
+
+  if (node.protocol === 'vmess') {
+    if (!node.username.trim()) return '';
+    return `vmess://${base64EncodeUtf8(
+      JSON.stringify({
+        v: '2',
+        ps: node.name,
+        add: node.server,
+        port: String(node.port),
+        id: node.username,
+        aid: '0',
+        scy: 'auto',
+        net: 'tcp',
+        type: 'none',
+        host: '',
+        path: '',
+        tls: '',
+      })
+    )}`;
+  }
+
+  if (node.protocol === 'trojan') {
+    if (!node.password.trim()) return '';
+    return `trojan://${encodeURIComponent(node.password.trim())}@${host}:${node.port}${fragment}`;
+  }
+
+  if (node.protocol === 'hysteria' || node.protocol === 'hysteria2') {
+    if (!node.password.trim()) return '';
+    const scheme = node.protocol === 'hysteria2' ? 'hy2' : 'hysteria';
+    return `${scheme}://${encodeURIComponent(node.password.trim())}@${host}:${node.port}${fragment}`;
+  }
+
+  if (node.protocol === 'vless') {
+    if (!node.username.trim()) return '';
+    return `vless://${encodeURIComponent(node.username.trim())}@${host}:${node.port}${fragment}`;
+  }
+
+  return `${node.protocol}://${uriUserInfo(node.username, node.password)}${host}:${node.port}${fragment}`;
+}
+
+function nodeUriPopoverText(node: ProxyNode): string {
+  if (copiedNodeId.value === node.id) return t('common.copiedNodeUri');
+  return nodeExportUri(node) ? t('common.exportNodeUri') : t('home.messages.nodeUriUnavailable');
+}
+
+function resetNodeEditForm(): void {
+  Object.assign(nodeEditForm, {
+    name: '',
+    groupIds: [],
+    chainNodeIds: [],
+    remark: '',
+  });
+  nodeEditError.value = '';
+}
+
+function openEditNodeDialog(node: ProxyNode): void {
+  closeRouteActionMenu();
+  Object.assign(nodeEditForm, {
+    name: node.name,
+    groupIds: nodeGroupIds(node),
+    chainNodeIds: [...node.chainNodeIds],
+    remark: node.remark,
+  });
+  nodeEditError.value = '';
+  editingNodeId.value = node.id;
+}
+
+function closeNodeEditDialog(): void {
+  editingNodeId.value = null;
+  resetNodeEditForm();
+}
+
+async function saveNodeEditDialog(): Promise<void> {
+  if (!editingNodeId.value) return;
+  const currentNode = editingNode.value;
+  if (!currentNode) return;
+
+  if (currentNode.protocol === 'chain' && nodeEditForm.chainNodeIds.length < 2) {
+    nodeEditError.value = t('home.messages.chainNodesRequired');
+    return;
+  }
+
+  try {
+    const node = await updateNode(editingNodeId.value, {
+      name: nodeEditForm.name,
+      groupId: nodeEditForm.groupIds[0] ?? '',
+      groupIds: [...nodeEditForm.groupIds],
+      chainNodeIds:
+        currentNode.protocol === 'chain'
+          ? [...nodeEditForm.chainNodeIds]
+          : currentNode.chainNodeIds,
+      remark: nodeEditForm.remark,
+    });
+    importMessage.value = t('home.messages.nodeUpdated', { name: node.name });
+    closeNodeEditDialog();
+  } catch (error) {
+    nodeEditError.value = error instanceof Error ? error.message : t('home.messages.requestFailed');
+  }
 }
 
 function openNewMappingDialog(): void {
@@ -462,11 +754,12 @@ async function saveMappingDialog(): Promise<void> {
 }
 
 function openRouteDialog(mapping: PortMapping): void {
+  closeRouteActionMenu();
   routeNodeForm.name = '';
   routeNodeForm.uri = '';
   routeNodeForm.existingNodeId = nodes.value[0]?.id ?? '';
   routeNodeForm.groupId = groups.value[0]?.id ?? '';
-  routeNodeForm.mode = groups.value.length > 0 ? 'group' : nodes.value.length > 0 ? 'node' : 'uri';
+  routeNodeForm.mode = 'uri';
   routeNodeNameEdited.value = false;
   routeNodeError.value = '';
   routeTargetMappingId.value = mapping.id;
@@ -484,6 +777,7 @@ watch(
 
 function closeRouteDialog(): void {
   routeTargetMappingId.value = null;
+  duplicateRouteNodeDialog.value = null;
   routeNodeForm.name = '';
   routeNodeForm.uri = '';
   routeNodeForm.existingNodeId = '';
@@ -491,6 +785,70 @@ function closeRouteDialog(): void {
   routeNodeForm.mode = 'uri';
   routeNodeNameEdited.value = false;
   routeNodeError.value = '';
+}
+
+function normalizeRouteUri(value: string): string {
+  return value.trim();
+}
+
+function findDuplicateRouteNode(rawUri: string): ProxyNode | null {
+  const normalized = normalizeRouteUri(rawUri);
+  if (!normalized) return null;
+
+  return nodes.value.find(node => normalizeRouteUri(node.rawUri) === normalized) ?? null;
+}
+
+function attachNodeToMapping(mapping: PortMapping, nodeId: string): Promise<PortMapping> {
+  const nodeIds = Array.from(new Set([...mapping.nodeIds, nodeId]));
+  return updateMapping(mapping.id, {
+    nodeIds,
+    activeNodeId: mapping.activeNodeId || nodeId,
+  });
+}
+
+async function addUriRouteToMapping(
+  mapping: PortMapping,
+  options: { forceNew?: boolean } = {}
+): Promise<void> {
+  if (!options.forceNew) {
+    const duplicateNode = findDuplicateRouteNode(routeNodeForm.uri);
+    if (duplicateNode) {
+      duplicateRouteNodeDialog.value = { node: duplicateNode };
+      return;
+    }
+  }
+
+  const node = await addNodeFromUri(routeNodeForm.uri, routeNodeForm.name);
+  await attachNodeToMapping(mapping, node.id);
+  closeRouteDialog();
+}
+
+function reuseDuplicateRouteNode(): void {
+  const duplicate = duplicateRouteNodeDialog.value;
+  if (!duplicate) return;
+
+  routeNodeForm.mode = 'node';
+  routeNodeForm.existingNodeId = duplicate.node.id;
+  routeNodeError.value = '';
+  duplicateRouteNodeDialog.value = null;
+}
+
+async function forceAddDuplicateRouteNode(): Promise<void> {
+  const mapping = routeTargetMapping.value;
+  if (!mapping) return;
+
+  duplicateRouteNodeDialog.value = null;
+
+  try {
+    await addUriRouteToMapping(mapping, { forceNew: true });
+  } catch (error) {
+    routeNodeError.value =
+      error instanceof Error ? error.message : t('home.messages.requestFailed');
+  }
+}
+
+function closeDuplicateRouteNodeDialog(): void {
+  duplicateRouteNodeDialog.value = null;
 }
 
 async function saveRouteDialog(): Promise<void> {
@@ -512,19 +870,9 @@ async function saveRouteDialog(): Promise<void> {
 
   try {
     if (routeNodeForm.mode === 'uri') {
-      const node = await addNodeFromUri(routeNodeForm.uri, routeNodeForm.name);
-      const nodeIds = Array.from(new Set([...mapping.nodeIds, node.id]));
-
-      await updateMapping(mapping.id, {
-        nodeIds,
-        activeNodeId: mapping.activeNodeId || node.id,
-      });
+      await addUriRouteToMapping(mapping);
     } else if (routeNodeForm.mode === 'node') {
-      const nodeIds = Array.from(new Set([...mapping.nodeIds, routeNodeForm.existingNodeId]));
-      await updateMapping(mapping.id, {
-        nodeIds,
-        activeNodeId: mapping.activeNodeId || routeNodeForm.existingNodeId,
-      });
+      await attachNodeToMapping(mapping, routeNodeForm.existingNodeId);
     } else {
       const groupIds = Array.from(new Set([...mapping.groupIds, routeNodeForm.groupId]));
       await updateMapping(mapping.id, {
@@ -532,7 +880,7 @@ async function saveRouteDialog(): Promise<void> {
         activeGroupId: mapping.activeGroupId || routeNodeForm.groupId,
       });
     }
-    closeRouteDialog();
+    if (!duplicateRouteNodeDialog.value) closeRouteDialog();
   } catch (error) {
     routeNodeError.value =
       error instanceof Error ? error.message : t('home.messages.requestFailed');
@@ -566,27 +914,185 @@ async function removeGroupFromMapping(mapping: PortMapping, groupId: string): Pr
   }
 }
 
+function routeActionKey(
+  mapping: PortMapping,
+  targetType: RouteActionTargetType,
+  targetId: string
+): string {
+  return `${mapping.id}:${targetType}:${targetId}`;
+}
+
+function isRouteActionMenuOpen(
+  mapping: PortMapping,
+  targetType: RouteActionTargetType,
+  targetId: string
+): boolean {
+  return openRouteActionKey.value === routeActionKey(mapping, targetType, targetId);
+}
+
+function toggleRouteActionMenu(
+  mapping: PortMapping,
+  targetType: RouteActionTargetType,
+  targetId: string
+): void {
+  const nextKey = routeActionKey(mapping, targetType, targetId);
+  openRouteActionKey.value = openRouteActionKey.value === nextKey ? null : nextKey;
+}
+
+function closeRouteActionMenu(): void {
+  openRouteActionKey.value = null;
+}
+
+function requestRemoveRoute(mapping: PortMapping, target: ProxyNode | ProxyGroup): void {
+  closeRouteActionMenu();
+  const targetType: RouteActionTargetType = 'protocol' in target ? 'node' : 'group';
+  const routeKind = t(`home.routeKind.${targetType}`);
+
+  confirmationDialog.value = {
+    title: t('home.confirm.removeRouteTitle'),
+    message: t('home.confirm.removeRouteMessage', {
+      kind: routeKind,
+      name: target.name,
+      port: mapping.listenPort,
+    }),
+    confirmLabel: t('common.removeRoute'),
+    onConfirm: () =>
+      targetType === 'node'
+        ? removeNodeFromMapping(mapping, target.id)
+        : removeGroupFromMapping(mapping, target.id),
+  };
+}
+
+function requestRemoveMapping(mapping: PortMapping): void {
+  closeRouteActionMenu();
+  confirmationDialog.value = {
+    title: t('home.confirm.deletePortTitle'),
+    message: t('home.confirm.deletePortMessage', { port: mapping.listenPort }),
+    confirmLabel: t('common.deletePort'),
+    onConfirm: () => removeMapping(mapping.id),
+  };
+}
+
+function requestRemoveNode(node: ProxyNode): void {
+  confirmationDialog.value = {
+    title: t('home.confirm.deleteNodeTitle'),
+    message: t('home.confirm.deleteNodeMessage', { name: node.name }),
+    confirmLabel: t('common.deleteNode'),
+    onConfirm: () => removeNode(node.id),
+  };
+}
+
+function closeConfirmationDialog(): void {
+  confirmationDialog.value = null;
+}
+
+async function confirmPendingAction(): Promise<void> {
+  const dialog = confirmationDialog.value;
+  if (!dialog) return;
+
+  try {
+    await dialog.onConfirm();
+    confirmationDialog.value = null;
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
+}
+
 function copyPopoverText(mappingId: string): string {
   return copiedMappingId.value === mappingId
     ? t('common.copiedEndpoint')
     : t('common.copyEndpoint');
 }
 
-async function handleImport(): Promise<void> {
-  const lines = rawImport.value
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
+function importSignature(raw: string, groupId: string): string {
+  return JSON.stringify({ raw: raw.trim(), groupId: groupId.trim() });
+}
 
-  if (!lines.length) {
+function subscriptionSignature(): string {
+  return JSON.stringify({
+    name: subscriptionForm.name.trim(),
+    url: subscriptionForm.url.trim(),
+    groupId: subscriptionForm.groupId.trim(),
+    remark: subscriptionForm.remark.trim(),
+  });
+}
+
+function resetImportPreview(): void {
+  importPreview.value = null;
+  importPreviewSignature.value = '';
+}
+
+function resetSubscriptionPreview(): void {
+  subscriptionPreview.value = null;
+  subscriptionPreviewSignature.value = '';
+}
+
+function previewSummary(preview: ImportPreviewResult): string {
+  const skipped = preview.items.filter(
+    item => item.action === 'skip' || item.action === 'fail'
+  ).length;
+  const imports = preview.items.filter(item => item.action === 'import').length;
+  const updates = preview.items.filter(item => item.action === 'update').length;
+  return t('home.importPreview.summary', {
+    total: preview.total,
+    imports,
+    updates,
+    skipped,
+  });
+}
+
+function previewTypeLabel(item: { type: string }): string {
+  return t(`home.importPreview.type.${item.type}`);
+}
+
+function previewActionLabel(item: { action: string }): string {
+  return t(`home.importPreview.action.${item.action}`);
+}
+
+watch([rawImport, rawImportGroupId], () => {
+  resetImportPreview();
+});
+
+watch(
+  () => [
+    subscriptionForm.name,
+    subscriptionForm.url,
+    subscriptionForm.groupId,
+    subscriptionForm.remark,
+  ],
+  () => {
+    resetSubscriptionPreview();
+  }
+);
+
+async function handleImport(): Promise<void> {
+  const raw = rawImport.value.trim();
+
+  if (!raw) {
     importMessage.value = t('home.messages.importEmpty');
     return;
   }
 
   try {
-    const added = await importNodes(lines.join('\n'), rawImportGroupId.value);
-    if (added.length > 0) rawImport.value = '';
-    importMessage.value = t('home.messages.imported', { count: added.length });
+    const signature = importSignature(raw, rawImportGroupId.value);
+    if (!importPreview.value || importPreviewSignature.value !== signature) {
+      importPreview.value = await previewImportNodes(raw, rawImportGroupId.value);
+      importPreviewSignature.value = signature;
+      importMessage.value = previewSummary(importPreview.value);
+      return;
+    }
+
+    const result = await importNodes(raw, rawImportGroupId.value);
+    if (result.nodes.length > 0 || result.groups.length > 0) {
+      rawImport.value = '';
+    }
+    importPreview.value = result.preview;
+    importPreviewSignature.value = '';
+    importMessage.value = t('home.messages.importedWithGroups', {
+      nodes: result.nodes.length,
+      groups: result.groups.length,
+      skipped: result.preview.skipped,
+    });
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -606,7 +1112,9 @@ async function handleManualNodeSubmit(): Promise<void> {
         .split(',')
         .map(tag => tag.trim())
         .filter(Boolean),
+      chainNodeIds: [],
       groupId: manualNodeForm.groupId,
+      groupIds: manualNodeForm.groupId ? [manualNodeForm.groupId] : [],
       remark: manualNodeForm.remark,
     });
 
@@ -624,6 +1132,38 @@ async function handleManualNodeSubmit(): Promise<void> {
   }
 }
 
+async function handleChainNodeSubmit(): Promise<void> {
+  if (chainNodeForm.chainNodeIds.length < 2) {
+    importMessage.value = t('home.messages.chainNodesRequired');
+    return;
+  }
+
+  try {
+    const node = await addNode({
+      name: chainNodeForm.name,
+      protocol: 'chain',
+      server: '',
+      port: null,
+      username: '',
+      password: '',
+      rawUri: '',
+      tags: [],
+      chainNodeIds: chainNodeForm.chainNodeIds,
+      groupId: chainNodeForm.groupId,
+      groupIds: chainNodeForm.groupId ? [chainNodeForm.groupId] : [],
+      remark: chainNodeForm.remark,
+    });
+
+    chainNodeForm.name = '';
+    chainNodeForm.chainNodeIds = [];
+    chainNodeForm.groupId = '';
+    chainNodeForm.remark = '';
+    importMessage.value = t('home.messages.chainNodeAdded', { name: node.name });
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
+}
+
 async function handleSubscriptionSubmit(): Promise<void> {
   if (!subscriptionForm.url.trim()) {
     importMessage.value = t('home.messages.subscriptionUrlRequired');
@@ -631,6 +1171,19 @@ async function handleSubscriptionSubmit(): Promise<void> {
   }
 
   try {
+    const signature = subscriptionSignature();
+    if (!subscriptionPreview.value || subscriptionPreviewSignature.value !== signature) {
+      subscriptionPreview.value = await previewSubscription({
+        name: subscriptionForm.name,
+        url: subscriptionForm.url,
+        groupId: subscriptionForm.groupId,
+        remark: subscriptionForm.remark,
+      });
+      subscriptionPreviewSignature.value = signature;
+      importMessage.value = previewSummary(subscriptionPreview.value);
+      return;
+    }
+
     const subscription = await addSubscription({
       name: subscriptionForm.name,
       url: subscriptionForm.url,
@@ -642,6 +1195,7 @@ async function handleSubscriptionSubmit(): Promise<void> {
     subscriptionForm.url = '';
     subscriptionForm.groupId = '';
     subscriptionForm.remark = '';
+    resetSubscriptionPreview();
     importMessage.value = t('home.messages.subscriptionSynced');
   } catch {
     // The composable exposes the backend error in the notice bar.
@@ -690,30 +1244,50 @@ async function toggleMappingEnabled(mapping: PortMapping): Promise<void> {
   }
 }
 
+function showCopyMessage(message: string): void {
+  if (copyMessageTimer.value !== null) {
+    window.clearTimeout(copyMessageTimer.value);
+  }
+
+  copyMessage.value = message;
+  copyMessageTimer.value = window.setTimeout(() => {
+    copyMessage.value = '';
+    copiedMappingId.value = null;
+    copiedNodeId.value = null;
+    copyMessageTimer.value = null;
+  }, 2200);
+}
+
+async function copyTextToClipboard(text: string, successMessage: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    showCopyMessage(successMessage);
+  } catch {
+    showCopyMessage(text);
+  }
+}
+
 async function copyEndpoint(mapping: PortMapping): Promise<void> {
   const endpoint =
     mapping.outboundProtocol === 'mixed'
       ? `mixed://${mapping.listenAddress}:${mapping.listenPort}`
       : `${mapping.outboundProtocol}://${mapping.listenAddress}:${mapping.listenPort}`;
 
-  try {
-    await navigator.clipboard.writeText(endpoint);
-    copyMessage.value = t('home.messages.endpointCopied', { endpoint });
-    copiedMappingId.value = mapping.id;
-  } catch {
-    copyMessage.value = endpoint;
-    copiedMappingId.value = mapping.id;
+  copiedMappingId.value = mapping.id;
+  copiedNodeId.value = null;
+  await copyTextToClipboard(endpoint, t('home.messages.endpointCopied', { endpoint }));
+}
+
+async function copyNodeUri(node: ProxyNode): Promise<void> {
+  const uri = nodeExportUri(node);
+  if (!uri) {
+    showCopyMessage(t('home.messages.nodeUriUnavailable'));
+    return;
   }
 
-  if (copyMessageTimer.value !== null) {
-    window.clearTimeout(copyMessageTimer.value);
-  }
-
-  copyMessageTimer.value = window.setTimeout(() => {
-    copyMessage.value = '';
-    copiedMappingId.value = null;
-    copyMessageTimer.value = null;
-  }, 2200);
+  copiedNodeId.value = node.id;
+  copiedMappingId.value = null;
+  await copyTextToClipboard(uri, t('home.messages.nodeUriCopied', { name: node.name }));
 }
 
 async function handleReset(): Promise<void> {
@@ -726,6 +1300,8 @@ async function handleReset(): Promise<void> {
 }
 
 function openTab(tab: TabKey): void {
+  closeRouteActionMenu();
+  closeNodeEditDialog();
   currentTab.value = tab;
 }
 
@@ -746,27 +1322,51 @@ function portStatusLabel(mapping: PortMapping): string {
 
 function portStatusTitle(mapping: PortMapping): string {
   const failure = runtimeFailuresByMappingId.value.get(mapping.id);
-  return failure?.error || portStatusLabel(mapping);
+  return failure ? runtimeFailureDetail(failure) : portStatusLabel(mapping);
+}
+
+function portFailureReason(mapping: PortMapping): string {
+  const failure = runtimeFailuresByMappingId.value.get(mapping.id);
+  if (!failure) return '';
+
+  return t('home.messages.runtimeFailureReason', {
+    reason: runtimeFailureReason(failure.error),
+  });
+}
+
+function routeLatencyLabel(node: ProxyNode): string {
+  const latency = node.health?.lastLatencyMs ?? 0;
+  return latency > 0 ? `${latency}ms` : '-ms';
+}
+
+function routeSuccessLabel(node: ProxyNode): string {
+  return String(node.health?.successCount ?? 0);
+}
+
+function routeFailureLabel(node: ProxyNode): string {
+  return String(node.health?.failureCount ?? 0);
 }
 </script>
 
 <template>
-  <main class="console-shell">
-    <section class="hero-strip">
-      <div>
-        <div class="eyebrow">
-          <Link2 class="icon-sm" aria-hidden="true" />
-          {{ t('app.name') }}
+  <main class="console-shell" @click="closeRouteActionMenu">
+    <section class="shell-header">
+      <header class="brand-bar">
+        <div class="brand-lockup">
+          <span class="brand-logo" aria-hidden="true">
+            <span class="brand-logo-core"></span>
+          </span>
+          <span class="brand-name">{{ t('app.name') }}</span>
+          <span class="brand-version">v0.1.0</span>
         </div>
-        <h1>{{ t('home.hero.title') }}</h1>
-        <p>{{ t('home.hero.lead') }}</p>
-      </div>
 
-      <div class="hero-actions">
         <Button
           type="button"
-          variant="outline"
-          class="restore-button"
+          variant="ghost"
+          size="sm"
+          class="status-refresh"
+          :aria-label="t('common.refreshStatus')"
+          :title="t('common.refreshStatus')"
           :disabled="isLoading || isSaving"
           @click="handleReset"
         >
@@ -775,61 +1375,42 @@ function portStatusTitle(mapping: PortMapping): string {
             :class="{ 'spin-icon': isLoading || isSaving }"
             aria-hidden="true"
           />
-          {{ t('common.restoreDemo') }}
+          <span>{{ t('common.refreshStatus') }}</span>
         </Button>
-      </div>
+      </header>
+
+      <section class="notice-bar" :class="{ error: hasNoticeError }" role="status">
+        <span class="notice-icon" aria-hidden="true"></span>
+        <span class="notice-message">{{ backendNotice }}</span>
+        <RouterLink v-if="loginRequired" class="notice-link" :to="loginRoute">
+          {{ t('common.goLogin') }}
+        </RouterLink>
+      </section>
     </section>
 
-    <section class="status-grid" :aria-label="t('home.aria.statusOverview')">
-      <article v-for="card in overviewCards" :key="card.label" class="metric-card">
-        <div class="metric-icon">
-          <component :is="card.icon" class="size-4" aria-hidden="true" />
+    <section class="workspace-panel">
+      <header class="workspace-header">
+        <div class="workspace-copy">
+          <div class="workspace-title-row">
+            <h1>{{ workspaceTitle }}</h1>
+            <span v-if="currentTab === 'mappings'" class="workspace-count">{{
+              mappingCountLabel
+            }}</span>
+            <span v-else-if="currentTab === 'nodes'" class="workspace-count">{{
+              nodes.length
+            }}</span>
+            <span v-else-if="currentTab === 'subscriptions'" class="workspace-count">{{
+              subscriptions.length
+            }}</span>
+          </div>
+          <p>{{ workspaceLead }}</p>
         </div>
-        <div>
-          <span>{{ card.label }}</span>
-          <strong>{{ card.value }}</strong>
-        </div>
-      </article>
-    </section>
 
-    <section class="notice-bar" :class="{ error: hasNoticeError }" role="status">
-      <Info class="size-4" aria-hidden="true" />
-      <span class="notice-message">{{ backendNotice }}</span>
-      <RouterLink v-if="loginRequired" class="notice-link" :to="loginRoute">
-        {{ t('common.goLogin') }}
-      </RouterLink>
-    </section>
-
-    <nav class="tab-bar" :aria-label="t('home.aria.tabs')">
-      <button
-        :class="{ active: currentTab === 'mappings' }"
-        type="button"
-        @click="openTab('mappings')"
-      >
-        {{ t('home.tabs.mappings') }}
-      </button>
-      <button :class="{ active: currentTab === 'nodes' }" type="button" @click="openTab('nodes')">
-        {{ t('home.tabs.nodes') }}
-      </button>
-      <button
-        :class="{ active: currentTab === 'subscriptions' }"
-        type="button"
-        @click="openTab('subscriptions')"
-      >
-        {{ t('home.tabs.subscriptions') }}
-      </button>
-      <button :class="{ active: currentTab === 'import' }" type="button" @click="openTab('import')">
-        {{ t('home.tabs.import') }}
-      </button>
-    </nav>
-
-    <section v-if="currentTab === 'mappings'" class="panel port-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>{{ t('home.sections.mappingsTitle') }}</h2>
-          <p>{{ t('home.sections.mappingsLead') }}</p>
-        </div>
-        <div class="port-strip" :aria-label="t('home.aria.activePorts')">
+        <div
+          v-if="currentTab === 'mappings'"
+          class="port-strip"
+          :aria-label="t('home.aria.activePorts')"
+        >
           <span
             v-for="endpoint in portStripItems"
             :key="endpoint.key"
@@ -840,486 +1421,670 @@ function portStatusTitle(mapping: PortMapping): string {
             {{ endpoint.label }}
           </span>
         </div>
-      </div>
+      </header>
 
-      <div class="port-grid">
-        <article
-          v-for="mapping in mappings"
-          :key="mapping.id"
-          class="port-card"
-          :class="`status-${portRuntimeState(mapping)}`"
+      <nav class="tab-bar" :aria-label="t('home.aria.tabs')">
+        <button
+          :class="{ active: currentTab === 'mappings' }"
+          type="button"
+          @click="openTab('mappings')"
         >
-          <div class="port-card-header">
-            <button
-              type="button"
-              class="switch-button"
-              :class="`status-${portRuntimeState(mapping)}`"
-              :aria-pressed="mapping.enabled"
-              :aria-label="portEnabledLabel(mapping)"
-              :title="portEnabledLabel(mapping)"
-              @click="toggleMappingEnabled(mapping)"
-            >
-              <Power class="size-4" aria-hidden="true" />
-            </button>
+          <Link2 class="size-4" aria-hidden="true" />
+          <span>{{ t('home.tabs.mappings') }}</span>
+        </button>
+        <button :class="{ active: currentTab === 'nodes' }" type="button" @click="openTab('nodes')">
+          <Server class="size-4" aria-hidden="true" />
+          <span>{{ nodesTabLabel }}</span>
+        </button>
+        <button
+          :class="{ active: currentTab === 'subscriptions' }"
+          type="button"
+          @click="openTab('subscriptions')"
+        >
+          <RefreshCw class="size-4" aria-hidden="true" />
+          <span>{{ t('home.tabs.subscriptions') }}</span>
+        </button>
+        <button
+          :class="{ active: currentTab === 'import' }"
+          type="button"
+          @click="openTab('import')"
+        >
+          <Import class="size-4" aria-hidden="true" />
+          <span>{{ t('home.tabs.import') }}</span>
+        </button>
+      </nav>
 
-            <div class="port-title">
-              <strong>{{ mapping.listenPort }}</strong>
-              <span
-                >{{ mapping.listenAddress }} ·
-                {{ outboundProtocolLabels[mapping.outboundProtocol] }}</span
-              >
-              <small
-                class="port-status-chip"
-                :class="`status-${portRuntimeState(mapping)}`"
-                :title="portStatusTitle(mapping)"
-              >
-                <i aria-hidden="true"></i>
-                {{ portStatusLabel(mapping) }}
-              </small>
-            </div>
+      <section v-if="currentTab === 'mappings'" class="panel port-panel">
+        <div class="port-grid">
+          <button type="button" class="add-port-card" @click="openNewMappingDialog">
+            <Plus class="size-8" aria-hidden="true" />
+            <span>{{ t('common.addPort') }}</span>
+            <small>{{ t('home.sections.addPortHint') }}</small>
+          </button>
 
-            <div class="card-actions">
-              <span class="action-popover" :data-popover="t('common.editPort')">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  :aria-label="t('common.editPort')"
-                  @click="openEditMappingDialog(mapping)"
-                >
-                  <Edit3 class="size-4" aria-hidden="true" />
-                </Button>
-              </span>
-              <span class="action-popover" :data-popover="copyPopoverText(mapping.id)">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  :aria-label="t('common.copyEndpoint')"
-                  @click="copyEndpoint(mapping)"
-                >
-                  <Copy class="size-4" aria-hidden="true" />
-                </Button>
-              </span>
-              <span class="action-popover" :data-popover="t('home.aria.moreActions')">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  :aria-label="t('home.aria.moreActions')"
-                >
-                  <MoreVertical class="size-4" aria-hidden="true" />
-                </Button>
-              </span>
-            </div>
-          </div>
-
-          <div class="port-meta">
-            <span>{{ strategyLabels[mapping.strategy] }}</span>
-            <span>{{
-              mapping.username || mapping.password ? t('common.authConfigured') : t('common.noAuth')
-            }}</span>
-          </div>
-
-          <div class="route-card-grid">
-            <article v-for="node in mappingNodes(mapping)" :key="node.id" class="inner-route-card">
-              <span class="action-popover mini-action" :data-popover="t('common.removeRoute')">
-                <button
-                  type="button"
-                  class="mini-remove"
-                  :aria-label="t('home.aria.removeFromPort')"
-                  @click="removeNodeFromMapping(mapping, node.id)"
-                >
-                  <MoreVertical class="size-3" aria-hidden="true" />
-                </button>
-              </span>
-              <strong>{{ node.name }}</strong>
-              <span>{{ protocolLabels[node.protocol] }}</span>
-            </article>
-
-            <article
-              v-for="group in mappingGroups(mapping)"
-              :key="group.id"
-              class="inner-route-card group-route-card"
-            >
-              <span class="action-popover mini-action" :data-popover="t('common.removeRoute')">
-                <button
-                  type="button"
-                  class="mini-remove"
-                  :aria-label="t('home.aria.removeFromPort')"
-                  @click="removeGroupFromMapping(mapping, group.id)"
-                >
-                  <MoreVertical class="size-3" aria-hidden="true" />
-                </button>
-              </span>
-              <strong>{{ group.name }}</strong>
-              <span>{{ t(`home.groupStrategy.${group.strategy}`) }}</span>
-            </article>
-
-            <button type="button" class="inner-add-card" @click="openRouteDialog(mapping)">
-              <Plus class="size-5" aria-hidden="true" />
-              <span>{{ t('common.addRoute') }}</span>
-            </button>
-          </div>
-
-          <div class="port-card-footer">
-            <span>{{ mapping.remark || t('common.noRemark') }}</span>
-            <span class="action-popover danger-popover" :data-popover="t('common.deletePort')">
-              <Button
+          <article
+            v-for="mapping in mappings"
+            :key="mapping.id"
+            class="port-card"
+            :class="`status-${portRuntimeState(mapping)}`"
+          >
+            <div class="port-card-header">
+              <button
                 type="button"
-                variant="destructive"
-                size="icon"
-                :aria-label="t('common.deletePort')"
-                @click="removeMapping(mapping.id).catch(() => undefined)"
+                class="switch-button"
+                :class="`status-${portRuntimeState(mapping)}`"
+                :aria-pressed="mapping.enabled"
+                :aria-label="portEnabledLabel(mapping)"
+                :title="portEnabledLabel(mapping)"
+                @click="toggleMappingEnabled(mapping)"
               >
-                <Trash2 class="size-4" aria-hidden="true" />
-              </Button>
-            </span>
-          </div>
-        </article>
+                <Power class="size-6" aria-hidden="true" />
+              </button>
 
-        <button type="button" class="add-port-card" @click="openNewMappingDialog">
-          <Plus class="size-8" aria-hidden="true" />
-          <span>{{ t('common.addPort') }}</span>
-          <small>{{ t('home.sections.addPortHint') }}</small>
-        </button>
-      </div>
-    </section>
+              <div class="port-title">
+                <span>{{ t('home.form.listenAddress') }}</span>
+                <strong>{{ mappingEndpoint(mapping) }}</strong>
+                <div class="port-summary-row">
+                  <em>{{ outboundProtocolLabels[mapping.outboundProtocol] }}</em>
+                  <span class="port-tag">{{ strategyLabels[mapping.strategy] }}</span>
+                  <span class="port-tag">{{
+                    mapping.username || mapping.password
+                      ? t('common.authConfigured')
+                      : t('common.noAuth')
+                  }}</span>
+                </div>
+              </div>
 
-    <section v-else-if="currentTab === 'nodes'" class="panel simple-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>{{ t('home.sections.nodesTitle') }}</h2>
-          <p>{{ t('home.sections.nodesLead') }}</p>
-        </div>
-        <Users class="panel-icon" aria-hidden="true" />
-      </div>
-
-      <div class="node-filter-bar" :aria-label="t('home.aria.nodeGroupFilters')">
-        <label class="node-empty-toggle">
-          <input v-model="hideEmptyNodeGroups" type="checkbox" />
-          <span>{{ t('home.groupFilters.hideEmpty') }}</span>
-        </label>
-        <button
-          v-for="option in nodeGroupFilterOptions"
-          :key="option.key"
-          type="button"
-          :class="{ active: activeNodeGroupFilter === option.key }"
-          @click="selectNodeGroupFilter(option.key)"
-        >
-          <span>{{ option.label }}</span>
-          <small>{{ option.countLabel }}</small>
-        </button>
-      </div>
-
-      <div v-if="activeNodeGroupFilter === 'summary'" class="node-group-summary-grid">
-        <button
-          v-for="item in groupSummaryItems"
-          :key="item.key"
-          type="button"
-          class="node-group-summary-card"
-          @click="selectNodeGroupFilter(item.key)"
-        >
-          <span class="node-summary-type" :class="{ subscription: item.isSubscription }">
-            {{ item.typeLabel }}
-          </span>
-          <strong>{{ item.title }}</strong>
-          <span class="node-summary-count">{{
-            t('home.groupMeta.nodeCount', { count: item.count })
-          }}</span>
-          <small>{{ item.detail }}</small>
-          <span class="node-summary-meta">
-            <em>{{ item.strategyLabel }}</em>
-            <em v-if="item.filter">{{ item.filter }}</em>
-          </span>
-        </button>
-      </div>
-
-      <section v-else class="node-group-section active-node-group">
-        <div class="node-group-heading">
-          <strong>{{ selectedNodeGroupTitle }}</strong>
-          <span>{{ t('home.groupMeta.nodeCount', { count: selectedNodeGroupNodes.length }) }}</span>
-        </div>
-        <div v-if="selectedNodeGroupNodes.length" class="node-table">
-          <article v-for="node in selectedNodeGroupNodes" :key="node.id" class="node-row">
-            <div class="node-protocol">{{ protocolLabels[node.protocol] }}</div>
-            <div class="node-main">
-              <strong>{{ node.name }}</strong>
-              <span>{{ node.server }}:{{ node.port ?? '-' }}</span>
+              <div class="card-actions port-card-actions">
+                <div class="port-action-icons">
+                  <span class="action-popover" :data-popover="t('common.editPort')">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      :aria-label="t('common.editPort')"
+                      @click="openEditMappingDialog(mapping)"
+                    >
+                      <Edit3 class="size-4" aria-hidden="true" />
+                    </Button>
+                  </span>
+                  <span class="action-popover" :data-popover="copyPopoverText(mapping.id)">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      :aria-label="t('common.copyEndpoint')"
+                      @click="copyEndpoint(mapping)"
+                    >
+                      <Copy class="size-4" aria-hidden="true" />
+                    </Button>
+                  </span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger as-child>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        :aria-label="t('home.aria.moreActions')"
+                      >
+                        <MoreVertical class="size-4" aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" :side-offset="8" class="port-actions-menu">
+                      <DropdownMenuItem
+                        class="port-actions-menu-item"
+                        @select="openRouteDialog(mapping)"
+                      >
+                        <Plus class="size-4" aria-hidden="true" />
+                        <span>{{ t('common.addRoute') }}</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        class="port-actions-menu-item"
+                        @select="requestRemoveMapping(mapping)"
+                      >
+                        <Trash2 class="size-4" aria-hidden="true" />
+                        <span>{{ t('common.deletePort') }}</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <span
+                  class="action-popover port-status-popover"
+                  :class="{ active: portRuntimeState(mapping) === 'failed' }"
+                  :data-popover="portFailureReason(mapping)"
+                  :aria-label="portStatusTitle(mapping)"
+                  :tabindex="portRuntimeState(mapping) === 'failed' ? 0 : -1"
+                >
+                  <small class="port-status-chip" :class="`status-${portRuntimeState(mapping)}`">
+                    <i aria-hidden="true"></i>
+                    {{ portStatusLabel(mapping) }}
+                  </small>
+                </span>
+              </div>
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              :title="t('common.deleteNode')"
-              @click="removeNode(node.id).catch(() => undefined)"
-            >
-              <Trash2 class="size-4" aria-hidden="true" />
-            </Button>
-            <div class="node-meta">
-              <small v-if="node.username">{{
-                t('home.nodeMeta.username', { value: node.username })
-              }}</small>
-              <small v-if="node.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
-              <small v-if="!node.username && !node.password">{{ t('common.noAccount') }}</small>
+
+            <div class="route-card-grid">
+              <article
+                v-for="node in mappingNodes(mapping)"
+                :key="node.id"
+                class="inner-route-card"
+              >
+                <div class="route-card-actions" @click.stop>
+                  <span
+                    class="action-popover mini-action"
+                    :data-popover="t('home.aria.moreActions')"
+                  >
+                    <button
+                      type="button"
+                      class="mini-menu-button"
+                      aria-haspopup="menu"
+                      :aria-expanded="isRouteActionMenuOpen(mapping, 'node', node.id)"
+                      :aria-label="t('home.aria.moreActions')"
+                      @click.stop="toggleRouteActionMenu(mapping, 'node', node.id)"
+                    >
+                      <MoreVertical class="size-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                  <div
+                    v-if="isRouteActionMenuOpen(mapping, 'node', node.id)"
+                    class="route-action-menu"
+                    role="menu"
+                  >
+                    <button
+                      type="button"
+                      class="route-action-menu-item danger"
+                      role="menuitem"
+                      @click.stop="requestRemoveRoute(mapping, node)"
+                    >
+                      <Trash2 class="size-4" aria-hidden="true" />
+                      <span>{{ t('common.removeRoute') }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="route-main">
+                  <strong>{{ node.name }}</strong>
+                </div>
+                <span class="route-card-meta">
+                  <span class="route-kind-badge">{{ t('home.routeKind.node') }}</span>
+                  <span class="route-detail">{{ protocolLabels[node.protocol] }}</span>
+                </span>
+                <span class="route-health">
+                  <small class="latency" :title="t('home.nodeHealth.latency')">
+                    {{ routeLatencyLabel(node) }}
+                  </small>
+                  <small class="success" :title="t('home.nodeHealth.success')">
+                    <i aria-hidden="true"></i>
+                    {{ routeSuccessLabel(node) }}
+                  </small>
+                  <small class="failure" :title="t('home.nodeHealth.failure')">
+                    <i aria-hidden="true"></i>
+                    {{ routeFailureLabel(node) }}
+                  </small>
+                </span>
+              </article>
+
+              <article
+                v-for="group in mappingGroups(mapping)"
+                :key="group.id"
+                class="inner-route-card group-route-card"
+              >
+                <div class="route-card-actions" @click.stop>
+                  <span
+                    class="action-popover mini-action"
+                    :data-popover="t('home.aria.moreActions')"
+                  >
+                    <button
+                      type="button"
+                      class="mini-menu-button"
+                      aria-haspopup="menu"
+                      :aria-expanded="isRouteActionMenuOpen(mapping, 'group', group.id)"
+                      :aria-label="t('home.aria.moreActions')"
+                      @click.stop="toggleRouteActionMenu(mapping, 'group', group.id)"
+                    >
+                      <MoreVertical class="size-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                  <div
+                    v-if="isRouteActionMenuOpen(mapping, 'group', group.id)"
+                    class="route-action-menu"
+                    role="menu"
+                  >
+                    <button
+                      type="button"
+                      class="route-action-menu-item danger"
+                      role="menuitem"
+                      @click.stop="requestRemoveRoute(mapping, group)"
+                    >
+                      <Trash2 class="size-4" aria-hidden="true" />
+                      <span>{{ t('common.removeRoute') }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="route-main">
+                  <strong>{{ group.name }}</strong>
+                  <span class="route-card-meta">
+                    <span class="route-kind-badge group">{{ t('home.routeKind.group') }}</span>
+                    <span class="route-detail">{{
+                      t(`home.groupStrategy.${group.strategy}`)
+                    }}</span>
+                  </span>
+                </div>
+              </article>
+
+              <button type="button" class="inner-add-card" @click="openRouteDialog(mapping)">
+                <Plus class="size-5" aria-hidden="true" />
+                <span>{{ t('common.addRoute') }}</span>
+              </button>
+            </div>
+
+            <div class="port-card-footer">
+              <span>{{ mapping.remark || t('common.noRemark') }}</span>
+              <span class="action-popover danger-popover" :data-popover="t('common.deletePort')">
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="icon"
+                  :aria-label="t('common.deletePort')"
+                  @click="requestRemoveMapping(mapping)"
+                >
+                  <Trash2 class="size-4" aria-hidden="true" />
+                </Button>
+              </span>
             </div>
           </article>
         </div>
-        <p v-else class="empty-node-state">
-          {{ t('home.groupFilters.emptyNodes', { name: selectedNodeGroupTitle }) }}
-        </p>
       </section>
 
-      <div class="panel-heading sub-heading">
-        <div>
-          <h2>{{ t('home.sections.groupsTitle') }}</h2>
-          <p>{{ t('home.sections.groupsLead') }}</p>
-        </div>
-      </div>
-
-      <form class="manual-node-form" @submit.prevent="handleManualGroupSubmit">
-        <div class="field-grid two">
-          <label>
-            <span>{{ t('home.form.groupName') }}</span>
-            <input v-model.trim="manualGroupForm.name" type="text" required />
+      <section v-else-if="currentTab === 'nodes'" class="panel simple-panel">
+        <div class="node-filter-bar" :aria-label="t('home.aria.nodeGroupFilters')">
+          <label class="node-empty-toggle">
+            <input v-model="hideEmptyNodeGroups" type="checkbox" />
+            <span>{{ t('home.groupFilters.hideEmpty') }}</span>
           </label>
-          <label>
-            <span>{{ t('home.form.groupStrategy') }}</span>
-            <select v-model="manualGroupForm.strategy">
-              <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
-              <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
-            </select>
-          </label>
-        </div>
-        <div class="field-grid two">
-          <label>
-            <span>{{ t('home.form.groupNodes') }}</span>
-            <select v-model="manualGroupForm.nodeIds" multiple>
-              <option v-for="node in nodes" :key="node.id" :value="node.id">
-                {{ node.name }}
-              </option>
-            </select>
-          </label>
-          <label>
-            <span>{{ t('home.form.groupGroups') }}</span>
-            <select v-model="manualGroupForm.groupIds" multiple>
-              <option v-for="group in manualGroups" :key="group.id" :value="group.id">
-                {{ group.name }}
-              </option>
-            </select>
-          </label>
-        </div>
-        <label>
-          <span>{{ t('home.form.remark') }}</span>
-          <input
-            v-model.trim="manualGroupForm.remark"
-            type="text"
-            :placeholder="t('common.optional')"
-          />
-        </label>
-        <Button type="submit">
-          <Plus class="size-4" aria-hidden="true" />
-          {{ t('common.addGroup') }}
-        </Button>
-      </form>
-
-      <div class="node-table">
-        <article v-for="group in groups" :key="group.id" class="node-row group-row">
-          <div class="node-protocol">{{ t(`home.groupType.${group.type}`) }}</div>
-          <div class="node-main">
-            <strong>{{ group.name }}</strong>
-            <span>{{ groupSummary(group) }}</span>
-          </div>
-          <Button
-            v-if="group.type === 'manual'"
+          <button
+            v-for="option in nodeGroupFilterOptions"
+            :key="option.key"
             type="button"
-            variant="ghost"
-            size="icon-sm"
-            :title="t('common.deleteGroup')"
-            @click="removeGroup(group.id).catch(() => undefined)"
+            :class="{ active: activeNodeGroupFilter === option.key }"
+            @click="selectNodeGroupFilter(option.key)"
           >
-            <Trash2 class="size-4" aria-hidden="true" />
-          </Button>
-          <div class="node-meta">
-            <small>{{ t(`home.groupStrategy.${group.strategy}`) }}</small>
-            <small v-if="group.filter">{{ group.filter }}</small>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <section v-else-if="currentTab === 'subscriptions'" class="panel simple-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>{{ t('home.sections.subscriptionsTitle') }}</h2>
-          <p>{{ t('home.sections.subscriptionsLead') }}</p>
+            <span>{{ option.label }}</span>
+            <small>{{ option.countLabel }}</small>
+          </button>
         </div>
-        <RefreshCw class="panel-icon" aria-hidden="true" />
-      </div>
 
-      <div class="import-layout">
-        <form class="manual-node-form" @submit.prevent="handleSubscriptionSubmit">
+        <div v-if="activeNodeGroupFilter === 'summary'" class="node-group-summary-grid">
+          <button
+            v-for="item in groupSummaryItems"
+            :key="item.key"
+            type="button"
+            class="node-group-summary-card"
+            @click="selectNodeGroupFilter(item.key)"
+          >
+            <span class="node-summary-type" :class="{ subscription: item.isSubscription }">
+              {{ item.typeLabel }}
+            </span>
+            <strong>{{ item.title }}</strong>
+            <span class="node-summary-count">{{
+              t('home.groupMeta.nodeCount', { count: item.count })
+            }}</span>
+            <small>{{ item.detail }}</small>
+            <span class="node-summary-meta">
+              <em>{{ item.strategyLabel }}</em>
+              <em v-if="item.filter">{{ item.filter }}</em>
+            </span>
+          </button>
+        </div>
+
+        <section v-else class="node-group-section active-node-group">
+          <div class="node-group-heading">
+            <strong>{{ selectedNodeGroupTitle }}</strong>
+            <span>{{
+              t('home.groupMeta.nodeCount', { count: selectedNodeGroupNodes.length })
+            }}</span>
+          </div>
+          <div v-if="selectedNodeGroupNodes.length" class="node-table">
+            <article v-for="node in selectedNodeGroupNodes" :key="node.id" class="node-row">
+              <div class="node-protocol" :class="{ chain: node.protocol === 'chain' }">
+                {{ protocolLabels[node.protocol] }}
+              </div>
+              <div class="node-main">
+                <strong>{{ node.name }}</strong>
+                <span>{{ nodeEndpointLabel(node) }}</span>
+              </div>
+              <div class="node-row-actions">
+                <span class="action-popover" :data-popover="nodeUriPopoverText(node)">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    :aria-label="t('common.exportNodeUri')"
+                    :disabled="!nodeExportUri(node)"
+                    @click="copyNodeUri(node)"
+                  >
+                    <Copy class="size-4" aria-hidden="true" />
+                  </Button>
+                </span>
+                <span class="action-popover" :data-popover="t('common.editNode')">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    :aria-label="t('common.editNode')"
+                    @click="openEditNodeDialog(node)"
+                  >
+                    <Edit3 class="size-4" aria-hidden="true" />
+                  </Button>
+                </span>
+                <span class="action-popover" :data-popover="t('common.deleteNode')">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    :aria-label="t('common.deleteNode')"
+                    @click="requestRemoveNode(node)"
+                  >
+                    <Trash2 class="size-4" aria-hidden="true" />
+                  </Button>
+                </span>
+              </div>
+              <div class="node-meta">
+                <small v-if="node.protocol === 'chain'">{{
+                  t('home.nodeMeta.chainCount', { count: node.chainNodeIds.length })
+                }}</small>
+                <small v-if="node.username">{{
+                  t('home.nodeMeta.username', { value: node.username })
+                }}</small>
+                <small v-if="node.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
+                <small v-if="node.protocol !== 'chain' && !node.username && !node.password">{{
+                  t('common.noAccount')
+                }}</small>
+              </div>
+            </article>
+          </div>
+          <p v-else class="empty-node-state">
+            {{ t('home.groupFilters.emptyNodes', { name: selectedNodeGroupTitle }) }}
+          </p>
+        </section>
+
+        <div class="panel-heading sub-heading">
+          <div>
+            <h2>{{ t('home.sections.chainTitle') }}</h2>
+            <p>{{ t('home.sections.chainLead') }}</p>
+          </div>
+          <Route class="panel-icon" aria-hidden="true" />
+        </div>
+
+        <form class="manual-node-form chain-node-form" @submit.prevent="handleChainNodeSubmit">
           <div class="field-grid two">
             <label>
-              <span>{{ t('home.form.subscriptionName') }}</span>
+              <span>{{ t('home.form.chainName') }}</span>
               <input
-                v-model.trim="subscriptionForm.name"
+                v-model.trim="chainNodeForm.name"
                 type="text"
-                :placeholder="t('common.optional')"
+                :placeholder="t('home.placeholders.chainName')"
+                required
               />
             </label>
             <label>
-              <span>{{ t('home.form.subscriptionUrl') }}</span>
-              <input v-model.trim="subscriptionForm.url" type="url" required />
+              <span>{{ t('home.form.nodeGroup') }}</span>
+              <select v-model="chainNodeForm.groupId">
+                <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
+                <option v-for="group in groups" :key="group.id" :value="group.id">
+                  {{ group.name }}
+                </option>
+              </select>
             </label>
           </div>
-          <label>
-            <span>{{ t('home.form.subscriptionGroup') }}</span>
-            <select v-model="subscriptionForm.groupId">
-              <option value="">{{ t('home.subscription.createGroup') }}</option>
-              <option v-for="group in manualGroups" :key="group.id" :value="group.id">
-                {{ group.name }}
-              </option>
-            </select>
-          </label>
+
+          <div class="chain-node-builder">
+            <fieldset>
+              <span>{{ t('home.form.chainNodes') }}</span>
+              <div class="chain-node-options">
+                <label
+                  v-for="node in physicalNodes"
+                  :key="node.id"
+                  :class="{ selected: chainNodeForm.chainNodeIds.includes(node.id) }"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="chainNodeForm.chainNodeIds.includes(node.id)"
+                    @change="toggleChainNodeSelection(node.id)"
+                  />
+                  {{ node.name }}
+                </label>
+              </div>
+            </fieldset>
+            <div class="chain-node-preview">
+              <strong>{{ t('home.form.chainPreview') }}</strong>
+              <span v-if="chainNodeForm.chainNodeIds.length">{{ chainNodeFormPreview() }}</span>
+              <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
+              <div v-if="chainNodeForm.chainNodeIds.length" class="chain-node-order">
+                <button
+                  v-for="(node, index) in selectedChainNodes()"
+                  :key="node.id"
+                  type="button"
+                  @click="removeChainNodeSelection(node.id)"
+                >
+                  <em>{{ index + 1 }}</em>
+                  <span>{{ node.name }}</span>
+                  <X class="size-3" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </div>
+
           <label>
             <span>{{ t('home.form.remark') }}</span>
             <input
-              v-model.trim="subscriptionForm.remark"
+              v-model.trim="chainNodeForm.remark"
+              type="text"
+              :placeholder="t('common.optional')"
+            />
+          </label>
+
+          <Button type="submit">
+            <Route class="size-4" aria-hidden="true" />
+            {{ t('common.addChainNode') }}
+          </Button>
+        </form>
+        <span class="inline-message">{{ importMessage }}</span>
+
+        <div class="panel-heading sub-heading">
+          <div>
+            <h2>{{ t('home.sections.groupsTitle') }}</h2>
+            <p>{{ t('home.sections.groupsLead') }}</p>
+          </div>
+        </div>
+
+        <form class="manual-node-form" @submit.prevent="handleManualGroupSubmit">
+          <div class="field-grid two">
+            <label>
+              <span>{{ t('home.form.groupName') }}</span>
+              <input v-model.trim="manualGroupForm.name" type="text" required />
+            </label>
+            <label>
+              <span>{{ t('home.form.groupStrategy') }}</span>
+              <select v-model="manualGroupForm.strategy">
+                <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
+                <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="field-grid two">
+            <label>
+              <span>{{ t('home.form.groupNodes') }}</span>
+              <select v-model="manualGroupForm.nodeIds" multiple>
+                <option v-for="node in nodes" :key="node.id" :value="node.id">
+                  {{ node.name }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t('home.form.groupGroups') }}</span>
+              <select v-model="manualGroupForm.groupIds" multiple>
+                <option v-for="group in manualGroups" :key="group.id" :value="group.id">
+                  {{ group.name }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>{{ t('home.form.remark') }}</span>
+            <input
+              v-model.trim="manualGroupForm.remark"
               type="text"
               :placeholder="t('common.optional')"
             />
           </label>
           <Button type="submit">
-            <RefreshCw class="size-4" aria-hidden="true" />
-            {{ t('common.addSubscription') }}
+            <Plus class="size-4" aria-hidden="true" />
+            {{ t('common.addGroup') }}
           </Button>
         </form>
-      </div>
 
-      <div class="node-table">
-        <article v-for="subscription in subscriptions" :key="subscription.id" class="node-row">
-          <div class="node-protocol">{{ t('home.subscription.source') }}</div>
-          <div class="node-main">
-            <strong>{{ subscription.name }}</strong>
-            <span>{{ subscription.url }}</span>
-          </div>
-          <div class="card-actions">
+        <div class="node-table">
+          <article v-for="group in groups" :key="group.id" class="node-row group-row">
+            <div class="node-protocol">{{ t(`home.groupType.${group.type}`) }}</div>
+            <div class="node-main">
+              <strong>{{ group.name }}</strong>
+              <span>{{ groupSummary(group) }}</span>
+            </div>
             <Button
+              v-if="group.type === 'manual'"
               type="button"
               variant="ghost"
               size="icon-sm"
-              :title="t('common.syncSubscription')"
-              @click="syncExistingSubscription(subscription.id)"
-            >
-              <RefreshCw class="size-4" aria-hidden="true" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              :title="t('common.deleteSubscription')"
-              @click="removeSubscription(subscription.id).catch(() => undefined)"
+              :title="t('common.deleteGroup')"
+              @click="removeGroup(group.id).catch(() => undefined)"
             >
               <Trash2 class="size-4" aria-hidden="true" />
             </Button>
-          </div>
-          <div class="node-meta">
-            <small>{{ subscriptionGroupName(subscription.groupId) }}</small>
-            <small>{{ subscription.lastSyncStatus || t('home.subscription.notSynced') }}</small>
-            <small v-if="subscription.lastSyncedAt">{{
-              formatDateTime(subscription.lastSyncedAt)
-            }}</small>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <section v-else class="panel simple-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>{{ t('home.sections.importTitle') }}</h2>
-          <p>{{ t('home.sections.importLead') }}</p>
+            <div class="node-meta">
+              <small>{{ t(`home.groupStrategy.${group.strategy}`) }}</small>
+              <small v-if="group.filter">{{ group.filter }}</small>
+            </div>
+          </article>
         </div>
-        <FileInput class="panel-icon" aria-hidden="true" />
-      </div>
+      </section>
 
-      <div class="import-layout">
-        <label>
-          <span>{{ t('home.form.shareLink') }}</span>
-          <textarea
-            v-model="rawImport"
-            rows="5"
-            :placeholder="t('home.placeholders.shareLinks')"
-          ></textarea>
-        </label>
-        <label>
-          <span>{{ t('home.form.nodeGroup') }}</span>
-          <select v-model="rawImportGroupId">
-            <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
-            <option v-for="group in groups" :key="group.id" :value="group.id">
-              {{ group.name }}
-            </option>
-          </select>
-        </label>
-
-        <form class="manual-node-form" @submit.prevent="handleManualNodeSubmit">
-          <div class="field-grid two">
+      <section v-else-if="currentTab === 'subscriptions'" class="panel simple-panel">
+        <div class="import-layout">
+          <form class="manual-node-form" @submit.prevent="handleSubscriptionSubmit">
+            <div class="field-grid two">
+              <label>
+                <span>{{ t('home.form.subscriptionName') }}</span>
+                <input
+                  v-model.trim="subscriptionForm.name"
+                  type="text"
+                  :placeholder="t('common.optional')"
+                />
+              </label>
+              <label>
+                <span>{{ t('home.form.subscriptionUrl') }}</span>
+                <input v-model.trim="subscriptionForm.url" type="url" required />
+              </label>
+            </div>
             <label>
-              <span>{{ t('home.form.name') }}</span>
-              <input v-model.trim="manualNodeForm.name" type="text" required />
-            </label>
-            <label>
-              <span>{{ t('home.form.protocol') }}</span>
-              <select v-model="manualNodeForm.protocol">
-                <option value="socks5">{{ protocolLabels.socks5 }}</option>
-                <option value="http">{{ protocolLabels.http }}</option>
-                <option value="vless">{{ protocolLabels.vless }}</option>
-                <option value="vmess">{{ protocolLabels.vmess }}</option>
-                <option value="trojan">{{ protocolLabels.trojan }}</option>
+              <span>{{ t('home.form.subscriptionGroup') }}</span>
+              <select v-model="subscriptionForm.groupId">
+                <option value="">{{ t('home.subscription.createGroup') }}</option>
+                <option v-for="group in manualGroups" :key="group.id" :value="group.id">
+                  {{ group.name }}
+                </option>
               </select>
             </label>
-          </div>
-
-          <div class="field-grid two">
             <label>
-              <span>{{ t('home.form.server') }}</span>
-              <input v-model.trim="manualNodeForm.server" type="text" required />
-            </label>
-            <label>
-              <span>{{ t('home.form.port') }}</span>
+              <span>{{ t('home.form.remark') }}</span>
               <input
-                v-model.number="manualNodeForm.port"
-                type="number"
-                min="1"
-                max="65535"
-                required
-              />
-            </label>
-          </div>
-
-          <div class="field-grid two">
-            <label>
-              <span>{{ t('home.form.username') }}</span>
-              <input
-                v-model.trim="manualNodeForm.username"
+                v-model.trim="subscriptionForm.remark"
                 type="text"
                 :placeholder="t('common.optional')"
               />
             </label>
-            <label>
-              <span>{{ t('home.form.password') }}</span>
-              <input
-                v-model.trim="manualNodeForm.password"
-                type="password"
-                :placeholder="t('common.optional')"
-              />
-            </label>
-          </div>
+            <Button type="submit">
+              <RefreshCw class="size-4" aria-hidden="true" />
+              {{
+                subscriptionPreview
+                  ? t('home.importPreview.confirmSubscription')
+                  : t('home.importPreview.previewSubscription')
+              }}
+            </Button>
+          </form>
+        </div>
 
+        <div v-if="subscriptionPreview" class="import-preview-panel">
+          <div class="import-preview-heading">
+            <strong>{{ t('home.importPreview.title') }}</strong>
+            <span>{{ previewSummary(subscriptionPreview) }}</span>
+          </div>
+          <div class="import-preview-list">
+            <article
+              v-for="(item, index) in subscriptionPreview.items"
+              :key="`${item.type}-${item.name}-${index}`"
+              class="import-preview-item"
+              :class="{ muted: item.action === 'skip' || item.action === 'fail' }"
+            >
+              <span>{{ previewTypeLabel(item) }}</span>
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.detail || previewActionLabel(item) }}</small>
+            </article>
+          </div>
+        </div>
+
+        <div class="node-table">
+          <article v-for="subscription in subscriptions" :key="subscription.id" class="node-row">
+            <div class="node-protocol">{{ t('home.subscription.source') }}</div>
+            <div class="node-main">
+              <strong>{{ subscription.name }}</strong>
+              <span>{{ subscription.url }}</span>
+            </div>
+            <div class="card-actions">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                :title="t('common.syncSubscription')"
+                @click="syncExistingSubscription(subscription.id)"
+              >
+                <RefreshCw class="size-4" aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                :title="t('common.deleteSubscription')"
+                @click="removeSubscription(subscription.id).catch(() => undefined)"
+              >
+                <Trash2 class="size-4" aria-hidden="true" />
+              </Button>
+            </div>
+            <div class="node-meta">
+              <small>{{ subscriptionGroupName(subscription.groupId) }}</small>
+              <small>{{ subscription.lastSyncStatus || t('home.subscription.notSynced') }}</small>
+              <small v-if="subscription.lastSyncedAt">{{
+                formatDateTime(subscription.lastSyncedAt)
+              }}</small>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section v-else class="panel simple-panel">
+        <div class="import-layout">
+          <label>
+            <span>{{ t('home.form.shareLink') }}</span>
+            <textarea
+              v-model="rawImport"
+              rows="5"
+              :placeholder="t('home.placeholders.shareLinks')"
+            ></textarea>
+          </label>
           <label>
             <span>{{ t('home.form.nodeGroup') }}</span>
-            <select v-model="manualNodeForm.groupId">
+            <select v-model="rawImportGroupId">
               <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
               <option v-for="group in groups" :key="group.id" :value="group.id">
                 {{ group.name }}
@@ -1327,29 +2092,116 @@ function portStatusTitle(mapping: PortMapping): string {
             </select>
           </label>
 
-          <label>
-            <span>{{ t('home.form.remark') }}</span>
-            <input
-              v-model.trim="manualNodeForm.remark"
-              type="text"
-              :placeholder="t('common.optional')"
-            />
-          </label>
+          <form class="manual-node-form" @submit.prevent="handleManualNodeSubmit">
+            <div class="field-grid two">
+              <label>
+                <span>{{ t('home.form.name') }}</span>
+                <input v-model.trim="manualNodeForm.name" type="text" required />
+              </label>
+              <label>
+                <span>{{ t('home.form.protocol') }}</span>
+                <select v-model="manualNodeForm.protocol">
+                  <option value="socks5">{{ protocolLabels.socks5 }}</option>
+                  <option value="http">{{ protocolLabels.http }}</option>
+                  <option value="vless">{{ protocolLabels.vless }}</option>
+                  <option value="vmess">{{ protocolLabels.vmess }}</option>
+                  <option value="trojan">{{ protocolLabels.trojan }}</option>
+                  <option value="shadowsocks">{{ protocolLabels.shadowsocks }}</option>
+                  <option value="tuic">{{ protocolLabels.tuic }}</option>
+                  <option value="ssh">{{ protocolLabels.ssh }}</option>
+                </select>
+              </label>
+            </div>
 
-          <Button type="submit">
-            <Plus class="size-4" aria-hidden="true" />
-            {{ t('common.addNode') }}
+            <div class="field-grid two">
+              <label>
+                <span>{{ t('home.form.server') }}</span>
+                <input v-model.trim="manualNodeForm.server" type="text" required />
+              </label>
+              <label>
+                <span>{{ t('home.form.port') }}</span>
+                <input
+                  v-model.number="manualNodeForm.port"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  required
+                />
+              </label>
+            </div>
+
+            <div class="field-grid two">
+              <label>
+                <span>{{ t('home.form.username') }}</span>
+                <input
+                  v-model.trim="manualNodeForm.username"
+                  type="text"
+                  :placeholder="t('common.optional')"
+                />
+              </label>
+              <label>
+                <span>{{ t('home.form.password') }}</span>
+                <input
+                  v-model.trim="manualNodeForm.password"
+                  type="password"
+                  :placeholder="t('common.optional')"
+                />
+              </label>
+            </div>
+
+            <label>
+              <span>{{ t('home.form.nodeGroup') }}</span>
+              <select v-model="manualNodeForm.groupId">
+                <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
+                <option v-for="group in groups" :key="group.id" :value="group.id">
+                  {{ group.name }}
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <span>{{ t('home.form.remark') }}</span>
+              <input
+                v-model.trim="manualNodeForm.remark"
+                type="text"
+                :placeholder="t('common.optional')"
+              />
+            </label>
+
+            <Button type="submit">
+              <Plus class="size-4" aria-hidden="true" />
+              {{ t('common.addNode') }}
+            </Button>
+          </form>
+        </div>
+
+        <div v-if="importPreview" class="import-preview-panel">
+          <div class="import-preview-heading">
+            <strong>{{ t('home.importPreview.title') }}</strong>
+            <span>{{ previewSummary(importPreview) }}</span>
+          </div>
+          <div class="import-preview-list">
+            <article
+              v-for="(item, index) in importPreview.items"
+              :key="`${item.type}-${item.name}-${index}`"
+              class="import-preview-item"
+              :class="{ muted: item.action === 'skip' || item.action === 'fail' }"
+            >
+              <span>{{ previewTypeLabel(item) }}</span>
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.detail || previewActionLabel(item) }}</small>
+            </article>
+          </div>
+        </div>
+
+        <div class="button-row">
+          <Button type="button" @click="handleImport">
+            <Import class="size-4" aria-hidden="true" />
+            {{ importPreview ? t('home.importPreview.confirmImport') : t('common.importLinks') }}
           </Button>
-        </form>
-      </div>
-
-      <div class="button-row">
-        <Button type="button" @click="handleImport">
-          <Import class="size-4" aria-hidden="true" />
-          {{ t('common.importLinks') }}
-        </Button>
-        <span class="inline-message">{{ importMessage }}</span>
-      </div>
+          <span class="inline-message">{{ importMessage }}</span>
+        </div>
+      </section>
     </section>
 
     <div
@@ -1493,14 +2345,23 @@ function portStatusTitle(mapping: PortMapping): string {
         </div>
 
         <div class="route-node-fields">
-          <label>
-            <span>{{ t('home.form.routeSource') }}</span>
-            <select v-model="routeNodeForm.mode">
-              <option value="uri">{{ t('home.routeSource.uri') }}</option>
-              <option value="node">{{ t('home.routeSource.node') }}</option>
-              <option value="group">{{ t('home.routeSource.group') }}</option>
-            </select>
-          </label>
+          <fieldset class="route-source-field">
+            <legend>{{ t('home.form.routeSource') }}</legend>
+            <div class="route-source-options">
+              <label
+                v-for="option in routeSourceOptions"
+                :key="option.value"
+                class="route-source-option"
+                :class="{ active: routeNodeForm.mode === option.value }"
+              >
+                <input v-model="routeNodeForm.mode" type="radio" :value="option.value" />
+                <span>
+                  <component :is="option.icon" class="size-4" aria-hidden="true" />
+                  {{ option.label }}
+                </span>
+              </label>
+            </div>
+          </fieldset>
 
           <label>
             <span>{{ t('home.form.nodeName') }}</span>
@@ -1556,6 +2417,213 @@ function portStatusTitle(mapping: PortMapping): string {
           </Button>
         </div>
       </form>
+    </div>
+
+    <div
+      v-if="editingNode"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeNodeEditDialog"
+    >
+      <form
+        class="modal-card node-edit-modal"
+        :class="{ 'chain-node-edit-modal': editingNode.protocol === 'chain' }"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="node-edit-dialog-title"
+        @submit.prevent="saveNodeEditDialog"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="node-edit-dialog-title">{{ t('home.dialogs.editNodeTitle') }}</h2>
+            <p>{{ editingNode.name }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeNodeEditDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.nodeName') }}</span>
+          <input
+            v-model.trim="nodeEditForm.name"
+            type="text"
+            autocomplete="off"
+            :placeholder="t('home.placeholders.nodeName')"
+          />
+        </label>
+
+        <fieldset class="node-edit-group-field">
+          <span>{{ t('home.form.nodeGroup') }}</span>
+          <div class="node-edit-group-options">
+            <label
+              v-for="group in groups"
+              :key="group.id"
+              :class="{ selected: nodeEditForm.groupIds.includes(group.id) }"
+            >
+              <input
+                type="checkbox"
+                :checked="nodeEditForm.groupIds.includes(group.id)"
+                @change="toggleNodeEditGroup(group.id)"
+              />
+              {{ group.name }}
+            </label>
+          </div>
+        </fieldset>
+
+        <div v-if="editingNode.protocol === 'chain'" class="chain-node-builder">
+          <fieldset>
+            <span>{{ t('home.form.chainNodes') }}</span>
+            <div class="chain-node-options">
+              <label
+                v-for="node in physicalNodes"
+                :key="node.id"
+                :class="{ selected: nodeEditForm.chainNodeIds.includes(node.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="nodeEditForm.chainNodeIds.includes(node.id)"
+                  @change="toggleNodeEditChainNodeSelection(node.id)"
+                />
+                {{ node.name }}
+              </label>
+            </div>
+          </fieldset>
+          <div class="chain-node-preview">
+            <strong>{{ t('home.form.chainPreview') }}</strong>
+            <span v-if="nodeEditForm.chainNodeIds.length">{{ nodeEditChainPreview() }}</span>
+            <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
+            <div v-if="nodeEditForm.chainNodeIds.length" class="chain-node-order">
+              <button
+                v-for="(node, index) in selectedNodeEditChainNodes()"
+                :key="node.id"
+                type="button"
+                @click="removeNodeEditChainNodeSelection(node.id)"
+              >
+                <em>{{ index + 1 }}</em>
+                <span>{{ node.name }}</span>
+                <X class="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.remark') }}</span>
+          <input
+            v-model.trim="nodeEditForm.remark"
+            type="text"
+            :placeholder="t('common.optional')"
+          />
+        </label>
+
+        <p v-if="nodeEditError" class="route-node-error">{{ nodeEditError }}</p>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeNodeEditDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="submit">
+            <Check class="size-4" aria-hidden="true" />
+            {{ t('common.save') }}
+          </Button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      v-if="confirmationDialog"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeConfirmationDialog"
+    >
+      <section
+        class="modal-card confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="confirm-dialog-title">{{ confirmationDialog.title }}</h2>
+            <p>{{ confirmationDialog.message }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeConfirmationDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeConfirmationDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="button" variant="destructive" @click="confirmPendingAction">
+            <Trash2 class="size-4" aria-hidden="true" />
+            {{ confirmationDialog.confirmLabel }}
+          </Button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="duplicateRouteNodeDialog"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeDuplicateRouteNodeDialog"
+    >
+      <section
+        class="modal-card duplicate-route-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-route-dialog-title"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="duplicate-route-dialog-title">
+              {{ t('home.confirm.duplicateRouteTitle') }}
+            </h2>
+            <p>
+              {{
+                t('home.confirm.duplicateRouteMessage', {
+                  name: duplicateRouteNodeDialog.node.name,
+                })
+              }}
+            </p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeDuplicateRouteNodeDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="forceAddDuplicateRouteNode">
+            <Plus class="size-4" aria-hidden="true" />
+            {{ t('home.confirm.duplicateRouteForce') }}
+          </Button>
+          <Button type="button" @click="reuseDuplicateRouteNode">
+            <Link2 class="size-4" aria-hidden="true" />
+            {{ t('home.confirm.duplicateRouteReuse') }}
+          </Button>
+        </div>
+      </section>
     </div>
 
     <p v-if="copyMessage" class="toast-message" role="status">{{ copyMessage }}</p>
