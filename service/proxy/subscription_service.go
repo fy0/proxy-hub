@@ -31,6 +31,7 @@ const (
 type subscriptionConfig struct {
 	Proxies     []map[string]any `yaml:"proxies"`
 	ProxyGroups []map[string]any `yaml:"proxy-groups"`
+	Rules       []string         `yaml:"rules"`
 }
 
 type parsedSubscriptionNode struct {
@@ -50,10 +51,18 @@ type parsedSubscriptionGroup struct {
 	Filter      string
 }
 
+type parsedClashConfig struct {
+	Nodes        []parsedSubscriptionNode
+	Groups       []parsedSubscriptionGroup
+	Failures     []NodeImportFailure
+	PreviewItems []NodeImportPreviewItem
+}
+
 type parsedSubscription struct {
-	Nodes    []parsedSubscriptionNode
-	Groups   []parsedSubscriptionGroup
-	Failures []NodeImportFailure
+	Nodes        []parsedSubscriptionNode
+	Groups       []parsedSubscriptionGroup
+	Failures     []NodeImportFailure
+	PreviewItems []NodeImportPreviewItem
 }
 
 func SubscriptionCreate(ctx context.Context, tx model.DBTx, req SubscriptionUpsertRequest) (*tables.ProxySubscriptionTable, error) {
@@ -197,6 +206,18 @@ func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error
 	return tx.Delete(&subscription).Error
 }
 
+func SubscriptionPreview(ctx context.Context, tx model.DBTx, req SubscriptionUpsertRequest) (*NodeImportResult, error) {
+	normalized, err := normalizeSubscriptionRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchSubscription(ctx, normalized.URL)
+	if err != nil {
+		return nil, err
+	}
+	return PreviewImportRaw(ctx, tx, raw)
+}
+
 func SubscriptionSync(ctx context.Context, tx model.DBTx, id string, req SubscriptionSyncRequest) (*NodeImportResult, error) {
 	if tx != nil {
 		return subscriptionSyncInTx(ctx, tx, id, req)
@@ -297,9 +318,10 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 	}
 
 	result := &NodeImportResult{
-		Total:    len(parsed.Nodes),
-		Failures: append([]NodeImportFailure(nil), parsed.Failures...),
-		Skipped:  len(parsed.Failures),
+		Total:        len(parsed.Nodes) + len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Failures:     append([]NodeImportFailure(nil), parsed.Failures...),
+		PreviewItems: append([]NodeImportPreviewItem(nil), parsed.PreviewItems...),
+		Skipped:      len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
 	}
 	existingNodes, err := nodesBySubscriptionSource(ctx, tx, subscription.ID)
 	if err != nil {
@@ -313,6 +335,7 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		nodeReq, err := ParseNodeURI(parsedNode.RawURI)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
 			result.Skipped++
 			continue
 		}
@@ -322,12 +345,15 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		node, existed, err := upsertSubscriptionNode(ctx, tx, existingNodes[parsedNode.SourceKey], *nodeReq)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
 			continue
 		}
 		if existed {
 			result.Updated++
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点将更新"))
 		} else {
 			result.Imported++
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
 		}
 		result.Items = append(result.Items, ToNodeDTO(node))
 		nodeIDByName[node.Name] = node.ID
@@ -359,6 +385,11 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 			return result, err
 		}
 		groupIDByName[group.Name] = group.ID
+		if existingGroups[parsedGroup.SourceKey] == nil {
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点组将导入"))
+		} else {
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点组将更新"))
+		}
 	}
 
 	for _, parsedGroup := range parsed.Groups {
@@ -417,18 +448,19 @@ func upsertSubscriptionNode(ctx context.Context, tx model.DBTx, existing *tables
 	}
 	if existing == nil {
 		node := &tables.ProxyNodeTable{
-			Name:           normalized.Name,
-			Protocol:       normalized.Protocol,
-			Server:         normalized.Server,
-			Port:           normalized.Port,
-			Username:       normalized.Username,
-			Password:       normalized.Password,
-			RawURI:         normalized.RawURI,
-			TagsJSON:       encodeStringSlice(normalized.Tags),
-			Remark:         normalized.Remark,
-			SubscriptionID: req.SubscriptionID,
-			GroupID:        req.GroupID,
-			SourceKey:      req.SourceKey,
+			Name:             normalized.Name,
+			Protocol:         normalized.Protocol,
+			Server:           normalized.Server,
+			Port:             normalized.Port,
+			Username:         normalized.Username,
+			Password:         normalized.Password,
+			RawURI:           normalized.RawURI,
+			TagsJSON:         encodeStringSlice(normalized.Tags),
+			Remark:           normalized.Remark,
+			ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
+			SubscriptionID:   req.SubscriptionID,
+			GroupID:          req.GroupID,
+			SourceKey:        req.SourceKey,
 		}
 		if err := tx.WithContext(ctx).Create(node).Error; err != nil {
 			return nil, false, err
@@ -452,19 +484,20 @@ func upsertSubscriptionNode(ctx context.Context, tx model.DBTx, existing *tables
 		}
 	}
 	if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
-		"name":            normalized.Name,
-		"protocol":        normalized.Protocol,
-		"server":          normalized.Server,
-		"port":            normalized.Port,
-		"username":        normalized.Username,
-		"password":        normalized.Password,
-		"raw_uri":         normalized.RawURI,
-		"tags_json":       encodeStringSlice(normalized.Tags),
-		"remark":          normalized.Remark,
-		"subscription_id": req.SubscriptionID,
-		"group_id":        req.GroupID,
-		"source_key":      req.SourceKey,
-		"updated_at":      time.Now(),
+		"name":                normalized.Name,
+		"protocol":            normalized.Protocol,
+		"server":              normalized.Server,
+		"port":                normalized.Port,
+		"username":            normalized.Username,
+		"password":            normalized.Password,
+		"raw_uri":             normalized.RawURI,
+		"tags_json":           encodeStringSlice(normalized.Tags),
+		"remark":              normalized.Remark,
+		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
+		"subscription_id":     req.SubscriptionID,
+		"group_id":            req.GroupID,
+		"source_key":          req.SourceKey,
+		"updated_at":          time.Now(),
 	}).Error; err != nil {
 		return nil, true, err
 	}
@@ -665,7 +698,16 @@ func parseSubscription(raw string) (*parsedSubscription, error) {
 		return nil, ErrInvalidSubscription
 	}
 	if strings.Contains(raw, "proxies:") || strings.Contains(raw, "proxy-groups:") {
-		return parseClashSubscription(raw)
+		parsed, err := parseClashSubscription(raw)
+		if err != nil {
+			return nil, err
+		}
+		return &parsedSubscription{
+			Nodes:        parsed.Nodes,
+			Groups:       parsed.Groups,
+			Failures:     parsed.Failures,
+			PreviewItems: parsed.PreviewItems,
+		}, nil
 	}
 
 	nodes := make([]parsedSubscriptionNode, 0)
@@ -682,15 +724,19 @@ func parseSubscription(raw string) (*parsedSubscription, error) {
 			RawURI:    rawURI,
 		})
 	}
-	return &parsedSubscription{Nodes: nodes, Failures: failures}, nil
+	previewItems := make([]NodeImportPreviewItem, 0, len(failures))
+	for _, failure := range failures {
+		previewItems = append(previewItems, previewFailureItem(failure.URI, failure.Message))
+	}
+	return &parsedSubscription{Nodes: nodes, Failures: failures, PreviewItems: previewItems}, nil
 }
 
-func parseClashSubscription(raw string) (*parsedSubscription, error) {
+func parseClashSubscription(raw string) (*parsedClashConfig, error) {
 	var config subscriptionConfig
 	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
 		return nil, err
 	}
-	result := &parsedSubscription{
+	result := &parsedClashConfig{
 		Nodes:  make([]parsedSubscriptionNode, 0, len(config.Proxies)),
 		Groups: make([]parsedSubscriptionGroup, 0, len(config.ProxyGroups)),
 	}
@@ -699,11 +745,20 @@ func parseClashSubscription(raw string) (*parsedSubscription, error) {
 		name := stringFromMap(proxy, "name")
 		if name == "" {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: "proxy", Message: "missing proxy name"})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem("proxy", "missing proxy name"))
 			continue
 		}
 		rawURI := clashProxyToURI(proxy)
 		if rawURI == "" {
-			result.Failures = append(result.Failures, NodeImportFailure{URI: name, Message: fmt.Sprintf("%s: %s", ErrUnsupportedProtocol, stringFromMap(proxy, "type"))})
+			message := fmt.Sprintf("%s: %s", ErrUnsupportedProtocol, stringFromMap(proxy, "type"))
+			result.Failures = append(result.Failures, NodeImportFailure{URI: name, Message: message})
+			result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
+				Type:   ImportPreviewTypeFailure,
+				Name:   name,
+				Action: ImportPreviewActionFail,
+				Reason: ImportPreviewReasonUnsupportedProtocol,
+				Detail: message,
+			})
 			continue
 		}
 		result.Nodes = append(result.Nodes, parsedSubscriptionNode{
@@ -713,20 +768,75 @@ func parseClashSubscription(raw string) (*parsedSubscription, error) {
 		})
 		nodeNames[name] = struct{}{}
 	}
+	rulesetPolicyGroups := clashRulesetPolicyGroups(config.Rules)
 	groupNames := map[string]struct{}{}
 	for _, group := range config.ProxyGroups {
 		if name := stringFromMap(group, "name"); name != "" {
+			if _, skip := rulesetPolicyGroups[name]; skip {
+				continue
+			}
 			groupNames[name] = struct{}{}
 		}
 	}
 	for _, group := range config.ProxyGroups {
+		name := stringFromMap(group, "name")
+		if name == "" {
+			continue
+		}
+		if _, skip := rulesetPolicyGroups[name]; skip {
+			result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
+				Type:   ImportPreviewTypeGroup,
+				Name:   name,
+				Action: ImportPreviewActionSkip,
+				Reason: ImportPreviewReasonRulesetPolicyGroup,
+				Detail: "RULE-SET 规则命中的策略组不会导入",
+			})
+			continue
+		}
 		parsedGroup := parseClashProxyGroup(group, nodeNames, groupNames, result.Nodes)
 		if parsedGroup.Name == "" {
 			continue
 		}
+		if len(parsedGroup.NodeNames) == 0 && len(parsedGroup.GroupNames) > 0 && containsString(parsedGroup.BuiltinTags, constantDirect) {
+			parsedGroup.BuiltinTags = removeString(parsedGroup.BuiltinTags, constantDirect)
+			result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
+				Type:   ImportPreviewTypeBuiltin,
+				Name:   parsedGroup.Name + " / " + constantDirect,
+				Action: ImportPreviewActionSkip,
+				Reason: ImportPreviewReasonGroupOnlyDirect,
+				Detail: "该节点组只引用其他分组，DIRECT 将自动忽略",
+			})
+		}
 		result.Groups = append(result.Groups, parsedGroup)
 	}
 	return result, nil
+}
+
+func clashRulesetPolicyGroups(rules []string) map[string]struct{} {
+	groups := make(map[string]struct{})
+	for _, rawRule := range rules {
+		parts := splitClashRule(rawRule)
+		if len(parts) < 3 || !strings.EqualFold(parts[0], "RULE-SET") {
+			continue
+		}
+		policy := strings.TrimSpace(parts[2])
+		if policy == "" {
+			continue
+		}
+		groups[policy] = struct{}{}
+	}
+	return groups
+}
+
+func splitClashRule(rule string) []string {
+	values := strings.Split(rule, ",")
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return parts
 }
 
 func parseClashProxyGroup(group map[string]any, nodeNames map[string]struct{}, groupNames map[string]struct{}, nodes []parsedSubscriptionNode) parsedSubscriptionGroup {
@@ -829,4 +939,34 @@ func subscriptionFilterMatch(filter string, nodeName string) bool {
 		return strings.Contains(strings.ToLower(nodeName), strings.ToLower(filter))
 	}
 	return matcher.MatchString(nodeName)
+}
+
+func previewImportItem(itemType, name, action, reason, detail string) NodeImportPreviewItem {
+	return NodeImportPreviewItem{
+		Type:   itemType,
+		Name:   name,
+		Action: action,
+		Reason: reason,
+		Detail: detail,
+	}
+}
+
+func previewFailureItem(name, message string) NodeImportPreviewItem {
+	return NodeImportPreviewItem{
+		Type:   ImportPreviewTypeFailure,
+		Name:   name,
+		Action: ImportPreviewActionFail,
+		Reason: ImportPreviewReasonInvalidURI,
+		Detail: message,
+	}
+}
+
+func skippedPreviewCount(items []NodeImportPreviewItem) int {
+	count := 0
+	for _, item := range items {
+		if item.Action == ImportPreviewActionSkip {
+			count++
+		}
+	}
+	return count
 }

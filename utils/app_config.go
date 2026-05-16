@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -21,26 +22,49 @@ type AttachmentConfig struct {
 	Token     string `json:"token" yaml:"token" koanf:"token"`
 }
 
+type ProxyHealthConfig struct {
+	Enabled           bool          `json:"enabled" yaml:"enabled" koanf:"enabled"`
+	ProbeURL          string        `json:"probeUrl" yaml:"probeUrl" koanf:"probeUrl"`
+	Interval          time.Duration `json:"interval" yaml:"interval" koanf:"interval"`
+	Timeout           time.Duration `json:"timeout" yaml:"timeout" koanf:"timeout"`
+	FailureThreshold  int           `json:"failureThreshold" yaml:"failureThreshold" koanf:"failureThreshold"`
+	BlacklistDuration time.Duration `json:"blacklistDuration" yaml:"blacklistDuration" koanf:"blacklistDuration"`
+	MaxConcurrency    int           `json:"maxConcurrency" yaml:"maxConcurrency" koanf:"maxConcurrency"`
+}
+
+func DefaultProxyHealthConfig() ProxyHealthConfig {
+	return ProxyHealthConfig{
+		Enabled:           true,
+		ProbeURL:          "https://www.gstatic.com/generate_204",
+		Interval:          3 * time.Minute,
+		Timeout:           15 * time.Second,
+		FailureThreshold:  3,
+		BlacklistDuration: 30 * time.Minute,
+		MaxConcurrency:    20,
+	}
+}
+
 type AppConfig struct {
-	ServeAt             string           `json:"serveAt" yaml:"serveAt" koanf:"serveAt"`
-	Domain              string           `json:"domain" yaml:"domain" koanf:"domain"`
-	RegisterOpen        bool             `json:"registerOpen" yaml:"registerOpen" koanf:"registerOpen"`
-	WebUrl              string           `json:"webUrl" yaml:"webUrl" koanf:"webUrl"`
-	AttachmentSizeLimit int64            `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit" koanf:"attachmentSizeLimit"`
-	ImageCompress       bool             `json:"imageCompress" yaml:"imageCompress" koanf:"imageCompress"`
-	LogFile             string           `json:"logFile" yaml:"logFile" koanf:"logFile"`
-	LogLevel            string           `json:"logLevel" yaml:"logLevel" koanf:"logLevel"`
-	DBLogLevel          int              `json:"dbLogLevel" yaml:"dbLogLevel" koanf:"dbLogLevel"`
-	CorsAllowOrigins    string           `json:"corsAllowOrigins" yaml:"corsAllowOrigins" koanf:"corsAllowOrigins"`
-	UIOverwrite         string           `json:"uiOverwrite" yaml:"uiOverwrite" koanf:"uiOverwrite"`
-	AutoMigrate         bool             `json:"autoMigrate" yaml:"autoMigrate" koanf:"autoMigrate"`
-	OpenAPIEnabled      bool             `json:"openapiEnabled" yaml:"openapiEnabled" koanf:"openapiEnabled"`
-	DocsPath            string           `json:"docsPath" yaml:"docsPath" koanf:"docsPath"`
-	APITitle            string           `json:"apiTitle" yaml:"apiTitle" koanf:"apiTitle"`
-	APIVersion          string           `json:"apiVersion" yaml:"apiVersion" koanf:"apiVersion"`
-	AttachmentConfig    AttachmentConfig `json:"attachmentConfig" yaml:"attachmentConfig" koanf:"attachmentConfig"`
-	DSN                 string           `json:"dbUrl" yaml:"dbUrl" koanf:"dbUrl"`
-	PrintConfig         bool             `json:"printConfig" yaml:"printConfig" koanf:"printConfig"`
+	ServeAt             string            `json:"serveAt" yaml:"serveAt" koanf:"serveAt"`
+	Domain              string            `json:"domain" yaml:"domain" koanf:"domain"`
+	RegisterOpen        bool              `json:"registerOpen" yaml:"registerOpen" koanf:"registerOpen"`
+	WebUrl              string            `json:"webUrl" yaml:"webUrl" koanf:"webUrl"`
+	AttachmentSizeLimit int64             `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit" koanf:"attachmentSizeLimit"`
+	ImageCompress       bool              `json:"imageCompress" yaml:"imageCompress" koanf:"imageCompress"`
+	LogFile             string            `json:"logFile" yaml:"logFile" koanf:"logFile"`
+	LogLevel            string            `json:"logLevel" yaml:"logLevel" koanf:"logLevel"`
+	DBLogLevel          int               `json:"dbLogLevel" yaml:"dbLogLevel" koanf:"dbLogLevel"`
+	CorsAllowOrigins    string            `json:"corsAllowOrigins" yaml:"corsAllowOrigins" koanf:"corsAllowOrigins"`
+	UIOverwrite         string            `json:"uiOverwrite" yaml:"uiOverwrite" koanf:"uiOverwrite"`
+	AutoMigrate         bool              `json:"autoMigrate" yaml:"autoMigrate" koanf:"autoMigrate"`
+	OpenAPIEnabled      bool              `json:"openapiEnabled" yaml:"openapiEnabled" koanf:"openapiEnabled"`
+	DocsPath            string            `json:"docsPath" yaml:"docsPath" koanf:"docsPath"`
+	APITitle            string            `json:"apiTitle" yaml:"apiTitle" koanf:"apiTitle"`
+	APIVersion          string            `json:"apiVersion" yaml:"apiVersion" koanf:"apiVersion"`
+	AttachmentConfig    AttachmentConfig  `json:"attachmentConfig" yaml:"attachmentConfig" koanf:"attachmentConfig"`
+	ProxyHealth         ProxyHealthConfig `json:"proxyHealth" yaml:"proxyHealth" koanf:"proxyHealth"`
+	DSN                 string            `json:"dbUrl" yaml:"dbUrl" koanf:"dbUrl"`
+	PrintConfig         bool              `json:"printConfig" yaml:"printConfig" koanf:"printConfig"`
 }
 
 var configStore = koanf.New(".")
@@ -66,6 +90,7 @@ func ReadConfig() *AppConfig {
 		AttachmentConfig: AttachmentConfig{
 			UseS3: false,
 		},
+		ProxyHealth: DefaultProxyHealthConfig(),
 		DSN:         "./data/data.db",
 		PrintConfig: true,
 	}

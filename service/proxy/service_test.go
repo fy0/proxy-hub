@@ -116,6 +116,85 @@ func TestNodeImportExpandsClashYAML(t *testing.T) {
 	}
 }
 
+func TestNodeImportExpandsClashYAMLWithAdditionalProtocols(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	raw := `proxies:
+  - name: ss
+    type: ss
+    server: ss.example.com
+    port: 8388
+    cipher: aes-128-gcm
+    password: secret
+  - name: hy
+    type: hysteria
+    server: hy.example.com
+    port: 443
+    auth-str: auth
+    up-mbps: 50
+    down-mbps: 100
+    sni: edge.example.com
+  - name: hy2
+    type: hysteria2
+    server: hy2.example.com
+    port: 443
+    password: pass
+    obfs-opts:
+      type: salamander
+      password: obfs
+  - name: tuic
+    type: tuic
+    server: tuic.example.com
+    port: 443
+    uuid: 48a25c54-8826-4657-330e-8db38ef76716
+    password: pass
+    congestion-control: bbr
+    udp-relay-mode: native
+  - name: ssh
+    type: ssh
+    server: ssh.example.com
+    port: 22
+    user: root
+    password: admin
+`
+
+	result, err := NodeImport(context.Background(), nil, NodeImportRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("NodeImport() error = %v", err)
+	}
+	if result.Imported != 5 || result.Failed != 0 {
+		t.Fatalf("NodeImport() result = %+v, want 5 imported and 0 failed", result)
+	}
+
+	wantTypes := map[string]string{
+		ProtocolShadowsocks: constant.TypeShadowsocks,
+		ProtocolHysteria:    constant.TypeHysteria,
+		ProtocolHysteria2:   constant.TypeHysteria2,
+		ProtocolTUIC:        constant.TypeTUIC,
+		ProtocolSSH:         constant.TypeSSH,
+	}
+	seen := map[string]bool{}
+	for _, item := range result.Items {
+		wantType := wantTypes[item.Protocol]
+		if wantType == "" {
+			t.Fatalf("unexpected protocol in item %+v", item)
+		}
+		outbound, err := buildNodeOutboundFromURI(item.RawURI, "node-test")
+		if err != nil {
+			t.Fatalf("buildNodeOutboundFromURI(%s) error = %v", item.Protocol, err)
+		}
+		if outbound.Type != wantType {
+			t.Fatalf("outbound type for %s = %q, want %q", item.Protocol, outbound.Type, wantType)
+		}
+		seen[item.Protocol] = true
+	}
+	for protocol := range wantTypes {
+		if !seen[protocol] {
+			t.Fatalf("protocol %q not imported; items = %+v", protocol, result.Items)
+		}
+	}
+}
+
 func TestNodeImportFetchesSubscriptionURL(t *testing.T) {
 	initProxyInMemoryDB(t)
 
@@ -168,7 +247,7 @@ func TestNodeImportAssignsGroup(t *testing.T) {
 	}
 }
 
-func TestGroupCreateAssignsNodeOwnership(t *testing.T) {
+func TestGroupCreateAddsNodeMembership(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -191,6 +270,82 @@ func TestGroupCreateAssignsNodeOwnership(t *testing.T) {
 	}
 	if refreshed.GroupID != group.ID {
 		t.Fatalf("node group ID = %q, want %q", refreshed.GroupID, group.ID)
+	}
+}
+
+func TestNodeUpdateCanAssignMultipleGroups(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	first, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "first"})
+	if err != nil {
+		t.Fatalf("GroupCreate(first) error = %v", err)
+	}
+	second, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "second"})
+	if err != nil {
+		t.Fatalf("GroupCreate(second) error = %v", err)
+	}
+
+	updated, err := NodeUpdate(ctx, nil, node.ID, NodeUpsertRequest{
+		Name:     node.Name,
+		Protocol: node.Protocol,
+		Server:   node.Server,
+		Port:     node.Port,
+		GroupIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeUpdate() error = %v", err)
+	}
+	if updated.GroupID != first.ID {
+		t.Fatalf("primary group ID = %q, want %q", updated.GroupID, first.ID)
+	}
+
+	for _, group := range []*tables.ProxyGroupTable{first, second} {
+		refreshed, err := GroupGet(ctx, nil, group.ID)
+		if err != nil {
+			t.Fatalf("GroupGet(%s) error = %v", group.Name, err)
+		}
+		if !containsString(decodeStringSlice(refreshed.NodeIDsJSON), node.ID) {
+			t.Fatalf("%s node IDs = %v, want node %q", group.Name, decodeStringSlice(refreshed.NodeIDsJSON), node.ID)
+		}
+	}
+
+	updated, err = NodeUpdate(ctx, nil, node.ID, NodeUpsertRequest{
+		Name:     node.Name,
+		Protocol: node.Protocol,
+		Server:   node.Server,
+		Port:     node.Port,
+		GroupIDs: []string{second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeUpdate(second only) error = %v", err)
+	}
+	if updated.GroupID != second.ID {
+		t.Fatalf("primary group ID after update = %q, want %q", updated.GroupID, second.ID)
+	}
+
+	refreshedFirst, err := GroupGet(ctx, nil, first.ID)
+	if err != nil {
+		t.Fatalf("GroupGet(first) error = %v", err)
+	}
+	if containsString(decodeStringSlice(refreshedFirst.NodeIDsJSON), node.ID) {
+		t.Fatalf("first node IDs = %v, want node removed", decodeStringSlice(refreshedFirst.NodeIDsJSON))
+	}
+	refreshedSecond, err := GroupGet(ctx, nil, second.ID)
+	if err != nil {
+		t.Fatalf("GroupGet(second) error = %v", err)
+	}
+	if !containsString(decodeStringSlice(refreshedSecond.NodeIDsJSON), node.ID) {
+		t.Fatalf("second node IDs = %v, want node %q", decodeStringSlice(refreshedSecond.NodeIDsJSON), node.ID)
 	}
 }
 
@@ -318,6 +473,149 @@ proxy-groups:
 	}
 }
 
+func TestSubscriptionSyncSkipsRulesetPolicyGroupAndGroupOnlyDirect(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	subscription, err := SubscriptionCreate(ctx, nil, SubscriptionUpsertRequest{
+		Name: "mihomo",
+		URL:  "https://example.com/sub.yaml",
+	})
+	if err != nil {
+		t.Fatalf("SubscriptionCreate() error = %v", err)
+	}
+
+	raw := `proxies:
+  - name: hk
+    type: vless
+    server: hk.example.com
+    port: 443
+    uuid: 48a25c54-8826-4657-330e-8db38ef76716
+    tls: true
+  - name: us
+    type: trojan
+    server: us.example.com
+    port: 443
+    password: secret
+proxy-groups:
+  - name: all
+    type: select
+    proxies:
+      - hk
+      - us
+      - DIRECT
+  - name: route-only
+    type: select
+    proxies:
+      - all
+      - DIRECT
+  - name: ruleset-target
+    type: select
+    proxies:
+      - hk
+      - DIRECT
+rules:
+  - RULE-SET,private,ruleset-target
+  - MATCH,all
+`
+	result, err := SubscriptionSync(ctx, nil, subscription.ID, SubscriptionSyncRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("SubscriptionSync() error = %v", err)
+	}
+	if result.Imported != 2 || len(result.Groups) != 2 {
+		t.Fatalf("SubscriptionSync() result = %+v, want 2 nodes and 2 kept groups", result)
+	}
+	if !previewContains(result.PreviewItems, "ruleset-target", ImportPreviewActionSkip, ImportPreviewReasonRulesetPolicyGroup) {
+		t.Fatalf("preview items = %+v, want skipped ruleset policy group", result.PreviewItems)
+	}
+	if !previewContains(result.PreviewItems, "route-only / DIRECT", ImportPreviewActionSkip, ImportPreviewReasonGroupOnlyDirect) {
+		t.Fatalf("preview items = %+v, want skipped group-only DIRECT", result.PreviewItems)
+	}
+
+	groups, err := GroupList(ctx, nil)
+	if err != nil {
+		t.Fatalf("GroupList() error = %v", err)
+	}
+	var allGroup, routeOnlyGroup, rulesetGroup *tables.ProxyGroupTable
+	for _, group := range groups {
+		switch group.Name {
+		case "all":
+			allGroup = group
+		case "route-only":
+			routeOnlyGroup = group
+		case "ruleset-target":
+			rulesetGroup = group
+		}
+	}
+	if allGroup == nil || routeOnlyGroup == nil {
+		t.Fatalf("groups = %+v, want all and route-only", groups)
+	}
+	if rulesetGroup != nil {
+		t.Fatalf("ruleset group was imported: %+v", rulesetGroup)
+	}
+	if !containsString(decodeStringSlice(allGroup.BuiltinTagsJSON), constantDirect) {
+		t.Fatalf("all group builtins = %v, want DIRECT retained", decodeStringSlice(allGroup.BuiltinTagsJSON))
+	}
+	if containsString(decodeStringSlice(routeOnlyGroup.BuiltinTagsJSON), constantDirect) {
+		t.Fatalf("route-only builtins = %v, want DIRECT removed", decodeStringSlice(routeOnlyGroup.BuiltinTagsJSON))
+	}
+}
+
+func TestNodeImportClashYAMLImportsManualGroups(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	raw := `proxies:
+  - name: hk
+    type: vless
+    server: hk.example.com
+    port: 443
+    uuid: 48a25c54-8826-4657-330e-8db38ef76716
+    tls: true
+proxy-groups:
+  - name: all
+    type: select
+    proxies:
+      - hk
+      - DIRECT
+`
+	preview, err := NodeImportPreview(ctx, nil, NodeImportRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("NodeImportPreview() error = %v", err)
+	}
+	if !previewContains(preview.PreviewItems, "all", ImportPreviewActionImport, ImportPreviewReasonImport) {
+		t.Fatalf("preview items = %+v, want group import preview", preview.PreviewItems)
+	}
+
+	result, err := NodeImport(ctx, nil, NodeImportRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("NodeImport() error = %v", err)
+	}
+	if len(result.Items) != 1 || len(result.Groups) != 1 {
+		t.Fatalf("NodeImport() result = %+v, want node and group", result)
+	}
+	groups, err := GroupList(ctx, nil)
+	if err != nil {
+		t.Fatalf("GroupList() error = %v", err)
+	}
+	var imported *tables.ProxyGroupTable
+	for _, group := range groups {
+		if group.Name == "all" {
+			imported = group
+			break
+		}
+	}
+	if imported == nil {
+		t.Fatalf("imported group not found in %+v", groups)
+	}
+	if imported.Type != GroupTypeManual {
+		t.Fatalf("imported group type = %q, want manual", imported.Type)
+	}
+	if len(decodeStringSlice(imported.NodeIDsJSON)) != 1 {
+		t.Fatalf("imported group node IDs = %v, want one node", decodeStringSlice(imported.NodeIDsJSON))
+	}
+}
+
 func TestSubscriptionCreateRejectsImportedGroupTarget(t *testing.T) {
 	initProxyInMemoryDB(t)
 
@@ -400,4 +698,13 @@ func TestMappingCreateAssignsAscendingOrderAndListsOldestFirst(t *testing.T) {
 
 func uint16Ptr(value uint16) *uint16 {
 	return &value
+}
+
+func previewContains(items []NodeImportPreviewItem, name, action, reason string) bool {
+	for _, item := range items {
+		if item.Name == name && item.Action == action && item.Reason == reason {
+			return true
+		}
+	}
+	return false
 }

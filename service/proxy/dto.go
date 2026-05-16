@@ -8,12 +8,18 @@ import (
 )
 
 const (
-	ProtocolVLESS   = "vless"
-	ProtocolVMess   = "vmess"
-	ProtocolTrojan  = "trojan"
-	ProtocolSOCKS5  = "socks5"
-	ProtocolHTTP    = "http"
-	ProtocolUnknown = "unknown"
+	ProtocolVLESS       = "vless"
+	ProtocolVMess       = "vmess"
+	ProtocolTrojan      = "trojan"
+	ProtocolSOCKS5      = "socks5"
+	ProtocolHTTP        = "http"
+	ProtocolShadowsocks = "shadowsocks"
+	ProtocolHysteria    = "hysteria"
+	ProtocolHysteria2   = "hysteria2"
+	ProtocolTUIC        = "tuic"
+	ProtocolSSH         = "ssh"
+	ProtocolChain       = "chain"
+	ProtocolUnknown     = "unknown"
 
 	OutboundProtocolMixed = "mixed"
 	OutboundProtocolSOCKS = "socks5"
@@ -34,21 +40,39 @@ const (
 )
 
 type ProxyNodeDTO struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Protocol       string    `json:"protocol"`
-	Server         string    `json:"server"`
-	Port           *uint16   `json:"port"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	RawURI         string    `json:"rawUri"`
-	Tags           []string  `json:"tags"`
-	Remark         string    `json:"remark"`
-	SubscriptionID string    `json:"subscriptionId"`
-	GroupID        string    `json:"groupId"`
-	SourceKey      string    `json:"sourceKey"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	Protocol       string              `json:"protocol"`
+	Server         string              `json:"server"`
+	Port           *uint16             `json:"port"`
+	Username       string              `json:"username"`
+	Password       string              `json:"password"`
+	RawURI         string              `json:"rawUri"`
+	Tags           []string            `json:"tags"`
+	Remark         string              `json:"remark"`
+	ChainNodeIDs   []string            `json:"chainNodeIds"`
+	SubscriptionID string              `json:"subscriptionId"`
+	GroupID        string              `json:"groupId"`
+	GroupIDs       []string            `json:"groupIds"`
+	SourceKey      string              `json:"sourceKey"`
+	CreatedAt      time.Time           `json:"createdAt"`
+	UpdatedAt      time.Time           `json:"updatedAt"`
+	Health         *ProxyNodeHealthDTO `json:"health,omitempty"`
+}
+
+type ProxyNodeHealthDTO struct {
+	NodeID           string     `json:"nodeId"`
+	Available        bool       `json:"available"`
+	FailureCount     int        `json:"failureCount"`
+	SuccessCount     int64      `json:"successCount"`
+	Blacklisted      bool       `json:"blacklisted"`
+	BlacklistedUntil *time.Time `json:"blacklistedUntil"`
+	LastLatencyMs    int64      `json:"lastLatencyMs"`
+	LastError        string     `json:"lastError"`
+	LastCheckedAt    *time.Time `json:"lastCheckedAt"`
+	LastSuccessAt    *time.Time `json:"lastSuccessAt"`
+	LastFailureAt    *time.Time `json:"lastFailureAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 type ProxySubscriptionDTO struct {
@@ -119,8 +143,10 @@ type NodeUpsertRequest struct {
 	RawURI         string   `json:"rawUri,omitempty" validate:"omitempty"`
 	Tags           []string `json:"tags,omitempty" validate:"omitempty"`
 	Remark         string   `json:"remark,omitempty" validate:"omitempty,max=500"`
+	ChainNodeIDs   []string `json:"chainNodeIds,omitempty" validate:"omitempty"`
 	SubscriptionID string   `json:"-"`
 	GroupID        string   `json:"groupId,omitempty"`
+	GroupIDs       []string `json:"groupIds,omitempty"`
 	SourceKey      string   `json:"-"`
 }
 
@@ -135,16 +161,66 @@ type NodeImportFailure struct {
 	Message string `json:"message"`
 }
 
+const (
+	ImportPreviewTypeNode    = "node"
+	ImportPreviewTypeGroup   = "group"
+	ImportPreviewTypeBuiltin = "builtin"
+	ImportPreviewTypeFailure = "failure"
+
+	ImportPreviewActionImport = "import"
+	ImportPreviewActionUpdate = "update"
+	ImportPreviewActionSkip   = "skip"
+	ImportPreviewActionFail   = "fail"
+
+	ImportPreviewReasonImport               = "import"
+	ImportPreviewReasonUpdate               = "update"
+	ImportPreviewReasonRulesetPolicyGroup   = "ruleset-policy-group"
+	ImportPreviewReasonGroupOnlyDirect      = "group-only-direct-ignored"
+	ImportPreviewReasonUnsupportedProtocol  = "unsupported-protocol"
+	ImportPreviewReasonInvalidURI           = "invalid-uri"
+	ImportPreviewReasonFetchFailed          = "fetch-failed"
+	ImportPreviewReasonManualGroupGenerated = "manual-group-generated"
+)
+
+type NodeImportPreviewItem struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Action string `json:"action"`
+	Reason string `json:"reason,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type NodeImportResult struct {
-	Items    []*ProxyNodeDTO     `json:"items"`
-	Groups   []*ProxyGroupDTO    `json:"groups"`
-	Failures []NodeImportFailure `json:"failures"`
-	Total    int                 `json:"total"`
-	Imported int                 `json:"imported"`
-	Failed   int                 `json:"failed"`
-	Updated  int                 `json:"updated"`
-	Deleted  int                 `json:"deleted"`
-	Skipped  int                 `json:"skipped"`
+	Items        []*ProxyNodeDTO         `json:"items"`
+	Groups       []*ProxyGroupDTO        `json:"groups"`
+	Failures     []NodeImportFailure     `json:"failures"`
+	PreviewItems []NodeImportPreviewItem `json:"previewItems"`
+	Total        int                     `json:"total"`
+	Imported     int                     `json:"imported"`
+	Failed       int                     `json:"failed"`
+	Updated      int                     `json:"updated"`
+	Deleted      int                     `json:"deleted"`
+	Skipped      int                     `json:"skipped"`
+}
+
+type NodeHealthProbeAllResult struct {
+	Items          []*tables.ProxyNodeHealthTable `json:"-"`
+	Total          int                            `json:"total"`
+	Available      int                            `json:"available"`
+	Failed         int                            `json:"failed"`
+	ReloadRequired bool                           `json:"reloadRequired"`
+}
+
+type NodeHealthProbeAllDTO struct {
+	Items          []*ProxyNodeHealthDTO `json:"items"`
+	Total          int                   `json:"total"`
+	Available      int                   `json:"available"`
+	Failed         int                   `json:"failed"`
+	ReloadRequired bool                  `json:"reloadRequired"`
+}
+
+type NodeBlacklistRequest struct {
+	Duration string `json:"duration,omitempty" doc:"拉黑时长，例如 30m、1h；为空使用配置默认值"`
 }
 
 type SubscriptionUpsertRequest struct {
@@ -196,11 +272,81 @@ func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {
 		RawURI:         node.RawURI,
 		Tags:           decodeStringSlice(node.TagsJSON),
 		Remark:         node.Remark,
+		ChainNodeIDs:   decodeStringSlice(node.ChainNodeIDsJSON),
 		SubscriptionID: node.SubscriptionID,
 		GroupID:        node.GroupID,
+		GroupIDs:       stringSliceOrEmpty(node.GroupID),
 		SourceKey:      node.SourceKey,
 		CreatedAt:      node.CreatedAt,
 		UpdatedAt:      node.UpdatedAt,
+	}
+}
+
+func ToNodeDTOWithGroups(node *tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) *ProxyNodeDTO {
+	dto := ToNodeDTO(node)
+	if dto == nil {
+		return nil
+	}
+	dto.GroupIDs = groupIDsForNodeFromGroups(node.ID, node.GroupID, groups)
+	return dto
+}
+
+func ToNodeDTOWithHealth(node *tables.ProxyNodeTable, health *tables.ProxyNodeHealthTable) *ProxyNodeDTO {
+	dto := ToNodeDTO(node)
+	if dto == nil {
+		return nil
+	}
+	dto.Health = ToNodeHealthDTO(health)
+	return dto
+}
+
+func ToNodeDTOWithHealthAndGroups(node *tables.ProxyNodeTable, health *tables.ProxyNodeHealthTable, groups []*tables.ProxyGroupTable) *ProxyNodeDTO {
+	dto := ToNodeDTOWithGroups(node, groups)
+	if dto == nil {
+		return nil
+	}
+	dto.Health = ToNodeHealthDTO(health)
+	return dto
+}
+
+func ToNodeHealthDTO(health *tables.ProxyNodeHealthTable) *ProxyNodeHealthDTO {
+	if health == nil {
+		return nil
+	}
+	return &ProxyNodeHealthDTO{
+		NodeID:           health.NodeID,
+		Available:        health.Available,
+		FailureCount:     health.FailureCount,
+		SuccessCount:     health.SuccessCount,
+		Blacklisted:      health.Blacklisted,
+		BlacklistedUntil: health.BlacklistedUntil,
+		LastLatencyMs:    health.LastLatencyMs,
+		LastError:        health.LastError,
+		LastCheckedAt:    health.LastCheckedAt,
+		LastSuccessAt:    health.LastSuccessAt,
+		LastFailureAt:    health.LastFailureAt,
+		UpdatedAt:        health.UpdatedAt,
+	}
+}
+
+func ToNodeHealthDTOs(rows []*tables.ProxyNodeHealthTable) []*ProxyNodeHealthDTO {
+	items := make([]*ProxyNodeHealthDTO, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, ToNodeHealthDTO(row))
+	}
+	return items
+}
+
+func ToNodeHealthProbeAllDTO(result *NodeHealthProbeAllResult) *NodeHealthProbeAllDTO {
+	if result == nil {
+		return nil
+	}
+	return &NodeHealthProbeAllDTO{
+		Items:          ToNodeHealthDTOs(result.Items),
+		Total:          result.Total,
+		Available:      result.Available,
+		Failed:         result.Failed,
+		ReloadRequired: result.ReloadRequired,
 	}
 }
 
@@ -278,6 +424,38 @@ func ToNodeDTOs(nodes []*tables.ProxyNodeTable) []*ProxyNodeDTO {
 	return items
 }
 
+func ToNodeDTOsWithGroups(nodes []*tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) []*ProxyNodeDTO {
+	items := make([]*ProxyNodeDTO, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, ToNodeDTOWithGroups(node, groups))
+	}
+	return items
+}
+
+func ToNodeDTOsWithHealth(nodes []*tables.ProxyNodeTable, healthByNodeID map[string]*tables.ProxyNodeHealthTable) []*ProxyNodeDTO {
+	items := make([]*ProxyNodeDTO, 0, len(nodes))
+	for _, node := range nodes {
+		var health *tables.ProxyNodeHealthTable
+		if healthByNodeID != nil && node != nil {
+			health = healthByNodeID[node.ID]
+		}
+		items = append(items, ToNodeDTOWithHealth(node, health))
+	}
+	return items
+}
+
+func ToNodeDTOsWithHealthAndGroups(nodes []*tables.ProxyNodeTable, healthByNodeID map[string]*tables.ProxyNodeHealthTable, groups []*tables.ProxyGroupTable) []*ProxyNodeDTO {
+	items := make([]*ProxyNodeDTO, 0, len(nodes))
+	for _, node := range nodes {
+		var health *tables.ProxyNodeHealthTable
+		if healthByNodeID != nil && node != nil {
+			health = healthByNodeID[node.ID]
+		}
+		items = append(items, ToNodeDTOWithHealthAndGroups(node, health, groups))
+	}
+	return items
+}
+
 func ToSubscriptionDTOs(subscriptions []*tables.ProxySubscriptionTable) []*ProxySubscriptionDTO {
 	items := make([]*ProxySubscriptionDTO, 0, len(subscriptions))
 	for _, subscription := range subscriptions {
@@ -325,6 +503,24 @@ func decodeStringSlice(raw string) []string {
 		return []string{}
 	}
 	return values
+}
+
+func stringSliceOrEmpty(value string) []string {
+	if value == "" {
+		return []string{}
+	}
+	return []string{value}
+}
+
+func groupIDsForNodeFromGroups(nodeID string, legacyGroupID string, groups []*tables.ProxyGroupTable) []string {
+	values := stringSliceOrEmpty(legacyGroupID)
+	for _, group := range groups {
+		if group == nil || !containsString(decodeStringSlice(group.NodeIDsJSON), nodeID) {
+			continue
+		}
+		values = append(values, group.ID)
+	}
+	return uniqueNonEmpty(values)
 }
 
 func stringPtrOrNil(value string) *string {

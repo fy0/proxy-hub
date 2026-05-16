@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
 	"proxy-hub/model"
 
 	"github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/option"
 	"gorm.io/gorm/logger"
 )
 
@@ -148,6 +150,162 @@ func TestBuildSingBoxOptionsRoutesMappingToGroup(t *testing.T) {
 	}
 }
 
+func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	firstPort := uint16(1081)
+	secondPort := uint16(1082)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &firstPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     &secondPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "A to B",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	if _, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{chain.ID},
+		ActiveNodeID:     &chain.ID,
+	}); err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	if err != nil {
+		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+	}
+	if len(inbounds) != 1 || inbounds[0].Outbound != nodeOutboundTag(chain.ID) {
+		t.Fatalf("runtime inbound outbound = %+v, want chain node tag", inbounds)
+	}
+
+	finalOutbound := findTestOutbound(options.Outbounds, nodeOutboundTag(chain.ID))
+	if finalOutbound == nil {
+		t.Fatalf("chain outbound %q not found", nodeOutboundTag(chain.ID))
+	}
+	dialer, ok := finalOutbound.Options.(option.DialerOptionsWrapper)
+	if !ok {
+		t.Fatalf("chain outbound options type = %T, want dialer options", finalOutbound.Options)
+	}
+	wantDetour := nodeChainMemberOutboundTag(chain.ID, 0, first.ID)
+	if got := dialer.TakeDialerOptions().Detour; got != wantDetour {
+		t.Fatalf("chain final detour = %q, want %q", got, wantDetour)
+	}
+	if findTestOutbound(options.Outbounds, wantDetour) == nil {
+		t.Fatalf("first chain member outbound %q not found", wantDetour)
+	}
+}
+
+func TestBuildSingBoxOptionsIncludesAdditionalProtocolOutbounds(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	rawURIs := []string{
+		"ss://aes-128-gcm:secret@ss.example.com:8388#ss",
+		"hysteria://auth@hy.example.com:443?upmbps=50&downmbps=100#hy",
+		"hy2://pass@hy2.example.com:443#hy2",
+		"tuic://48a25c54-8826-4657-330e-8db38ef76716:pass@tuic.example.com:443#tuic",
+		"ssh://root:admin@ssh.example.com:22#ssh",
+	}
+	nodeIDs := make([]string, 0, len(rawURIs))
+	for _, rawURI := range rawURIs {
+		node, err := NodeCreate(ctx, nil, NodeUpsertRequest{RawURI: rawURI})
+		if err != nil {
+			t.Fatalf("NodeCreate(%q) error = %v", rawURI, err)
+		}
+		nodeIDs = append(nodeIDs, node.ID)
+	}
+	if _, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          nodeIDs,
+	}); err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	options, _, err := BuildSingBoxOptions(ctx, nil)
+	if err != nil {
+		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+	}
+	wantTypes := map[string]bool{
+		constant.TypeShadowsocks: false,
+		constant.TypeHysteria:    false,
+		constant.TypeHysteria2:   false,
+		constant.TypeTUIC:        false,
+		constant.TypeSSH:         false,
+	}
+	for _, outbound := range options.Outbounds {
+		if _, ok := wantTypes[outbound.Type]; ok {
+			wantTypes[outbound.Type] = true
+		}
+	}
+	for outboundType, found := range wantTypes {
+		if !found {
+			t.Fatalf("outbound type %q not found in %+v", outboundType, options.Outbounds)
+		}
+	}
+}
+
+func TestNodeCreateRejectsInvalidChain(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1081)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node) error = %v", err)
+	}
+
+	_, err = NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "bad chain",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{node.ID},
+	})
+	if !errors.Is(err, ErrInvalidChain) {
+		t.Fatalf("NodeCreate(chain) error = %v, want %v", err, ErrInvalidChain)
+	}
+}
+
+func findTestOutbound(outbounds []option.Outbound, tag string) *option.Outbound {
+	for i := range outbounds {
+		if outbounds[i].Tag == tag {
+			return &outbounds[i]
+		}
+	}
+	return nil
+}
+
 func TestBuildSingBoxOptionsRejectsCyclicGroups(t *testing.T) {
 	initProxyInMemoryDB(t)
 
@@ -257,6 +415,58 @@ func TestRuntimeReloadReportsAllMappingsFailed(t *testing.T) {
 	}
 	if len(status.Failures) != 1 || status.Failures[0].MappingID != mapping.ID {
 		t.Fatalf("Runtime failures = %+v, want mapping %q", status.Failures, mapping.ID)
+	}
+}
+
+func TestRuntimeSyncMappingDoesNotTouchUnrelatedFailures(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	occupied := occupiedTCPPort(t)
+	ctx := context.Background()
+	failedMapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       occupied,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(failed) error = %v", err)
+	}
+	runningMapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(running) error = %v", err)
+	}
+
+	status, err := RuntimeSyncMapping(ctx, failedMapping.ID)
+	if err != nil {
+		t.Fatalf("RuntimeSyncMapping(failed) error = %v", err)
+	}
+	if status.Running || len(status.Failures) != 1 || status.Failures[0].MappingID != failedMapping.ID {
+		t.Fatalf("status after failed sync = %+v, want only failed mapping", status)
+	}
+
+	status, err = RuntimeSyncMapping(ctx, runningMapping.ID)
+	if err != nil {
+		t.Fatalf("RuntimeSyncMapping(running) error = %v", err)
+	}
+	if !status.Running || status.State != "degraded" {
+		t.Fatalf("status after running sync = %+v, want degraded running", status)
+	}
+	if len(status.Inbounds) != 1 || status.Inbounds[0].MappingID != runningMapping.ID {
+		t.Fatalf("inbounds after running sync = %+v, want only running mapping", status.Inbounds)
+	}
+	if len(status.Failures) != 1 || status.Failures[0].MappingID != failedMapping.ID {
+		t.Fatalf("failures after running sync = %+v, want preserved failed mapping", status.Failures)
 	}
 }
 

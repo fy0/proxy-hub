@@ -21,34 +21,35 @@ func NodeCreate(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) (*tab
 	if err != nil {
 		return nil, err
 	}
-	groupID := strings.TrimSpace(req.GroupID)
-	if groupID != "" {
-		if _, err := GroupGet(ctx, tx, groupID); err != nil {
-			return nil, err
-		}
+	if err := normalizeNodeChainIDs(ctx, tx, "", normalized); err != nil {
+		return nil, err
 	}
+	groupIDs, err := normalizeNodeGroupIDs(ctx, tx, req)
+	if err != nil {
+		return nil, err
+	}
+	groupID := primaryGroupID(groupIDs)
 
 	node := &tables.ProxyNodeTable{
-		Name:           normalized.Name,
-		Protocol:       normalized.Protocol,
-		Server:         normalized.Server,
-		Port:           normalized.Port,
-		Username:       normalized.Username,
-		Password:       normalized.Password,
-		RawURI:         normalized.RawURI,
-		TagsJSON:       encodeStringSlice(normalized.Tags),
-		Remark:         normalized.Remark,
-		SubscriptionID: strings.TrimSpace(req.SubscriptionID),
-		GroupID:        groupID,
-		SourceKey:      strings.TrimSpace(req.SourceKey),
+		Name:             normalized.Name,
+		Protocol:         normalized.Protocol,
+		Server:           normalized.Server,
+		Port:             normalized.Port,
+		Username:         normalized.Username,
+		Password:         normalized.Password,
+		RawURI:           normalized.RawURI,
+		TagsJSON:         encodeStringSlice(normalized.Tags),
+		Remark:           normalized.Remark,
+		ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
+		SubscriptionID:   strings.TrimSpace(req.SubscriptionID),
+		GroupID:          groupID,
+		SourceKey:        strings.TrimSpace(req.SourceKey),
 	}
 	if err := tx.Create(node).Error; err != nil {
 		return nil, err
 	}
-	if groupID != "" {
-		if err := addNodesToGroupMembership(ctx, tx, groupID, []string{node.ID}); err != nil {
-			return nil, err
-		}
+	if err := syncNodeGroupMembership(ctx, tx, node.ID, nil, groupIDs); err != nil {
+		return nil, err
 	}
 	return node, nil
 }
@@ -68,37 +69,35 @@ func NodeUpdate(ctx context.Context, tx model.DBTx, id string, req NodeUpsertReq
 	if err != nil {
 		return nil, err
 	}
-	groupID := strings.TrimSpace(req.GroupID)
-	if groupID != "" {
-		if _, err := GroupGet(ctx, tx, groupID); err != nil {
-			return nil, err
-		}
+	if err := normalizeNodeChainIDs(ctx, tx, id, normalized); err != nil {
+		return nil, err
 	}
-
-	previousGroupID := strings.TrimSpace(node.GroupID)
-	if previousGroupID != "" && previousGroupID != groupID {
-		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, []string{node.ID}); err != nil {
-			return nil, err
-		}
+	groupIDs, err := normalizeNodeGroupIDs(ctx, tx, req)
+	if err != nil {
+		return nil, err
 	}
-	if groupID != "" {
-		if err := addNodesToGroupMembership(ctx, tx, groupID, []string{node.ID}); err != nil {
-			return nil, err
-		}
+	previousGroupIDs, err := nodeGroupIDs(ctx, tx, node.ID, node.GroupID)
+	if err != nil {
+		return nil, err
 	}
+	if err := syncNodeGroupMembership(ctx, tx, node.ID, previousGroupIDs, groupIDs); err != nil {
+		return nil, err
+	}
+	groupID := primaryGroupID(groupIDs)
 
 	if err := tx.Model(&node).Updates(map[string]any{
-		"name":       normalized.Name,
-		"protocol":   normalized.Protocol,
-		"server":     normalized.Server,
-		"port":       normalized.Port,
-		"username":   normalized.Username,
-		"password":   normalized.Password,
-		"raw_uri":    normalized.RawURI,
-		"tags_json":  encodeStringSlice(normalized.Tags),
-		"remark":     normalized.Remark,
-		"group_id":   groupID,
-		"updated_at": time.Now(),
+		"name":                normalized.Name,
+		"protocol":            normalized.Protocol,
+		"server":              normalized.Server,
+		"port":                normalized.Port,
+		"username":            normalized.Username,
+		"password":            normalized.Password,
+		"raw_uri":             normalized.RawURI,
+		"tags_json":           encodeStringSlice(normalized.Tags),
+		"remark":              normalized.Remark,
+		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
+		"group_id":            groupID,
+		"updated_at":          time.Now(),
 	}).Error; err != nil {
 		return nil, err
 	}
@@ -148,6 +147,9 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		}
 		return err
 	}
+	if err := ensureNodeNotReferencedByChains(ctx, tx, id); err != nil {
+		return err
+	}
 
 	var mappings []*tables.PortMappingTable
 	if err := tx.Find(&mappings).Error; err != nil {
@@ -185,6 +187,9 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		}
 	}
 
+	if err := tx.Where("node_id = ?", id).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
+		return err
+	}
 	return tx.Delete(&node).Error
 }
 
@@ -197,25 +202,381 @@ func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*Nod
 		}
 	}
 
+	if raw := clashImportRaw(req); raw != "" {
+		return importManualClashRaw(ctx, tx, req, raw)
+	}
+
 	uris, fetchFailures := normalizeImportURIsWithFetch(ctx, req)
-	result := &NodeImportResult{Total: len(uris), Failures: fetchFailures, Skipped: len(fetchFailures)}
+	result := &NodeImportResult{Total: len(uris) + len(fetchFailures), Failures: fetchFailures, Skipped: len(fetchFailures)}
+	for _, failure := range fetchFailures {
+		result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
+			Type:   ImportPreviewTypeFailure,
+			Name:   failure.URI,
+			Action: ImportPreviewActionFail,
+			Reason: ImportPreviewReasonFetchFailed,
+			Detail: failure.Message,
+		})
+	}
 	for _, rawURI := range uris {
 		parsed, err := ParseNodeURI(rawURI)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(rawURI, err.Error()))
+			result.Skipped++
 			continue
 		}
 		parsed.GroupID = req.GroupID
 		node, err := NodeCreate(ctx, tx, *parsed)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(rawURI, err.Error()))
+			result.Skipped++
 			continue
 		}
 		result.Items = append(result.Items, ToNodeDTO(node))
+		result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, node.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
 	}
 	result.Imported = len(result.Items)
 	result.Failed = len(result.Failures)
 	return result, nil
+}
+
+func NodeImportPreview(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*NodeImportResult, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	req.GroupID = strings.TrimSpace(req.GroupID)
+	if req.GroupID != "" {
+		if _, err := GroupGet(ctx, tx, req.GroupID); err != nil {
+			return nil, err
+		}
+	}
+	if raw := clashImportRaw(req); raw != "" {
+		return PreviewImportRaw(ctx, tx, raw)
+	}
+
+	uris, fetchFailures := normalizeImportURIsWithFetch(ctx, req)
+	result := &NodeImportResult{
+		Total:    len(uris) + len(fetchFailures),
+		Failures: fetchFailures,
+		Skipped:  len(fetchFailures),
+	}
+	for _, failure := range fetchFailures {
+		result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
+			Type:   ImportPreviewTypeFailure,
+			Name:   failure.URI,
+			Action: ImportPreviewActionFail,
+			Reason: ImportPreviewReasonFetchFailed,
+			Detail: failure.Message,
+		})
+	}
+	for _, rawURI := range uris {
+		parsed, err := ParseNodeURI(rawURI)
+		if err != nil {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: rawURI, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(rawURI, err.Error()))
+			result.Skipped++
+			continue
+		}
+		result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsed.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
+	}
+	result.Failed = len(result.Failures)
+	return result, nil
+}
+
+func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequest, raw string) (*NodeImportResult, error) {
+	parsed, err := parseClashSubscription(raw)
+	if err != nil {
+		return nil, err
+	}
+	result := &NodeImportResult{
+		Total:        len(parsed.Nodes) + len(parsed.Groups) + len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Failures:     append([]NodeImportFailure(nil), parsed.Failures...),
+		PreviewItems: append([]NodeImportPreviewItem(nil), parsed.PreviewItems...),
+		Skipped:      len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+	}
+
+	nodeIDByName := map[string]string{}
+	for _, parsedNode := range parsed.Nodes {
+		nodeReq, err := ParseNodeURI(parsedNode.RawURI)
+		if err != nil {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
+			result.Skipped++
+			continue
+		}
+		nodeReq.GroupID = req.GroupID
+		nodeReq.SourceKey = parsedNode.SourceKey
+		existing := findManualNodeBySourceOrName(ctx, tx, parsedNode.SourceKey, nodeReq.Name)
+		node, existed, err := upsertManualImportNode(ctx, tx, existing, *nodeReq)
+		if err != nil {
+			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
+			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
+			result.Skipped++
+			continue
+		}
+		if existed {
+			result.Updated++
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点将更新"))
+		} else {
+			result.Imported++
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
+		}
+		result.Items = append(result.Items, ToNodeDTO(node))
+		nodeIDByName[node.Name] = node.ID
+		nodeIDByName[parsedNode.Name] = node.ID
+	}
+
+	groupIDByName := map[string]string{}
+	for _, parsedGroup := range parsed.Groups {
+		existing := findManualGroupBySourceOrName(ctx, tx, parsedGroup.SourceKey, parsedGroup.Name)
+		group, existed, err := upsertManualImportGroupShell(ctx, tx, existing, parsedGroup)
+		if err != nil {
+			return result, err
+		}
+		if existed {
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点组将更新"))
+		} else {
+			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点组将导入"))
+		}
+		groupIDByName[group.Name] = group.ID
+	}
+
+	for _, parsedGroup := range parsed.Groups {
+		groupID := groupIDByName[parsedGroup.Name]
+		if groupID == "" {
+			continue
+		}
+		group, err := GroupGet(ctx, tx, groupID)
+		if err != nil {
+			return result, err
+		}
+		nodeIDs, groupIDs := subscriptionGroupMembers(parsedGroup, nodeIDByName, groupIDByName)
+		if err := tx.Model(group).Updates(map[string]any{
+			"strategy":          parsedGroup.Strategy,
+			"node_ids_json":     encodeStringSlice(nodeIDs),
+			"group_ids_json":    encodeStringSlice(removeString(groupIDs, group.ID)),
+			"builtin_tags_json": encodeStringSlice(parsedGroup.BuiltinTags),
+			"includes_all":      parsedGroup.IncludesAll,
+			"filter":            parsedGroup.Filter,
+			"updated_at":        time.Now(),
+		}).Error; err != nil {
+			return result, err
+		}
+		refreshed, err := GroupGet(ctx, tx, group.ID)
+		if err != nil {
+			return result, err
+		}
+		result.Groups = append(result.Groups, ToGroupDTO(refreshed))
+	}
+
+	if req.GroupID != "" {
+		groupIDs := make([]string, 0, len(result.Groups))
+		for _, group := range result.Groups {
+			if group != nil {
+				groupIDs = append(groupIDs, group.ID)
+			}
+		}
+		nodeIDs := make([]string, 0, len(result.Items))
+		for _, node := range result.Items {
+			if node != nil {
+				nodeIDs = append(nodeIDs, node.ID)
+			}
+		}
+		if err := appendManualImportToGroup(ctx, tx, req.GroupID, nodeIDs, groupIDs); err != nil {
+			return result, err
+		}
+	}
+
+	result.Failed = len(result.Failures)
+	return result, nil
+}
+
+func PreviewImportRaw(ctx context.Context, tx model.DBTx, raw string) (*NodeImportResult, error) {
+	parsed, err := parseSubscription(raw)
+	if err != nil {
+		return nil, err
+	}
+	result := &NodeImportResult{
+		Total:        len(parsed.Nodes) + len(parsed.Groups) + len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Failures:     append([]NodeImportFailure(nil), parsed.Failures...),
+		PreviewItems: append([]NodeImportPreviewItem(nil), parsed.PreviewItems...),
+		Skipped:      len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Failed:       len(parsed.Failures),
+	}
+	for _, node := range parsed.Nodes {
+		action := ImportPreviewActionImport
+		reason := ImportPreviewReasonImport
+		detail := "节点将导入"
+		if manualNodeExists(ctx, tx, node.SourceKey, node.Name) {
+			action = ImportPreviewActionUpdate
+			reason = ImportPreviewReasonUpdate
+			detail = "节点将更新"
+		}
+		result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, node.Name, action, reason, detail))
+	}
+	for _, group := range parsed.Groups {
+		action := ImportPreviewActionImport
+		reason := ImportPreviewReasonImport
+		detail := "节点组将导入"
+		if manualGroupExists(ctx, tx, group.SourceKey, group.Name) {
+			action = ImportPreviewActionUpdate
+			reason = ImportPreviewReasonUpdate
+			detail = "节点组将更新"
+		}
+		result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, group.Name, action, reason, detail))
+	}
+	return result, nil
+}
+
+func clashImportRaw(req NodeImportRequest) string {
+	if raw := strings.TrimSpace(req.Raw); isClashSubscriptionRaw(raw) {
+		return raw
+	}
+	for _, uri := range req.URIs {
+		if raw := strings.TrimSpace(uri); isClashSubscriptionRaw(raw) {
+			return raw
+		}
+	}
+	return ""
+}
+
+func isClashSubscriptionRaw(raw string) bool {
+	return strings.Contains(raw, "proxies:") || strings.Contains(raw, "proxy-groups:")
+}
+
+func findManualNodeBySourceOrName(ctx context.Context, tx model.DBTx, sourceKey, name string) *tables.ProxyNodeTable {
+	var node tables.ProxyNodeTable
+	query := tx.WithContext(ctx).Where("subscription_id = '' AND source_key = ?", sourceKey)
+	if err := query.First(&node).Error; err == nil {
+		return &node
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	if err := tx.WithContext(ctx).Where("subscription_id = '' AND name = ?", name).First(&node).Error; err == nil {
+		return &node
+	}
+	return nil
+}
+
+func findManualGroupBySourceOrName(ctx context.Context, tx model.DBTx, sourceKey, name string) *tables.ProxyGroupTable {
+	var group tables.ProxyGroupTable
+	if err := tx.WithContext(ctx).Where("type = ? AND subscription_id = '' AND source_key = ?", GroupTypeManual, sourceKey).First(&group).Error; err == nil {
+		return &group
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	if err := tx.WithContext(ctx).Where("type = ? AND subscription_id = '' AND name = ?", GroupTypeManual, name).First(&group).Error; err == nil {
+		return &group
+	}
+	return nil
+}
+
+func manualNodeExists(ctx context.Context, tx model.DBTx, sourceKey, name string) bool {
+	return findManualNodeBySourceOrName(ctx, model.GetTx(tx), sourceKey, name) != nil
+}
+
+func manualGroupExists(ctx context.Context, tx model.DBTx, sourceKey, name string) bool {
+	return findManualGroupBySourceOrName(ctx, model.GetTx(tx), sourceKey, name) != nil
+}
+
+func upsertManualImportNode(ctx context.Context, tx model.DBTx, existing *tables.ProxyNodeTable, req NodeUpsertRequest) (*tables.ProxyNodeTable, bool, error) {
+	req.SubscriptionID = ""
+	if existing == nil {
+		node, err := NodeCreate(ctx, tx, req)
+		return node, false, err
+	}
+	normalized, err := normalizeNodeRequest(req)
+	if err != nil {
+		return nil, true, err
+	}
+	if err := normalizeNodeChainIDs(ctx, tx, existing.ID, normalized); err != nil {
+		return nil, true, err
+	}
+	previousGroupID := strings.TrimSpace(existing.GroupID)
+	if previousGroupID != "" && previousGroupID != req.GroupID {
+		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, []string{existing.ID}); err != nil {
+			return nil, true, err
+		}
+	}
+	if req.GroupID != "" {
+		if err := addNodesToGroupMembership(ctx, tx, req.GroupID, []string{existing.ID}); err != nil {
+			return nil, true, err
+		}
+	}
+	if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
+		"name":                normalized.Name,
+		"protocol":            normalized.Protocol,
+		"server":              normalized.Server,
+		"port":                normalized.Port,
+		"username":            normalized.Username,
+		"password":            normalized.Password,
+		"raw_uri":             normalized.RawURI,
+		"tags_json":           encodeStringSlice(normalized.Tags),
+		"remark":              normalized.Remark,
+		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
+		"group_id":            req.GroupID,
+		"source_key":          req.SourceKey,
+		"updated_at":          time.Now(),
+	}).Error; err != nil {
+		return nil, true, err
+	}
+	node, err := NodeGet(ctx, tx, existing.ID)
+	return node, true, err
+}
+
+func upsertManualImportGroupShell(ctx context.Context, tx model.DBTx, existing *tables.ProxyGroupTable, parsedGroup parsedSubscriptionGroup) (*tables.ProxyGroupTable, bool, error) {
+	if existing != nil {
+		if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
+			"name":         parsedGroup.Name,
+			"type":         GroupTypeManual,
+			"strategy":     parsedGroup.Strategy,
+			"source_key":   parsedGroup.SourceKey,
+			"includes_all": parsedGroup.IncludesAll,
+			"filter":       parsedGroup.Filter,
+			"updated_at":   time.Now(),
+		}).Error; err != nil {
+			return nil, true, err
+		}
+		group, err := GroupGet(ctx, tx, existing.ID)
+		return group, true, err
+	}
+	group := &tables.ProxyGroupTable{
+		Name:            parsedGroup.Name,
+		Type:            GroupTypeManual,
+		Strategy:        parsedGroup.Strategy,
+		SourceKey:       parsedGroup.SourceKey,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice(nil),
+		BuiltinTagsJSON: encodeStringSlice(nil),
+		IncludesAll:     parsedGroup.IncludesAll,
+		Filter:          parsedGroup.Filter,
+	}
+	if err := tx.WithContext(ctx).Create(group).Error; err != nil {
+		return nil, false, err
+	}
+	return group, false, nil
+}
+
+func appendManualImportToGroup(ctx context.Context, tx model.DBTx, targetGroupID string, nodeIDs, groupIDs []string) error {
+	targetGroupID = strings.TrimSpace(targetGroupID)
+	if targetGroupID == "" {
+		return nil
+	}
+	var group tables.ProxyGroupTable
+	if err := tx.WithContext(ctx).First(&group, "id = ?", targetGroupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrGroupNotFound
+		}
+		return err
+	}
+	nextNodeIDs := uniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
+	nextGroupIDs := uniqueNonEmpty(append(decodeStringSlice(group.GroupIDsJSON), removeString(groupIDs, targetGroupID)...))
+	return tx.WithContext(ctx).Model(&group).Updates(map[string]any{
+		"node_ids_json":  encodeStringSlice(nextNodeIDs),
+		"group_ids_json": encodeStringSlice(nextGroupIDs),
+		"updated_at":     time.Now(),
+	}).Error
 }
 
 func MappingCreate(ctx context.Context, tx model.DBTx, req MappingUpsertRequest) (*tables.PortMappingTable, error) {
@@ -335,6 +696,7 @@ func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error
 	if err != nil {
 		return nil, err
 	}
+	healthByNodeID := NodeHealthMap(ctx, tx, nodeIDsFromNodes(nodes))
 	groups, err := GroupList(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -348,13 +710,23 @@ func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error
 		return nil, err
 	}
 	return &StateSnapshotDTO{
-		Nodes:         ToNodeDTOs(nodes),
+		Nodes:         ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups),
 		Groups:        ToGroupDTOs(groups),
 		Subscriptions: ToSubscriptionDTOs(subscriptions),
 		Mappings:      ToMappingDTOs(mappings),
 		Runtime:       RuntimeStatusGet(),
 		LastSavedAt:   time.Now(),
 	}, nil
+}
+
+func nodeIDsFromNodes(nodes []*tables.ProxyNodeTable) []string {
+	ids := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids
 }
 
 func nextMappingOrder(ctx context.Context, tx model.DBTx) (int64, error) {
@@ -479,6 +851,63 @@ func findGroupsByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*table
 	return ordered, nil
 }
 
+func normalizeNodeGroupIDs(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) ([]string, error) {
+	groupIDs := uniqueNonEmpty(req.GroupIDs)
+	if len(groupIDs) == 0 {
+		groupIDs = stringSliceOrEmpty(strings.TrimSpace(req.GroupID))
+	}
+	if len(groupIDs) == 0 {
+		return []string{}, nil
+	}
+	groups, err := findGroupsByIDs(ctx, tx, groupIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) != len(groupIDs) {
+		return nil, ErrGroupNotFound
+	}
+	normalized := make([]string, 0, len(groups))
+	for _, group := range groups {
+		normalized = append(normalized, group.ID)
+	}
+	return normalized, nil
+}
+
+func nodeGroupIDs(ctx context.Context, tx model.DBTx, nodeID string, legacyGroupID string) ([]string, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	return groupIDsForNodeFromGroups(nodeID, legacyGroupID, groups), nil
+}
+
+func primaryGroupID(groupIDs []string) string {
+	groupIDs = uniqueNonEmpty(groupIDs)
+	if len(groupIDs) == 0 {
+		return ""
+	}
+	return groupIDs[0]
+}
+
+func syncNodeGroupMembership(ctx context.Context, tx model.DBTx, nodeID string, previousGroupIDs []string, nextGroupIDs []string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	for _, groupID := range differenceStrings(previousGroupIDs, nextGroupIDs) {
+		if err := removeNodesFromGroupMembership(ctx, tx, groupID, []string{nodeID}); err != nil {
+			return err
+		}
+	}
+	for _, groupID := range differenceStrings(nextGroupIDs, previousGroupIDs) {
+		if err := addNodesToGroupMembership(ctx, tx, groupID, []string{nodeID}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	if strings.TrimSpace(req.RawURI) != "" {
 		parsed, err := ParseNodeURI(req.RawURI)
@@ -505,12 +934,24 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	normalized.Password = strings.TrimSpace(normalized.Password)
 	normalized.Remark = strings.TrimSpace(normalized.Remark)
 	normalized.Tags = cleanTags(normalized.Tags, normalized.Protocol)
+	normalized.ChainNodeIDs = uniqueNonEmpty(normalized.ChainNodeIDs)
 
 	if normalized.Name == "" {
 		normalized.Name = defaultNodeName(normalized.Protocol, normalized.Server)
 	}
 	if !isSupportedNodeProtocol(normalized.Protocol) {
 		return nil, ErrUnsupportedProtocol
+	}
+	if normalized.Protocol == ProtocolChain {
+		normalized.Server = ""
+		normalized.Port = nil
+		normalized.Username = ""
+		normalized.Password = ""
+		normalized.RawURI = ""
+		if len(normalized.ChainNodeIDs) < 2 {
+			return nil, ErrInvalidChain
+		}
+		return &normalized, nil
 	}
 	if normalized.Server == "" {
 		return nil, ErrUnsupportedURI
@@ -519,6 +960,60 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 		return nil, ErrInvalidPort
 	}
 	return &normalized, nil
+}
+
+func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, req *NodeUpsertRequest) error {
+	if req == nil {
+		return nil
+	}
+	if req.Protocol != ProtocolChain {
+		req.ChainNodeIDs = nil
+		return nil
+	}
+
+	tx = model.GetTx(tx).WithContext(ctx)
+	req.ChainNodeIDs = uniqueNonEmpty(req.ChainNodeIDs)
+	if len(req.ChainNodeIDs) < 2 {
+		return ErrInvalidChain
+	}
+	if nodeID != "" && containsString(req.ChainNodeIDs, nodeID) {
+		return ErrInvalidChain
+	}
+	nodes, err := findNodesByIDs(ctx, tx, req.ChainNodeIDs)
+	if err != nil {
+		return err
+	}
+	if len(nodes) != len(req.ChainNodeIDs) {
+		return ErrInvalidChain
+	}
+	for _, child := range nodes {
+		if child.ID != nodeID && normalizeProtocol(child.Protocol) == ProtocolChain {
+			return ErrInvalidChain
+		}
+	}
+	return nil
+}
+
+func ensureNodeNotReferencedByChains(ctx context.Context, tx model.DBTx, nodeID string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.Find(&nodes).Error; err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if node == nil || node.ID == nodeID {
+			continue
+		}
+		if containsString(decodeStringSlice(node.ChainNodeIDsJSON), nodeID) {
+			return ErrInvalidChain
+		}
+	}
+	return nil
 }
 
 func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID string, req MappingUpsertRequest) (*MappingUpsertRequest, error) {
@@ -644,9 +1139,14 @@ func normalizeProtocol(protocol string) string {
 	switch protocol {
 	case "socks", "socks5":
 		return ProtocolSOCKS5
+	case "ss", "shadowsocks":
+		return ProtocolShadowsocks
+	case "hy2", "hysteria2":
+		return ProtocolHysteria2
 	case "https":
 		return ProtocolHTTP
-	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHTTP:
+	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHTTP,
+		ProtocolHysteria, ProtocolTUIC, ProtocolSSH, ProtocolChain:
 		return protocol
 	default:
 		return ProtocolUnknown
@@ -698,7 +1198,9 @@ func normalizeGroupType(value string) string {
 
 func isSupportedNodeProtocol(protocol string) bool {
 	switch protocol {
-	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolSOCKS5, ProtocolHTTP:
+	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolSOCKS5, ProtocolHTTP,
+		ProtocolShadowsocks, ProtocolHysteria, ProtocolHysteria2, ProtocolTUIC, ProtocolSSH,
+		ProtocolChain:
 		return true
 	default:
 		return false

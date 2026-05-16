@@ -140,6 +140,28 @@ func TestBuildNodeOutboundFromVLESSRealityURI(t *testing.T) {
 	}
 }
 
+func TestBuildNodeOutboundNormalizesVLESSVisionUDP443Flow(t *testing.T) {
+	raw := "vless://48a25c54-8826-4657-330e-8db38ef76716@us-n1.qq.org:6515?encryption=none&flow=xtls-rprx-vision-udp443&security=reality&sni=www.learn.microsoft.com&fp=chrome&pbk=j0WAnZjnHwzpiPwpHaurvyfqe1yZdbNeRG0isinebQc&type=tcp#edge"
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if !withUTLS {
+		if err != ErrUTLSRequired {
+			t.Fatalf("buildNodeOutboundFromURI() error = %v, want ErrUTLSRequired", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	options, ok := outbound.Options.(*option.VLESSOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.VLESSOutboundOptions", outbound.Options)
+	}
+	if options.Flow != "xtls-rprx-vision" {
+		t.Fatalf("Flow = %q, want xtls-rprx-vision", options.Flow)
+	}
+}
+
 func TestBuildNodeOutboundFromVLESSH2URI(t *testing.T) {
 	raw := "vless://uuid@example.com:443?type=h2&security=tls&sni=edge.example.com&host=cdn.example.com&path=%2Fh2#edge"
 
@@ -233,6 +255,166 @@ func TestBuildNodeOutboundFromTrojanURI(t *testing.T) {
 	}
 	if options.Transport == nil || options.Transport.Type != constant.V2RayTransportTypeWebsocket {
 		t.Fatalf("Transport = %+v, want websocket", options.Transport)
+	}
+}
+
+func TestBuildNodeOutboundFromShadowsocksURI(t *testing.T) {
+	raw := "ss://aes-128-gcm:secret@ss.example.com:8388?network=udp#ss"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolShadowsocks || node.Username != "aes-128-gcm" || node.Password != "secret" {
+		t.Fatalf("node = %+v, want shadowsocks credentials", node)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	if outbound.Type != constant.TypeShadowsocks {
+		t.Fatalf("Type = %q, want %q", outbound.Type, constant.TypeShadowsocks)
+	}
+	options, ok := outbound.Options.(*option.ShadowsocksOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.ShadowsocksOutboundOptions", outbound.Options)
+	}
+	if options.Method != "aes-128-gcm" || options.Password != "secret" || options.Network != "udp" {
+		t.Fatalf("options = %+v, want method/password/network", options)
+	}
+}
+
+func TestParseLegacyShadowsocksURI(t *testing.T) {
+	payload := base64.RawStdEncoding.EncodeToString([]byte("2022-blake3-aes-128-gcm:secret@legacy.example.com:8388"))
+	raw := "ss://" + payload + "#legacy"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolShadowsocks || node.Server != "legacy.example.com" {
+		t.Fatalf("node = %+v, want legacy shadowsocks node", node)
+	}
+	if node.Port == nil || *node.Port != 8388 {
+		t.Fatalf("Port = %v, want 8388", node.Port)
+	}
+}
+
+func TestBuildNodeOutboundFromHysteriaURI(t *testing.T) {
+	raw := "hysteria://auth@example.com:443?upmbps=50&downmbps=100&sni=edge.example.com#hy"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolHysteria || node.Username != "" || node.Password != "auth" {
+		t.Fatalf("node = %+v, want hysteria auth password", node)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	if outbound.Type != constant.TypeHysteria {
+		t.Fatalf("Type = %q, want %q", outbound.Type, constant.TypeHysteria)
+	}
+	options, ok := outbound.Options.(*option.HysteriaOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.HysteriaOutboundOptions", outbound.Options)
+	}
+	if options.AuthString != "auth" || options.UpMbps != 50 || options.DownMbps != 100 {
+		t.Fatalf("options = %+v, want auth and bandwidth", options)
+	}
+	if options.TLS == nil || !options.TLS.Enabled || options.TLS.ServerName != "edge.example.com" {
+		t.Fatalf("TLS = %+v, want edge.example.com", options.TLS)
+	}
+}
+
+func TestBuildNodeOutboundFromHysteria2URI(t *testing.T) {
+	raw := "hy2://pass@example.com:443?sni=edge.example.com&obfs=salamander&obfs-password=obfs&upmbps=100&downmbps=200#hy2"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolHysteria2 || node.Password != "pass" {
+		t.Fatalf("node = %+v, want hysteria2 password", node)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	if outbound.Type != constant.TypeHysteria2 {
+		t.Fatalf("Type = %q, want %q", outbound.Type, constant.TypeHysteria2)
+	}
+	options, ok := outbound.Options.(*option.Hysteria2OutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.Hysteria2OutboundOptions", outbound.Options)
+	}
+	if options.Password != "pass" || options.UpMbps != 100 || options.DownMbps != 200 {
+		t.Fatalf("options = %+v, want password and bandwidth", options)
+	}
+	if options.Obfs == nil || options.Obfs.Type != "salamander" || options.Obfs.Password != "obfs" {
+		t.Fatalf("Obfs = %+v, want salamander/obfs", options.Obfs)
+	}
+}
+
+func TestBuildNodeOutboundFromTUICURI(t *testing.T) {
+	raw := "tuic://uuid:pass@example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=edge.example.com#tuic"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolTUIC || node.Username != "uuid" || node.Password != "pass" {
+		t.Fatalf("node = %+v, want tuic credentials", node)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	if outbound.Type != constant.TypeTUIC {
+		t.Fatalf("Type = %q, want %q", outbound.Type, constant.TypeTUIC)
+	}
+	options, ok := outbound.Options.(*option.TUICOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.TUICOutboundOptions", outbound.Options)
+	}
+	if options.UUID != "uuid" || options.Password != "pass" || options.CongestionControl != "bbr" || options.UDPRelayMode != "native" {
+		t.Fatalf("options = %+v, want tuic fields", options)
+	}
+	if options.TLS == nil || !options.TLS.Enabled || options.TLS.ServerName != "edge.example.com" {
+		t.Fatalf("TLS = %+v, want edge.example.com", options.TLS)
+	}
+}
+
+func TestBuildNodeOutboundFromSSHURI(t *testing.T) {
+	raw := "ssh://root:admin@example.com:22?host_key=ssh-rsa%20AAA#ssh"
+
+	node, err := ParseNodeURI(raw)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != ProtocolSSH || node.Username != "root" || node.Password != "admin" {
+		t.Fatalf("node = %+v, want ssh credentials", node)
+	}
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	if outbound.Type != constant.TypeSSH {
+		t.Fatalf("Type = %q, want %q", outbound.Type, constant.TypeSSH)
+	}
+	options, ok := outbound.Options.(*option.SSHOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.SSHOutboundOptions", outbound.Options)
+	}
+	if options.User != "root" || options.Password != "admin" || len(options.HostKey) != 1 {
+		t.Fatalf("options = %+v, want ssh fields", options)
 	}
 }
 

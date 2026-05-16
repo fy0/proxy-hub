@@ -31,7 +31,7 @@ func GroupCreate(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*t
 	if err := tx.Create(group).Error; err != nil {
 		return nil, err
 	}
-	if err := moveNodesToGroup(ctx, tx, group.ID, normalized.NodeIDs); err != nil {
+	if err := addNodesToGroup(ctx, tx, group.ID, normalized.NodeIDs); err != nil {
 		return nil, err
 	}
 	return group, nil
@@ -70,7 +70,7 @@ func GroupUpdate(ctx context.Context, tx model.DBTx, id string, req GroupUpsertR
 	if err := clearNodeGroup(ctx, tx, group.ID, removedNodeIDs); err != nil {
 		return nil, err
 	}
-	if err := moveNodesToGroup(ctx, tx, group.ID, normalized.NodeIDs); err != nil {
+	if err := addNodesToGroup(ctx, tx, group.ID, normalized.NodeIDs); err != nil {
 		return nil, err
 	}
 	return GroupGet(ctx, tx, id)
@@ -221,7 +221,7 @@ func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []strin
 	return nil
 }
 
-func moveNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {
+func addNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return nil
@@ -234,23 +234,20 @@ func moveNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeID
 	if err != nil {
 		return err
 	}
-	previousGroupNodeIDs := map[string][]string{}
+	nodeIDsMissingPrimaryGroup := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if node.GroupID == "" || node.GroupID == groupID {
-			continue
-		}
-		previousGroupNodeIDs[node.GroupID] = append(previousGroupNodeIDs[node.GroupID], node.ID)
-	}
-	for previousGroupID, previousNodeIDs := range previousGroupNodeIDs {
-		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, previousNodeIDs); err != nil {
-			return err
+		if node.GroupID == "" {
+			nodeIDsMissingPrimaryGroup = append(nodeIDsMissingPrimaryGroup, node.ID)
 		}
 	}
 	if err := addNodesToGroupMembership(ctx, tx, groupID, nodeIDs); err != nil {
 		return err
 	}
+	if len(nodeIDsMissingPrimaryGroup) == 0 {
+		return nil
+	}
 	return tx.WithContext(ctx).Model(&tables.ProxyNodeTable{}).
-		Where("id IN ?", nodeIDs).
+		Where("id IN ?", nodeIDsMissingPrimaryGroup).
 		Updates(map[string]any{
 			"group_id":   groupID,
 			"updated_at": time.Now(),

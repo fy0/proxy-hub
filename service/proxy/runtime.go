@@ -24,12 +24,18 @@ import (
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/group"
 	protocolHTTP "github.com/sagernet/sing-box/protocol/http"
+	"github.com/sagernet/sing-box/protocol/hysteria"
+	"github.com/sagernet/sing-box/protocol/hysteria2"
 	"github.com/sagernet/sing-box/protocol/mixed"
+	"github.com/sagernet/sing-box/protocol/shadowsocks"
 	"github.com/sagernet/sing-box/protocol/socks"
+	"github.com/sagernet/sing-box/protocol/ssh"
 	"github.com/sagernet/sing-box/protocol/trojan"
+	"github.com/sagernet/sing-box/protocol/tuic"
 	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
 	"github.com/sagernet/sing/common/auth"
+	"github.com/sagernet/sing/common/byteformats"
 	"github.com/sagernet/sing/common/json/badoption"
 	"go.uber.org/zap"
 
@@ -149,6 +155,102 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 	return setRuntimeInstances(instances, runtimeStatusFromResults(len(mappings), inbounds, failures)), nil
 }
 
+func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, error) {
+	mappingID = strings.TrimSpace(mappingID)
+	if mappingID == "" {
+		return RuntimeStatusGet(), nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	mapping, err := MappingGet(ctx, nil, mappingID)
+	if errors.Is(err, ErrMappingNotFound) {
+		status, removeErr := RuntimeRemoveMapping(mappingID)
+		return status, removeErr
+	}
+	if err != nil {
+		return RuntimeStatusGet(), err
+	}
+	if !mapping.Enabled {
+		return RuntimeRemoveMapping(mapping.ID)
+	}
+
+	oldInstance := detachRuntimeMapping(mapping.ID)
+	if closeErr := closeRuntimeInstance(mapping.ID, oldInstance); closeErr != nil {
+		utils.Logger.Warn("关闭旧 sing-box 映射实例失败", zap.String("mappingId", mapping.ID), zap.Error(closeErr))
+	}
+
+	instance, inbound, failure := createRuntimeMappingInstance(ctx, mapping)
+	if failure != nil {
+		return setRuntimeMappingFailure(mapping.ID, *failure), nil
+	}
+	return setRuntimeMappingInstance(mapping.ID, instance, inbound), nil
+}
+
+func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatus, error) {
+	mappingIDs = uniqueNonEmpty(mappingIDs)
+	if len(mappingIDs) == 0 {
+		return RuntimeStatusGet(), nil
+	}
+
+	var joined error
+	status := RuntimeStatusGet()
+	for _, mappingID := range mappingIDs {
+		nextStatus, err := RuntimeSyncMapping(ctx, mappingID)
+		status = nextStatus
+		if err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return status, joined
+}
+
+func RuntimeRemoveMapping(mappingID string) (RuntimeStatus, error) {
+	mappingID = strings.TrimSpace(mappingID)
+	if mappingID == "" {
+		return RuntimeStatusGet(), nil
+	}
+
+	oldInstance := detachRuntimeMapping(mappingID)
+	err := closeRuntimeInstance(mappingID, oldInstance)
+	return RuntimeStatusGet(), err
+}
+
+func RuntimeAffectedMappingIDsByNodes(ctx context.Context, nodeIDs []string) ([]string, error) {
+	return runtimeAffectedMappingIDsByNodes(ctx, nil, nodeIDs)
+}
+
+func RuntimeAffectedMappingIDsByGroups(ctx context.Context, groupIDs []string) ([]string, error) {
+	return runtimeAffectedMappingIDsByGroups(ctx, nil, groupIDs)
+}
+
+func RuntimeAffectedMappingIDsBySubscription(ctx context.Context, subscriptionID string) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	subscriptionID = strings.TrimSpace(subscriptionID)
+	if subscriptionID == "" {
+		return []string{}, nil
+	}
+
+	tx := model.GetTx(nil).WithContext(ctx)
+	var subscription tables.ProxySubscriptionTable
+	if err := tx.First(&subscription, "id = ?", subscriptionID).Error; err != nil {
+		return nil, err
+	}
+
+	groupIDs := []string{subscription.GroupID}
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Where("subscription_id = ?", subscriptionID).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.ID)
+	}
+	return runtimeAffectedMappingIDsByGroups(ctx, tx, groupIDs)
+}
+
 func RuntimeStop() error {
 	instances := replaceRuntimeInstances(RuntimeStatus{
 		Running:   false,
@@ -207,8 +309,13 @@ func buildSingBoxOptionsFromMappings(
 		constant.TypeDirect: {},
 		constant.TypeBlock:  {},
 	}
+	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, tx)
+	if err != nil {
+		return option.Options{}, nil, err
+	}
 	nodeCache := map[string]*tables.ProxyNodeTable{}
 	groupCache := map[string]*tables.ProxyGroupTable{}
+	nodeOutboundCache := map[string]string{}
 	inbounds := make([]option.Inbound, 0, len(mappings))
 	rules := make([]option.Rule, 0, len(mappings))
 	statusInbounds := make([]RuntimeInbound, 0, len(mappings))
@@ -221,18 +328,15 @@ func buildSingBoxOptionsFromMappings(
 
 		memberTags := make([]string, 0, len(nodes))
 		for _, node := range nodes {
-			nodeCache[node.ID] = node
-			tag := nodeOutboundTag(node.ID)
-			memberTags = append(memberTags, tag)
-			if _, exists := outboundTags[tag]; exists {
+			if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 				continue
 			}
-			outbound, err := buildNodeOutbound(node, tag)
+			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, nodeOutboundCache, blacklistedNodeIDs)
 			if err != nil {
 				return option.Options{}, nil, fmt.Errorf("节点 %s 配置无效: %w", node.Name, err)
 			}
-			outbounds = append(outbounds, outbound)
-			outboundTags[tag] = struct{}{}
+			memberTags = append(memberTags, tag)
+			outbounds = append(outbounds, nodeOutbounds...)
 		}
 
 		groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
@@ -246,7 +350,9 @@ func buildSingBoxOptionsFromMappings(
 				proxyGroup,
 				outboundTags,
 				nodeCache,
+				nodeOutboundCache,
 				groupCache,
+				blacklistedNodeIDs,
 				map[string]bool{},
 			)
 			if err != nil {
@@ -307,8 +413,13 @@ func singBoxContext(ctx context.Context) context.Context {
 	group.RegisterURLTest(outboundRegistry)
 	socks.RegisterOutbound(outboundRegistry)
 	protocolHTTP.RegisterOutbound(outboundRegistry)
+	shadowsocks.RegisterOutbound(outboundRegistry)
+	hysteria.RegisterOutbound(outboundRegistry)
+	hysteria2.RegisterOutbound(outboundRegistry)
 	vmess.RegisterOutbound(outboundRegistry)
 	trojan.RegisterOutbound(outboundRegistry)
+	tuic.RegisterOutbound(outboundRegistry)
+	ssh.RegisterOutbound(outboundRegistry)
 	vless.RegisterOutbound(outboundRegistry)
 
 	dnsRegistry := dns.NewTransportRegistry()
@@ -418,7 +529,9 @@ func buildProxyGroupOutbounds(
 	proxyGroup *tables.ProxyGroupTable,
 	outboundTags map[string]struct{},
 	nodeCache map[string]*tables.ProxyNodeTable,
+	nodeOutboundCache map[string]string,
 	groupCache map[string]*tables.ProxyGroupTable,
+	blacklistedNodeIDs map[string]struct{},
 	visiting map[string]bool,
 ) (string, []option.Outbound, error) {
 	if proxyGroup == nil {
@@ -451,18 +564,15 @@ func buildProxyGroupOutbounds(
 		return "", nil, err
 	}
 	for _, node := range nodes {
-		nodeCache[node.ID] = node
-		nodeTag := nodeOutboundTag(node.ID)
-		memberTags = append(memberTags, nodeTag)
-		if _, exists := outboundTags[nodeTag]; exists {
+		if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 			continue
 		}
-		outbound, err := buildNodeOutbound(node, nodeTag)
+		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, nodeOutboundCache, blacklistedNodeIDs)
 		if err != nil {
 			return "", nil, fmt.Errorf("节点 %s 配置无效: %w", node.Name, err)
 		}
-		outbounds = append(outbounds, outbound)
-		outboundTags[nodeTag] = struct{}{}
+		memberTags = append(memberTags, nodeTag)
+		outbounds = append(outbounds, nodeOutbounds...)
 	}
 
 	childGroups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(proxyGroup.GroupIDsJSON))
@@ -471,7 +581,17 @@ func buildProxyGroupOutbounds(
 	}
 	for _, childGroup := range childGroups {
 		groupCache[childGroup.ID] = childGroup
-		childTag, childOutbounds, err := buildProxyGroupOutbounds(ctx, tx, childGroup, outboundTags, nodeCache, groupCache, visiting)
+		childTag, childOutbounds, err := buildProxyGroupOutbounds(
+			ctx,
+			tx,
+			childGroup,
+			outboundTags,
+			nodeCache,
+			nodeOutboundCache,
+			groupCache,
+			blacklistedNodeIDs,
+			visiting,
+		)
 		if err != nil {
 			return "", nil, err
 		}
@@ -487,6 +607,105 @@ func buildProxyGroupOutbounds(
 	outbounds = append(outbounds, groupOutbound)
 	outboundTags[tag] = struct{}{}
 	return tag, outbounds, nil
+}
+
+func buildNodeRuntimeOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	node *tables.ProxyNodeTable,
+	outboundTags map[string]struct{},
+	nodeCache map[string]*tables.ProxyNodeTable,
+	nodeOutboundCache map[string]string,
+	blacklistedNodeIDs map[string]struct{},
+) (string, []option.Outbound, error) {
+	if node == nil {
+		return constant.TypeBlock, nil, nil
+	}
+	if tag, ok := nodeOutboundCache[node.ID]; ok {
+		return tag, nil, nil
+	}
+	nodeCache[node.ID] = node
+
+	if normalizeProtocol(node.Protocol) != ProtocolChain {
+		tag := nodeOutboundTag(node.ID)
+		nodeOutboundCache[node.ID] = tag
+		if _, exists := outboundTags[tag]; exists {
+			return tag, nil, nil
+		}
+		outbound, err := buildNodeOutbound(node, tag)
+		if err != nil {
+			return "", nil, err
+		}
+		outboundTags[tag] = struct{}{}
+		return tag, []option.Outbound{outbound}, nil
+	}
+
+	chainNodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(node.ChainNodeIDsJSON))
+	if err != nil {
+		return "", nil, err
+	}
+	if len(chainNodes) < 2 {
+		return "", nil, ErrInvalidChain
+	}
+	for _, chainNode := range chainNodes {
+		if _, blacklisted := blacklistedNodeIDs[chainNode.ID]; blacklisted {
+			return constant.TypeBlock, nil, nil
+		}
+	}
+
+	outbounds := make([]option.Outbound, 0, len(chainNodes))
+	detourTag := ""
+	for index, chainNode := range chainNodes {
+		if normalizeProtocol(chainNode.Protocol) == ProtocolChain {
+			return "", nil, ErrInvalidChain
+		}
+		chainTag := nodeChainMemberOutboundTag(node.ID, index, chainNode.ID)
+		if _, exists := outboundTags[chainTag]; exists {
+			detourTag = chainTag
+			continue
+		}
+		outbound, err := buildNodeOutbound(chainNode, chainTag)
+		if err != nil {
+			return "", nil, err
+		}
+		if detourTag != "" {
+			if err := setOutboundDetour(&outbound, detourTag); err != nil {
+				return "", nil, err
+			}
+		}
+		outbounds = append(outbounds, outbound)
+		outboundTags[chainTag] = struct{}{}
+		detourTag = chainTag
+	}
+
+	tag := nodeOutboundTag(node.ID)
+	nodeOutboundCache[node.ID] = tag
+	if _, exists := outboundTags[tag]; !exists {
+		finalOutbound := outbounds[len(outbounds)-1]
+		finalOutbound.Tag = tag
+		if len(outbounds) > 1 {
+			if err := setOutboundDetour(&finalOutbound, outbounds[len(outbounds)-2].Tag); err != nil {
+				return "", nil, err
+			}
+		}
+		outbounds = append(outbounds, finalOutbound)
+		outboundTags[tag] = struct{}{}
+	}
+	return tag, outbounds, nil
+}
+
+func setOutboundDetour(outbound *option.Outbound, detour string) error {
+	if outbound == nil || strings.TrimSpace(detour) == "" {
+		return nil
+	}
+	wrapper, ok := outbound.Options.(option.DialerOptionsWrapper)
+	if !ok {
+		return ErrInvalidChain
+	}
+	dialOptions := wrapper.TakeDialerOptions()
+	dialOptions.Detour = detour
+	wrapper.ReplaceDialerOptions(dialOptions)
+	return nil
 }
 
 func buildProxyGroupOutbound(proxyGroup *tables.ProxyGroupTable, tag string, memberTags []string) option.Outbound {
@@ -599,6 +818,43 @@ func buildNodeOutbound(node *tables.ProxyNodeTable, tag string) (option.Outbound
 				Password:      node.Password,
 			},
 		}, nil
+	case ProtocolShadowsocks:
+		if strings.TrimSpace(node.Username) == "" || strings.TrimSpace(node.Password) == "" {
+			return option.Outbound{}, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
+		}
+		return option.Outbound{
+			Type: constant.TypeShadowsocks,
+			Tag:  tag,
+			Options: &option.ShadowsocksOutboundOptions{
+				ServerOptions: serverOptions,
+				Method:        node.Username,
+				Password:      node.Password,
+			},
+		}, nil
+	case ProtocolTUIC:
+		tlsOptions := defaultOutboundTLSOptions(serverOptions.Server)
+		return option.Outbound{
+			Type: constant.TypeTUIC,
+			Tag:  tag,
+			Options: &option.TUICOutboundOptions{
+				ServerOptions: serverOptions,
+				UUID:          node.Username,
+				Password:      node.Password,
+				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+					TLS: tlsOptions,
+				},
+			},
+		}, nil
+	case ProtocolSSH:
+		return option.Outbound{
+			Type: constant.TypeSSH,
+			Tag:  tag,
+			Options: &option.SSHOutboundOptions{
+				ServerOptions: serverOptions,
+				User:          node.Username,
+				Password:      node.Password,
+			},
+		}, nil
 	default:
 		return option.Outbound{}, ErrUnsupportedProtocol
 	}
@@ -633,7 +889,7 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 			Options: &option.VLESSOutboundOptions{
 				ServerOptions: serverOptions,
 				UUID:          parsed.Username,
-				Flow:          queryFirst(parsed.Query, "flow"),
+				Flow:          normalizeVLESSFlow(queryFirst(parsed.Query, "flow")),
 				PacketEncoding: stringPtrOrNil(
 					queryFirst(parsed.Query, "packetEncoding", "packet_encoding", "packet-encoding"),
 				),
@@ -722,9 +978,153 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 				},
 			},
 		}, nil
+	case ProtocolShadowsocks:
+		return buildShadowsocksOutbound(parsed, serverOptions, tag)
+	case ProtocolHysteria:
+		return buildHysteriaOutbound(parsed, serverOptions, tag)
+	case ProtocolHysteria2:
+		return buildHysteria2Outbound(parsed, serverOptions, tag)
+	case ProtocolTUIC:
+		return buildTUICOutbound(parsed, serverOptions, tag)
+	case ProtocolSSH:
+		return buildSSHOutbound(parsed, serverOptions, tag)
 	default:
 		return option.Outbound{}, ErrUnsupportedProtocol
 	}
+}
+
+func buildShadowsocksOutbound(parsed *parsedNodeURI, serverOptions option.ServerOptions, tag string) (option.Outbound, error) {
+	if strings.TrimSpace(parsed.Username) == "" || strings.TrimSpace(parsed.Password) == "" {
+		return option.Outbound{}, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
+	}
+	options := &option.ShadowsocksOutboundOptions{
+		ServerOptions: serverOptions,
+		Method:        parsed.Username,
+		Password:      parsed.Password,
+		Plugin:        queryFirst(parsed.Query, "plugin"),
+		PluginOptions: queryFirst(parsed.Query, "plugin_opts", "plugin-opts", "pluginOptions"),
+		Network:       networkListFromQuery(parsed.Query),
+	}
+	return option.Outbound{Type: constant.TypeShadowsocks, Tag: tag, Options: options}, nil
+}
+
+func buildHysteriaOutbound(parsed *parsedNodeURI, serverOptions option.ServerOptions, tag string) (option.Outbound, error) {
+	tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, true)
+	if err != nil {
+		return option.Outbound{}, err
+	}
+	options := &option.HysteriaOutboundOptions{
+		ServerOptions: serverOptions,
+		ServerPorts:   listableStringFromQuery(parsed.Query, "server_ports", "server-ports", "ports"),
+		HopInterval:   durationFromQuery(parsed.Query, "hop_interval", "hop-interval"),
+		Obfs:          queryFirst(parsed.Query, "obfs"),
+		AuthString:    firstNonEmpty(parsed.Password, queryFirst(parsed.Query, "auth_str", "auth-str", "password")),
+		Network:       networkListFromQuery(parsed.Query),
+		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+			TLS: tlsOptions,
+		},
+	}
+	if options.AuthString == "" {
+		if auth := queryFirst(parsed.Query, "auth"); auth != "" {
+			if decoded, err := decodeBase64Flexible(auth); err == nil {
+				options.Auth = decoded
+			} else {
+				options.AuthString = auth
+			}
+		}
+	}
+	if up, err := networkBytesFromQuery(parsed.Query, "up"); err != nil {
+		return option.Outbound{}, err
+	} else {
+		options.Up = up
+	}
+	if down, err := networkBytesFromQuery(parsed.Query, "down"); err != nil {
+		return option.Outbound{}, err
+	} else {
+		options.Down = down
+	}
+	options.UpMbps = intFromQuery(parsed.Query, "up_mbps", "up-mbps", "upmbps")
+	options.DownMbps = intFromQuery(parsed.Query, "down_mbps", "down-mbps", "downmbps")
+	if options.Up == nil && options.UpMbps == 0 {
+		return option.Outbound{}, fmt.Errorf("%w: missing hysteria upload bandwidth", ErrUnsupportedURI)
+	}
+	if options.Down == nil && options.DownMbps == 0 {
+		return option.Outbound{}, fmt.Errorf("%w: missing hysteria download bandwidth", ErrUnsupportedURI)
+	}
+	options.ReceiveWindowConn = uint64FromQuery(parsed.Query, "recv_window_conn", "recv-window-conn")
+	options.ReceiveWindow = uint64FromQuery(parsed.Query, "recv_window", "recv-window")
+	options.DisableMTUDiscovery = queryBool(parsed.Query, "disable_mtu_discovery", "disable-mtu-discovery")
+	return option.Outbound{Type: constant.TypeHysteria, Tag: tag, Options: options}, nil
+}
+
+func buildHysteria2Outbound(parsed *parsedNodeURI, serverOptions option.ServerOptions, tag string) (option.Outbound, error) {
+	if strings.TrimSpace(parsed.Password) == "" {
+		return option.Outbound{}, fmt.Errorf("%w: missing hysteria2 password", ErrUnsupportedURI)
+	}
+	tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, true)
+	if err != nil {
+		return option.Outbound{}, err
+	}
+	options := &option.Hysteria2OutboundOptions{
+		ServerOptions: serverOptions,
+		ServerPorts:   listableStringFromQuery(parsed.Query, "server_ports", "server-ports", "ports"),
+		HopInterval:   durationFromQuery(parsed.Query, "hop_interval", "hop-interval"),
+		UpMbps:        intFromQuery(parsed.Query, "up_mbps", "up-mbps", "upmbps"),
+		DownMbps:      intFromQuery(parsed.Query, "down_mbps", "down-mbps", "downmbps"),
+		Password:      parsed.Password,
+		Network:       networkListFromQuery(parsed.Query),
+		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+			TLS: tlsOptions,
+		},
+		BrutalDebug: queryBool(parsed.Query, "brutal_debug", "brutal-debug"),
+	}
+	if obfsPassword := queryFirst(parsed.Query, "obfs-password", "obfs_password", "obfsPassword"); obfsPassword != "" {
+		options.Obfs = &option.Hysteria2Obfs{
+			Type:     firstNonEmpty(queryFirst(parsed.Query, "obfs", "obfs-type", "obfs_type"), "salamander"),
+			Password: obfsPassword,
+		}
+	}
+	return option.Outbound{Type: constant.TypeHysteria2, Tag: tag, Options: options}, nil
+}
+
+func buildTUICOutbound(parsed *parsedNodeURI, serverOptions option.ServerOptions, tag string) (option.Outbound, error) {
+	if strings.TrimSpace(parsed.Username) == "" {
+		return option.Outbound{}, fmt.Errorf("%w: missing tuic uuid", ErrUnsupportedURI)
+	}
+	tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, true)
+	if err != nil {
+		return option.Outbound{}, err
+	}
+	options := &option.TUICOutboundOptions{
+		ServerOptions:     serverOptions,
+		UUID:              parsed.Username,
+		Password:          parsed.Password,
+		CongestionControl: firstNonEmpty(queryFirst(parsed.Query, "congestion_control", "congestion-control"), "cubic"),
+		UDPRelayMode:      queryFirst(parsed.Query, "udp_relay_mode", "udp-relay-mode"),
+		UDPOverStream:     queryBool(parsed.Query, "udp_over_stream", "udp-over-stream"),
+		ZeroRTTHandshake:  queryBool(parsed.Query, "zero_rtt_handshake", "zero-rtt-handshake"),
+		Heartbeat:         durationFromQuery(parsed.Query, "heartbeat"),
+		Network:           networkListFromQuery(parsed.Query),
+		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+			TLS: tlsOptions,
+		},
+	}
+	return option.Outbound{Type: constant.TypeTUIC, Tag: tag, Options: options}, nil
+}
+
+func buildSSHOutbound(parsed *parsedNodeURI, serverOptions option.ServerOptions, tag string) (option.Outbound, error) {
+	options := &option.SSHOutboundOptions{
+		ServerOptions:        serverOptions,
+		User:                 parsed.Username,
+		Password:             parsed.Password,
+		PrivateKey:           listableStringFromQuery(parsed.Query, "private_key", "private-key"),
+		PrivateKeyPath:       queryFirst(parsed.Query, "private_key_path", "private-key-path"),
+		PrivateKeyPassphrase: queryFirst(parsed.Query, "private_key_passphrase", "private-key-passphrase"),
+		HostKey:              listableStringFromQuery(parsed.Query, "host_key", "host-key"),
+		HostKeyAlgorithms:    listableStringFromQuery(parsed.Query, "host_key_algorithms", "host-key-algorithms"),
+		ClientVersion:        queryFirst(parsed.Query, "client_version", "client-version"),
+	}
+	return option.Outbound{Type: constant.TypeSSH, Tag: tag, Options: options}, nil
 }
 
 func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (*option.OutboundTLSOptions, error) {
@@ -737,7 +1137,7 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (
 	tlsOptions := &option.OutboundTLSOptions{
 		Enabled:    true,
 		ServerName: firstNonEmpty(queryFirst(query, "sni", "servername", "server_name"), serverName),
-		Insecure:   queryBool(query, "allowInsecure", "allow_insecure", "insecure"),
+		Insecure:   queryBool(query, "allowInsecure", "allow_insecure", "insecure", "skip-cert-verify"),
 	}
 	if alpn := splitCommaList(queryFirst(query, "alpn")); len(alpn) > 0 {
 		tlsOptions.ALPN = badoption.Listable[string](alpn)
@@ -766,8 +1166,93 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (
 	return tlsOptions, nil
 }
 
+func defaultOutboundTLSOptions(serverName string) *option.OutboundTLSOptions {
+	return &option.OutboundTLSOptions{
+		Enabled:    true,
+		ServerName: serverName,
+	}
+}
+
+func networkListFromQuery(query url.Values) option.NetworkList {
+	network := strings.ToLower(strings.TrimSpace(queryFirst(query, "network")))
+	switch network {
+	case "tcp", "udp":
+		return option.NetworkList(network)
+	default:
+		return ""
+	}
+}
+
+func durationFromQuery(query url.Values, keys ...string) badoption.Duration {
+	value := queryFirst(query, keys...)
+	if value == "" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return badoption.Duration(parsed)
+}
+
+func intFromQuery(query url.Values, keys ...string) int {
+	value := queryFirst(query, keys...)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func uint64FromQuery(query url.Values, keys ...string) uint64 {
+	value := queryFirst(query, keys...)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func listableStringFromQuery(query url.Values, keys ...string) badoption.Listable[string] {
+	values := splitCommaList(queryFirst(query, keys...))
+	if len(values) == 0 {
+		return nil
+	}
+	return badoption.Listable[string](values)
+}
+
+func networkBytesFromQuery(query url.Values, keys ...string) (*byteformats.NetworkBytesCompat, error) {
+	value := queryFirst(query, keys...)
+	if value == "" {
+		return nil, nil
+	}
+	data, err := strconv.Unquote(`"` + strings.ReplaceAll(value, `"`, `\"`) + `"`)
+	if err != nil {
+		data = value
+	}
+	var parsed byteformats.NetworkBytesCompat
+	if err := parsed.UnmarshalJSON([]byte(strconv.Quote(data))); err != nil {
+		return nil, fmt.Errorf("%w: invalid bandwidth %s", ErrUnsupportedURI, value)
+	}
+	return &parsed, nil
+}
+
 func requiresUTLS(query url.Values) bool {
 	return securityMode(query) == "reality"
+}
+
+func normalizeVLESSFlow(flow string) string {
+	flow = strings.TrimSpace(flow)
+	if flow == "xtls-rprx-vision-udp443" {
+		return "xtls-rprx-vision"
+	}
+	return flow
 }
 
 func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error) {
@@ -840,6 +1325,10 @@ func nodeOutboundTag(id string) string {
 	return "node-" + id
 }
 
+func nodeChainMemberOutboundTag(chainID string, index int, nodeID string) string {
+	return fmt.Sprintf("node-chain-%s-%02d-%s", strings.TrimSpace(chainID), index, strings.TrimSpace(nodeID))
+}
+
 func mappingInboundTag(id string) string {
 	return "mapping-in-" + id
 }
@@ -870,11 +1359,191 @@ func runtimeFailureFromInbound(inbound RuntimeInbound, err error) RuntimeInbound
 	}
 }
 
+func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeIDs []string) ([]string, error) {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return []string{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	var allNodes []*tables.ProxyNodeTable
+	if err := tx.Find(&allNodes).Error; err != nil {
+		return nil, err
+	}
+
+	affectedNodeIDs := map[string]struct{}{}
+	for _, nodeID := range nodeIDs {
+		affectedNodeIDs[nodeID] = struct{}{}
+	}
+	changed := true
+	for changed {
+		changed = false
+		currentNodeIDs := make([]string, 0, len(affectedNodeIDs))
+		for nodeID := range affectedNodeIDs {
+			currentNodeIDs = append(currentNodeIDs, nodeID)
+		}
+		for _, node := range allNodes {
+			if normalizeProtocol(node.Protocol) != ProtocolChain {
+				continue
+			}
+			if _, ok := affectedNodeIDs[node.ID]; ok {
+				continue
+			}
+			if stringSlicesIntersect(decodeStringSlice(node.ChainNodeIDsJSON), currentNodeIDs) {
+				affectedNodeIDs[node.ID] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	expandedNodeIDs := make([]string, 0, len(affectedNodeIDs))
+	for nodeID := range affectedNodeIDs {
+		expandedNodeIDs = append(expandedNodeIDs, nodeID)
+	}
+
+	affectedGroupIDs := map[string]struct{}{}
+	for _, group := range groups {
+		if stringSlicesIntersect(decodeStringSlice(group.NodeIDsJSON), expandedNodeIDs) {
+			affectedGroupIDs[group.ID] = struct{}{}
+		}
+	}
+	expandAffectedGroups(groups, affectedGroupIDs)
+
+	groupIDs := make([]string, 0, len(affectedGroupIDs))
+	for groupID := range affectedGroupIDs {
+		groupIDs = append(groupIDs, groupID)
+	}
+	return runtimeAffectedMappingIDsByNodesAndGroups(ctx, tx, expandedNodeIDs, groupIDs)
+}
+
+func runtimeAffectedMappingIDsByGroups(ctx context.Context, tx model.DBTx, groupIDs []string) ([]string, error) {
+	groupIDs = uniqueNonEmpty(groupIDs)
+	if len(groupIDs) == 0 {
+		return []string{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return nil, err
+	}
+
+	affectedGroupIDs := map[string]struct{}{}
+	for _, groupID := range groupIDs {
+		affectedGroupIDs[groupID] = struct{}{}
+	}
+	expandAffectedGroups(groups, affectedGroupIDs)
+
+	expandedGroupIDs := make([]string, 0, len(affectedGroupIDs))
+	for groupID := range affectedGroupIDs {
+		expandedGroupIDs = append(expandedGroupIDs, groupID)
+	}
+	return runtimeAffectedMappingIDsByNodesAndGroups(ctx, tx, nil, expandedGroupIDs)
+}
+
+func runtimeAffectedMappingIDsByNodesAndGroups(ctx context.Context, tx model.DBTx, nodeIDs []string, groupIDs []string) ([]string, error) {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	groupIDs = uniqueNonEmpty(groupIDs)
+	if len(nodeIDs) == 0 && len(groupIDs) == 0 {
+		return []string{}, nil
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var mappings []*tables.PortMappingTable
+	if err := tx.Find(&mappings).Error; err != nil {
+		return nil, err
+	}
+
+	mappingIDs := make([]string, 0)
+	for _, mapping := range mappings {
+		if stringSlicesIntersect(decodeStringSlice(mapping.NodeIDsJSON), nodeIDs) ||
+			stringSlicesIntersect(decodeStringSlice(mapping.GroupIDsJSON), groupIDs) {
+			mappingIDs = append(mappingIDs, mapping.ID)
+		}
+	}
+	return uniqueNonEmpty(mappingIDs), nil
+}
+
+func expandAffectedGroups(groups []*tables.ProxyGroupTable, affected map[string]struct{}) {
+	changed := true
+	for changed {
+		changed = false
+		for _, group := range groups {
+			if _, ok := affected[group.ID]; ok {
+				continue
+			}
+			for _, childGroupID := range decodeStringSlice(group.GroupIDsJSON) {
+				if _, ok := affected[childGroupID]; ok {
+					affected[group.ID] = struct{}{}
+					changed = true
+					break
+				}
+			}
+		}
+	}
+}
+
+func stringSlicesIntersect(first []string, second []string) bool {
+	if len(first) == 0 || len(second) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(second))
+	for _, value := range second {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			seen[value] = struct{}{}
+		}
+	}
+	for _, value := range first {
+		if _, ok := seen[strings.TrimSpace(value)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func mappingRuntimeListen(mapping *tables.PortMappingTable) string {
 	if mapping == nil {
 		return ""
 	}
 	return fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort)
+}
+
+func createRuntimeMappingInstance(ctx context.Context, mapping *tables.PortMappingTable) (*box.Box, RuntimeInbound, *RuntimeInboundFailure) {
+	options, mappingInbounds, err := buildSingBoxOptionsFromMappings(ctx, nil, []*tables.PortMappingTable{mapping})
+	if err != nil {
+		failure := runtimeFailureFromMapping(mapping, err)
+		return nil, RuntimeInbound{}, &failure
+	}
+	if len(mappingInbounds) == 0 {
+		failure := runtimeFailureFromMapping(mapping, errors.New("runtime inbound was not created"))
+		return nil, RuntimeInbound{}, &failure
+	}
+
+	inbound := mappingInbounds[0]
+	instance, err := box.New(box.Options{
+		Options: options,
+		Context: singBoxContext(context.Background()),
+	})
+	if err != nil {
+		failure := runtimeFailureFromInbound(inbound, err)
+		return nil, RuntimeInbound{}, &failure
+	}
+	if err := instance.Start(); err != nil {
+		_ = instance.Close()
+		failure := runtimeFailureFromInbound(inbound, err)
+		return nil, RuntimeInbound{}, &failure
+	}
+	return instance, inbound, nil
 }
 
 func runtimeStatusFromResults(
@@ -904,6 +1573,77 @@ func runtimeStatusFromResults(
 		Failures:  append([]RuntimeInboundFailure(nil), failures...),
 		UpdatedAt: time.Now(),
 	}
+}
+
+func runtimeStatusFromEntries(inbounds []RuntimeInbound, failures []RuntimeInboundFailure) RuntimeStatus {
+	return runtimeStatusFromResults(len(inbounds)+len(failures), inbounds, failures)
+}
+
+func setRuntimeMappingInstance(mappingID string, instance *box.Box, inbound RuntimeInbound) RuntimeStatus {
+	singBoxRuntime.mu.Lock()
+	defer singBoxRuntime.mu.Unlock()
+
+	if singBoxRuntime.instances == nil {
+		singBoxRuntime.instances = map[string]*box.Box{}
+	}
+	singBoxRuntime.instances[mappingID] = instance
+	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
+	inbounds = append(inbounds, inbound)
+	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
+	status := runtimeStatusFromEntries(inbounds, failures)
+	singBoxRuntime.status = normalizeRuntimeStatus(status)
+	return singBoxRuntime.status
+}
+
+func setRuntimeMappingFailure(mappingID string, failure RuntimeInboundFailure) RuntimeStatus {
+	singBoxRuntime.mu.Lock()
+	defer singBoxRuntime.mu.Unlock()
+
+	if singBoxRuntime.instances == nil {
+		singBoxRuntime.instances = map[string]*box.Box{}
+	}
+	delete(singBoxRuntime.instances, mappingID)
+	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
+	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
+	failures = append(failures, failure)
+	status := runtimeStatusFromEntries(inbounds, failures)
+	singBoxRuntime.status = normalizeRuntimeStatus(status)
+	return singBoxRuntime.status
+}
+
+func detachRuntimeMapping(mappingID string) *box.Box {
+	singBoxRuntime.mu.Lock()
+	defer singBoxRuntime.mu.Unlock()
+
+	if singBoxRuntime.instances == nil {
+		singBoxRuntime.instances = map[string]*box.Box{}
+	}
+	instance := singBoxRuntime.instances[mappingID]
+	delete(singBoxRuntime.instances, mappingID)
+	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
+	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
+	singBoxRuntime.status = normalizeRuntimeStatus(runtimeStatusFromEntries(inbounds, failures))
+	return instance
+}
+
+func runtimeInboundsWithoutMapping(inbounds []RuntimeInbound, mappingID string) []RuntimeInbound {
+	result := make([]RuntimeInbound, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		if inbound.MappingID != mappingID {
+			result = append(result, inbound)
+		}
+	}
+	return result
+}
+
+func runtimeFailuresWithoutMapping(failures []RuntimeInboundFailure, mappingID string) []RuntimeInboundFailure {
+	result := make([]RuntimeInboundFailure, 0, len(failures))
+	for _, failure := range failures {
+		if failure.MappingID != mappingID {
+			result = append(result, failure)
+		}
+	}
+	return result
 }
 
 func replaceRuntimeInstances(status RuntimeStatus) map[string]*box.Box {
@@ -966,12 +1706,19 @@ func setRuntimeError(err error) RuntimeStatus {
 func closeRuntimeInstances(instances map[string]*box.Box) error {
 	errs := make([]error, 0)
 	for id, instance := range instances {
-		if instance == nil {
-			continue
-		}
-		if err := instance.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+		if err := closeRuntimeInstance(id, instance); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func closeRuntimeInstance(id string, instance *box.Box) error {
+	if instance == nil {
+		return nil
+	}
+	if err := instance.Close(); err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	return nil
 }

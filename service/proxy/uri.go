@@ -47,6 +47,11 @@ func parseNodeURI(rawURI string) (*parsedNodeURI, error) {
 			return parsed, nil
 		}
 	}
+	if scheme == ProtocolShadowsocks {
+		if parsed, err := parseShadowsocksURI(rawURI); err == nil {
+			return parsed, nil
+		}
+	}
 
 	return parseURLNodeURI(rawURI)
 }
@@ -78,9 +83,14 @@ func parseURLNodeURI(rawURI string) (*parsedNodeURI, error) {
 
 	username := parsed.User.Username()
 	password, _ := parsed.User.Password()
-	if protocol == ProtocolTrojan {
+	switch protocol {
+	case ProtocolTrojan, ProtocolHysteria, ProtocolHysteria2:
 		password = username
 		username = ""
+	case ProtocolShadowsocks:
+		if password == "" {
+			return nil, fmt.Errorf("%w: missing shadowsocks password", ErrUnsupportedURI)
+		}
 	}
 
 	name := strings.TrimSpace(parsed.Fragment)
@@ -108,6 +118,9 @@ func parseURLNodeURI(rawURI string) (*parsedNodeURI, error) {
 		}
 		vmessPacketEncoding = queryFirst(query, "packetEncoding", "packet_encoding", "packet-encoding")
 	}
+	if protocol == ProtocolTUIC && password == "" {
+		password = queryFirst(query, "password")
+	}
 
 	return &parsedNodeURI{
 		RawURI:              rawURI,
@@ -122,6 +135,89 @@ func parseURLNodeURI(rawURI string) (*parsedNodeURI, error) {
 		VMessAlterID:        vmessAlterID,
 		VMessSecurity:       vmessSecurity,
 		VMessPacketEncoding: vmessPacketEncoding,
+	}, nil
+}
+
+func parseShadowsocksURI(rawURI string) (*parsedNodeURI, error) {
+	parsed, err := url.Parse(rawURI)
+	if err != nil || normalizeProtocol(parsed.Scheme) != ProtocolShadowsocks {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedURI, rawURI)
+	}
+	name := strings.TrimSpace(parsed.Fragment)
+	query := cloneQuery(parsed.Query())
+
+	server := strings.TrimSpace(parsed.Hostname())
+	if server != "" && (parsed.Port() != "" || parsed.User != nil) {
+		port, err := parseURLPortWithDefault(parsed, ProtocolShadowsocks)
+		if err != nil {
+			return nil, err
+		}
+		method := parsed.User.Username()
+		password, _ := parsed.User.Password()
+		if method != "" && password == "" {
+			if decoded, err := decodeBase64Flexible(method); err == nil {
+				if decodedMethod, decodedPassword, ok := strings.Cut(string(decoded), ":"); ok {
+					method = decodedMethod
+					password = decodedPassword
+				}
+			}
+		}
+		if strings.TrimSpace(method) == "" || strings.TrimSpace(password) == "" {
+			return nil, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
+		}
+		if name == "" {
+			name = defaultNodeName(ProtocolShadowsocks, server)
+		}
+		return &parsedNodeURI{
+			RawURI:   rawURI,
+			Name:     name,
+			Protocol: ProtocolShadowsocks,
+			Server:   server,
+			Port:     port,
+			Username: strings.TrimSpace(method),
+			Password: strings.TrimSpace(password),
+			Query:    query,
+			Tags:     tagsForParsedNode(ProtocolShadowsocks, query),
+		}, nil
+	}
+
+	payload := strings.TrimSpace(strings.TrimPrefix(rawURI, parsed.Scheme+"://"))
+	if hashIndex := strings.Index(payload, "#"); hashIndex >= 0 {
+		payload = payload[:hashIndex]
+	}
+	if queryIndex := strings.Index(payload, "?"); queryIndex >= 0 {
+		payload = payload[:queryIndex]
+	}
+	decoded, err := decodeBase64Flexible(payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid shadowsocks payload", ErrUnsupportedURI)
+	}
+	legacyURL, err := url.Parse("ss://" + strings.TrimSpace(string(decoded)))
+	if err != nil || legacyURL.Hostname() == "" {
+		return nil, fmt.Errorf("%w: invalid shadowsocks payload", ErrUnsupportedURI)
+	}
+	port, err := parseURLPortWithDefault(legacyURL, ProtocolShadowsocks)
+	if err != nil {
+		return nil, err
+	}
+	method := legacyURL.User.Username()
+	password, _ := legacyURL.User.Password()
+	if method == "" || password == "" {
+		return nil, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
+	}
+	if name == "" {
+		name = defaultNodeName(ProtocolShadowsocks, legacyURL.Hostname())
+	}
+	return &parsedNodeURI{
+		RawURI:   rawURI,
+		Name:     name,
+		Protocol: ProtocolShadowsocks,
+		Server:   strings.TrimSpace(legacyURL.Hostname()),
+		Port:     port,
+		Username: strings.TrimSpace(method),
+		Password: strings.TrimSpace(password),
+		Query:    query,
+		Tags:     tagsForParsedNode(ProtocolShadowsocks, query),
 	}, nil
 }
 
@@ -200,8 +296,10 @@ func parseURLPortWithDefault(parsed *url.URL, protocol string) (*uint16, error) 
 
 	var port uint16
 	switch protocol {
-	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan:
+	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHysteria, ProtocolHysteria2, ProtocolTUIC:
 		port = 443
+	case ProtocolSSH:
+		port = 22
 	case ProtocolHTTP:
 		if strings.EqualFold(parsed.Scheme, "https") {
 			port = 443
@@ -473,6 +571,16 @@ func clashProxyToURI(proxy map[string]any) string {
 		return clashSimpleURI(proxy, ProtocolSOCKS5)
 	case ProtocolHTTP:
 		return clashSimpleURI(proxy, ProtocolHTTP)
+	case ProtocolShadowsocks:
+		return clashShadowsocksURI(proxy)
+	case ProtocolHysteria:
+		return clashHysteriaURI(proxy)
+	case ProtocolHysteria2:
+		return clashHysteria2URI(proxy)
+	case ProtocolTUIC:
+		return clashTUICURI(proxy)
+	case ProtocolSSH:
+		return clashSSHURI(proxy)
 	default:
 		return ""
 	}
@@ -574,6 +682,169 @@ func clashSimpleURI(proxy map[string]any, protocol string) string {
 		u.User = url.User(username)
 	}
 	return u.String()
+}
+
+func clashShadowsocksURI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	method := firstNonEmpty(stringFromMap(proxy, "cipher"), stringFromMap(proxy, "method"))
+	password := stringFromMap(proxy, "password")
+	if server == "" || port == "" || method == "" || password == "" {
+		return ""
+	}
+	query := url.Values{}
+	if plugin := stringFromMap(proxy, "plugin"); plugin != "" {
+		query.Set("plugin", plugin)
+	}
+	if pluginOptions := firstNonEmpty(stringFromMap(proxy, "plugin-opts"), stringFromMap(proxy, "plugin_opts")); pluginOptions != "" {
+		query.Set("plugin_opts", pluginOptions)
+	}
+	if network := stringFromMap(proxy, "network"); network != "" {
+		query.Set("network", network)
+	}
+	u := url.URL{
+		Scheme:   ProtocolShadowsocks,
+		User:     url.UserPassword(method, password),
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	return u.String()
+}
+
+func clashHysteriaURI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	auth := firstNonEmpty(stringFromMap(proxy, "auth-str"), stringFromMap(proxy, "auth_str"), stringFromMap(proxy, "auth"), stringFromMap(proxy, "password"))
+	if server == "" || port == "" || auth == "" {
+		return ""
+	}
+	query := clashQUICProxyQuery(proxy)
+	copyClashString(query, proxy, "obfs", "obfs")
+	copyClashString(query, proxy, "up", "up")
+	copyClashString(query, proxy, "down", "down")
+	copyClashString(query, proxy, "up_mbps", "up-mbps", "up_mbps", "upmbps")
+	copyClashString(query, proxy, "down_mbps", "down-mbps", "down_mbps", "downmbps")
+	copyClashString(query, proxy, "recv_window_conn", "recv-window-conn", "recv_window_conn")
+	copyClashString(query, proxy, "recv_window", "recv-window", "recv_window")
+	copyClashBool(query, proxy, "disable_mtu_discovery", "disable-mtu-discovery", "disable_mtu_discovery")
+	u := url.URL{
+		Scheme:   ProtocolHysteria,
+		User:     url.User(auth),
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	return u.String()
+}
+
+func clashHysteria2URI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	password := firstNonEmpty(stringFromMap(proxy, "password"), stringFromMap(proxy, "auth"))
+	if server == "" || port == "" || password == "" {
+		return ""
+	}
+	query := clashQUICProxyQuery(proxy)
+	copyClashString(query, proxy, "up_mbps", "up-mbps", "up_mbps", "upmbps")
+	copyClashString(query, proxy, "down_mbps", "down-mbps", "down_mbps", "downmbps")
+	copyClashString(query, proxy, "obfs", "obfs", "obfs-type", "obfs_type")
+	copyClashString(query, proxy, "obfs-password", "obfs-password", "obfs_password")
+	if options := mapFromMap(proxy, "obfs-opts", "obfs_opts"); query.Get("obfs") == "" && len(options) > 0 {
+		copyClashString(query, options, "obfs", "type")
+		copyClashString(query, options, "obfs-password", "password")
+	}
+	u := url.URL{
+		Scheme:   ProtocolHysteria2,
+		User:     url.User(password),
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	return u.String()
+}
+
+func clashTUICURI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	uuid := firstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
+	password := stringFromMap(proxy, "password")
+	if server == "" || port == "" || uuid == "" {
+		return ""
+	}
+	query := clashQUICProxyQuery(proxy)
+	copyClashString(query, proxy, "congestion_control", "congestion-control", "congestion_control")
+	copyClashString(query, proxy, "udp_relay_mode", "udp-relay-mode", "udp_relay_mode")
+	copyClashBool(query, proxy, "udp_over_stream", "udp-over-stream", "udp_over_stream")
+	copyClashBool(query, proxy, "zero_rtt_handshake", "zero-rtt-handshake", "zero_rtt_handshake")
+	copyClashString(query, proxy, "heartbeat", "heartbeat")
+	u := url.URL{
+		Scheme:   ProtocolTUIC,
+		User:     url.UserPassword(uuid, password),
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	return u.String()
+}
+
+func clashSSHURI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	user := firstNonEmpty(stringFromMap(proxy, "user"), stringFromMap(proxy, "username"))
+	if server == "" || port == "" {
+		return ""
+	}
+	query := url.Values{}
+	copyClashString(query, proxy, "private_key", "private-key", "private_key")
+	copyClashString(query, proxy, "private_key_path", "private-key-path", "private_key_path")
+	copyClashString(query, proxy, "private_key_passphrase", "private-key-passphrase", "private_key_passphrase")
+	copyClashString(query, proxy, "host_key", "host-key", "host_key")
+	copyClashString(query, proxy, "host_key_algorithms", "host-key-algorithms", "host_key_algorithms")
+	copyClashString(query, proxy, "client_version", "client-version", "client_version")
+	u := url.URL{
+		Scheme:   ProtocolSSH,
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	password := stringFromMap(proxy, "password")
+	if user != "" && password != "" {
+		u.User = url.UserPassword(user, password)
+	} else if user != "" {
+		u.User = url.User(user)
+	}
+	return u.String()
+}
+
+func clashQUICProxyQuery(proxy map[string]any) url.Values {
+	query := url.Values{}
+	copyClashString(query, proxy, "network", "network")
+	copyClashString(query, proxy, "server_ports", "server-ports", "server_ports", "ports")
+	copyClashString(query, proxy, "hop_interval", "hop-interval", "hop_interval")
+	if sni := firstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni"), stringFromMap(proxy, "peer")); sni != "" {
+		query.Set("sni", sni)
+	}
+	if alpn := stringListFromMap(proxy, "alpn"); alpn != "" {
+		query.Set("alpn", alpn)
+	}
+	if value, ok := boolFromMap(proxy, "skip-cert-verify"); ok && value {
+		query.Set("allowInsecure", "true")
+	}
+	return query
+}
+
+func copyClashString(query url.Values, values map[string]any, target string, keys ...string) {
+	for _, key := range keys {
+		if value := stringFromMap(values, key); value != "" {
+			query.Set(target, value)
+			return
+		}
+	}
+}
+
+func copyClashBool(query url.Values, values map[string]any, target string, keys ...string) {
+	for _, key := range keys {
+		if value, ok := boolFromMap(values, key); ok {
+			query.Set(target, strconv.FormatBool(value))
+			return
+		}
+	}
 }
 
 func clashV2RayQuery(proxy map[string]any) url.Values {
