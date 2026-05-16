@@ -203,6 +203,7 @@ const nodeEditForm = reactive({
   name: '',
   groupIds: [] as string[],
   chainNodeIds: [] as string[],
+  rawUri: '',
   remark: '',
 });
 const nodeEditError = ref('');
@@ -549,6 +550,10 @@ function toggleNodeEditGroup(groupId: string): void {
   nodeEditForm.groupIds = [...nodeEditForm.groupIds, groupId];
 }
 
+function selectNodeEditDefaultGroup(): void {
+  nodeEditForm.groupIds = [];
+}
+
 function nodeEndpointLabel(node: ProxyNode): string {
   if (node.protocol === 'chain') {
     return chainNodeNames(node) || t('home.nodeMeta.chainEmpty');
@@ -639,6 +644,7 @@ function resetNodeEditForm(): void {
     name: '',
     groupIds: [],
     chainNodeIds: [],
+    rawUri: '',
     remark: '',
   });
   nodeEditError.value = '';
@@ -650,6 +656,7 @@ function openEditNodeDialog(node: ProxyNode): void {
     name: node.name,
     groupIds: nodeGroupIds(node),
     chainNodeIds: [...node.chainNodeIds],
+    rawUri: node.protocol === 'chain' ? '' : nodeExportUri(node),
     remark: node.remark,
   });
   nodeEditError.value = '';
@@ -670,6 +677,10 @@ async function saveNodeEditDialog(): Promise<void> {
     nodeEditError.value = t('home.messages.chainNodesRequired');
     return;
   }
+  if (currentNode.protocol !== 'chain' && !nodeEditForm.rawUri.trim()) {
+    nodeEditError.value = t('home.messages.routeNodeRequired');
+    return;
+  }
 
   try {
     const node = await updateNode(editingNodeId.value, {
@@ -680,6 +691,7 @@ async function saveNodeEditDialog(): Promise<void> {
         currentNode.protocol === 'chain'
           ? [...nodeEditForm.chainNodeIds]
           : currentNode.chainNodeIds,
+      ...(currentNode.protocol === 'chain' ? {} : { rawUri: nodeEditForm.rawUri }),
       remark: nodeEditForm.remark,
     });
     importMessage.value = t('home.messages.nodeUpdated', { name: node.name });
@@ -2463,23 +2475,16 @@ function routeFailureLabel(node: ProxyNode): string {
           />
         </label>
 
-        <fieldset class="node-edit-group-field">
-          <span>{{ t('home.form.nodeGroup') }}</span>
-          <div class="node-edit-group-options">
-            <label
-              v-for="group in groups"
-              :key="group.id"
-              :class="{ selected: nodeEditForm.groupIds.includes(group.id) }"
-            >
-              <input
-                type="checkbox"
-                :checked="nodeEditForm.groupIds.includes(group.id)"
-                @change="toggleNodeEditGroup(group.id)"
-              />
-              {{ group.name }}
-            </label>
-          </div>
-        </fieldset>
+        <label v-if="editingNode.protocol !== 'chain'">
+          <span>{{ t('home.form.nodeUri') }} <em class="required-mark">*</em></span>
+          <input
+            v-model.trim="nodeEditForm.rawUri"
+            type="text"
+            required
+            autocomplete="off"
+            :placeholder="t('home.placeholders.nodeUri')"
+          />
+        </label>
 
         <div v-if="editingNode.protocol === 'chain'" class="chain-node-builder">
           <fieldset>
@@ -2517,6 +2522,35 @@ function routeFailureLabel(node: ProxyNode): string {
             </div>
           </div>
         </div>
+
+        <fieldset class="node-edit-group-field">
+          <span>{{ t('home.form.nodeGroup') }}</span>
+          <div class="node-edit-group-options">
+            <label
+              class="node-edit-default-group"
+              :class="{ selected: nodeEditForm.groupIds.length === 0 }"
+            >
+              <input
+                type="checkbox"
+                :checked="nodeEditForm.groupIds.length === 0"
+                @change="selectNodeEditDefaultGroup"
+              />
+              {{ t('home.groupMeta.ungrouped') }}
+            </label>
+            <label
+              v-for="group in groups"
+              :key="group.id"
+              :class="{ selected: nodeEditForm.groupIds.includes(group.id) }"
+            >
+              <input
+                type="checkbox"
+                :checked="nodeEditForm.groupIds.includes(group.id)"
+                @change="toggleNodeEditGroup(group.id)"
+              />
+              {{ group.name }}
+            </label>
+          </div>
+        </fieldset>
 
         <label>
           <span>{{ t('home.form.remark') }}</span>

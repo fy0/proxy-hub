@@ -1851,6 +1851,11 @@ textarea:focus {
   color: rgb(22 101 52);
 }
 
+.node-edit-group-options .node-edit-default-group {
+  border-bottom: 1px solid rgb(148 163 184 / 0.16);
+  border-radius: 8px 8px 4px 4px;
+}
+
 .node-edit-group-options input {
   width: 15px;
   height: 15px;
