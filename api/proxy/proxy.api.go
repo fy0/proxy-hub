@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/zap"
 
 	"proxy-hub/api/h"
+	"proxy-hub/model/tables"
 	proxyService "proxy-hub/service/proxy"
 	"proxy-hub/utils"
 )
@@ -70,6 +73,54 @@ func Register(api huma.API) {
 	}, nodeImportHandler)
 
 	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/nodes/import/preview",
+		Summary:     "预览导入节点 URI",
+		OperationID: "proxy-node-import-preview",
+		Tags:        []string{proxyTag},
+	}, nodeImportPreviewHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
+		Path:        "/nodes/health",
+		Summary:     "节点健康状态列表",
+		OperationID: "proxy-node-health-list",
+		Tags:        []string{proxyTag},
+	}, nodeHealthListHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/nodes/probe",
+		Summary:     "探测全部节点",
+		OperationID: "proxy-node-probe-all",
+		Tags:        []string{proxyTag},
+	}, nodeProbeAllHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/nodes/{id}/probe",
+		Summary:     "探测单个节点",
+		OperationID: "proxy-node-probe",
+		Tags:        []string{proxyTag},
+	}, nodeProbeHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/nodes/{id}/release",
+		Summary:     "释放节点黑名单",
+		OperationID: "proxy-node-release",
+		Tags:        []string{proxyTag},
+	}, nodeReleaseHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/nodes/{id}/blacklist",
+		Summary:     "手动拉黑节点",
+		OperationID: "proxy-node-blacklist",
+		Tags:        []string{proxyTag},
+	}, nodeBlacklistHandler)
+
+	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
 		Path:        "/subscriptions",
 		Summary:     "订阅列表",
@@ -84,6 +135,14 @@ func Register(api huma.API) {
 		OperationID: "proxy-subscription-create",
 		Tags:        []string{proxyTag},
 	}, subscriptionCreateHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/subscriptions/preview",
+		Summary:     "预览订阅导入",
+		OperationID: "proxy-subscription-preview",
+		Tags:        []string{proxyTag},
+	}, subscriptionPreviewHandler)
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPut,
@@ -213,8 +272,13 @@ func nodeListHandler(ctx context.Context, _ *struct{}) (*nodeListOutput, error) 
 	if err != nil {
 		return nil, mapError(err)
 	}
+	healthByNodeID := proxyService.NodeHealthMap(ctx, nil, nodeIDsFromNodes(nodes))
+	groups, err := proxyService.GroupList(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	output := &nodeListOutput{}
-	output.Body.Items = proxyService.ToNodeDTOs(nodes)
+	output.Body.Items = proxyService.ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
 	return output, nil
 }
 
@@ -233,11 +297,11 @@ func nodeCreateHandler(ctx context.Context, input *nodeInput) (*nodeOutput, erro
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMappingsForNodes(ctx, []string{node.ID}); err != nil {
 		return nil, err
 	}
 	output := &nodeOutput{}
-	output.Body.Item = proxyService.ToNodeDTO(node)
+	output.Body.Item = nodeDTOWithGroups(ctx, node)
 	return output, nil
 }
 
@@ -251,23 +315,35 @@ type nodeUpdateInput struct {
 }
 
 func nodeUpdateHandler(ctx context.Context, input *nodeUpdateInput) (*nodeOutput, error) {
+	affectedBefore, err := proxyService.RuntimeAffectedMappingIDsByNodes(ctx, []string{input.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
 	node, err := proxyService.NodeUpdate(ctx, nil, input.ID, input.Body)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	affectedAfter, err := proxyService.RuntimeAffectedMappingIDsByNodes(ctx, []string{node.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
 		return nil, err
 	}
 	output := &nodeOutput{}
-	output.Body.Item = proxyService.ToNodeDTO(node)
+	output.Body.Item = nodeDTOWithGroups(ctx, node)
 	return output, nil
 }
 
 func nodeDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse, error) {
+	affected, err := proxyService.RuntimeAffectedMappingIDsByNodes(ctx, []string{input.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := proxyService.NodeDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMappings(affected); err != nil {
 		return nil, err
 	}
 	return h.NewMessageResponse("节点已删除"), nil
@@ -286,12 +362,107 @@ func nodeImportHandler(ctx context.Context, input *nodeImportInput) (*nodeImport
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if result.Imported > 0 {
-		if err := reloadRuntimeAfterMutation(); err != nil {
+	if result.Imported > 0 || result.Updated > 0 {
+		if err := syncRuntimeMappingsForNodeDTOs(ctx, result.Items); err != nil {
+			return nil, err
+		}
+		groupIDs := make([]string, 0, len(result.Groups))
+		for _, group := range result.Groups {
+			if group != nil {
+				groupIDs = append(groupIDs, group.ID)
+			}
+		}
+		if err := syncRuntimeMappingsForGroups(ctx, groupIDs); err != nil {
 			return nil, err
 		}
 	}
 	return &nodeImportOutput{Body: *result}, nil
+}
+
+func nodeImportPreviewHandler(ctx context.Context, input *nodeImportInput) (*nodeImportOutput, error) {
+	result, err := proxyService.NodeImportPreview(ctx, nil, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &nodeImportOutput{Body: *result}, nil
+}
+
+type nodeHealthListOutput struct {
+	Body struct {
+		Items []*proxyService.ProxyNodeHealthDTO `json:"items"`
+	} `json:"body"`
+}
+
+func nodeHealthListHandler(ctx context.Context, _ *struct{}) (*nodeHealthListOutput, error) {
+	rows, err := proxyService.NodeHealthList(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &nodeHealthListOutput{}
+	output.Body.Items = proxyService.ToNodeHealthDTOs(rows)
+	return output, nil
+}
+
+type nodeHealthOutput struct {
+	Body struct {
+		Item *proxyService.ProxyNodeHealthDTO `json:"item"`
+	} `json:"body"`
+}
+
+func nodeProbeHandler(ctx context.Context, input *idInput) (*nodeHealthOutput, error) {
+	health, err := proxyService.NodeProbe(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &nodeHealthOutput{}
+	output.Body.Item = proxyService.ToNodeHealthDTO(health)
+	return output, nil
+}
+
+type nodeProbeAllOutput struct {
+	Body proxyService.NodeHealthProbeAllDTO `json:"body"`
+}
+
+func nodeProbeAllHandler(ctx context.Context, _ *struct{}) (*nodeProbeAllOutput, error) {
+	result, err := proxyService.NodeProbeAll(ctx)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	dto := proxyService.ToNodeHealthProbeAllDTO(result)
+	return &nodeProbeAllOutput{Body: *dto}, nil
+}
+
+func nodeReleaseHandler(ctx context.Context, input *idInput) (*nodeHealthOutput, error) {
+	health, err := proxyService.NodeRelease(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &nodeHealthOutput{}
+	output.Body.Item = proxyService.ToNodeHealthDTO(health)
+	return output, nil
+}
+
+type nodeBlacklistInput struct {
+	ID   string `path:"id"`
+	Body proxyService.NodeBlacklistRequest
+}
+
+func nodeBlacklistHandler(ctx context.Context, input *nodeBlacklistInput) (*nodeHealthOutput, error) {
+	var duration time.Duration
+	if input.Body.Duration != "" {
+		parsed, err := time.ParseDuration(input.Body.Duration)
+		if err != nil || parsed <= 0 {
+			return nil, mapError(proxyService.ErrInvalidHealthDuration)
+		}
+		duration = parsed
+	}
+	health, err := proxyService.NodeBlacklist(ctx, input.ID, duration)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &nodeHealthOutput{}
+	output.Body.Item = proxyService.ToNodeHealthDTO(health)
+	return output, nil
 }
 
 type subscriptionListOutput struct {
@@ -320,6 +491,22 @@ type subscriptionOutput struct {
 	} `json:"body"`
 }
 
+type subscriptionPreviewInput struct {
+	Body proxyService.SubscriptionUpsertRequest
+}
+
+type subscriptionPreviewOutput struct {
+	Body proxyService.NodeImportResult `json:"body"`
+}
+
+func subscriptionPreviewHandler(ctx context.Context, input *subscriptionPreviewInput) (*subscriptionPreviewOutput, error) {
+	result, err := proxyService.SubscriptionPreview(ctx, nil, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &subscriptionPreviewOutput{Body: *result}, nil
+}
+
 func subscriptionCreateHandler(ctx context.Context, input *subscriptionInput) (*subscriptionOutput, error) {
 	subscription, err := proxyService.SubscriptionCreate(ctx, nil, input.Body)
 	if err != nil {
@@ -346,10 +533,14 @@ func subscriptionUpdateHandler(ctx context.Context, input *subscriptionUpdateInp
 }
 
 func subscriptionDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse, error) {
+	affected, err := proxyService.RuntimeAffectedMappingIDsBySubscription(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := proxyService.SubscriptionDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMappings(affected); err != nil {
 		return nil, err
 	}
 	return h.NewMessageResponse("订阅已删除"), nil
@@ -365,11 +556,19 @@ type subscriptionSyncOutput struct {
 }
 
 func subscriptionSyncHandler(ctx context.Context, input *subscriptionSyncInput) (*subscriptionSyncOutput, error) {
+	affectedBefore, err := proxyService.RuntimeAffectedMappingIDsBySubscription(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	result, err := proxyService.SubscriptionSync(ctx, nil, input.ID, input.Body)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	affectedAfter, err := proxyService.RuntimeAffectedMappingIDsBySubscription(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
 		return nil, err
 	}
 	return &subscriptionSyncOutput{Body: *result}, nil
@@ -406,7 +605,7 @@ func groupCreateHandler(ctx context.Context, input *groupInput) (*groupOutput, e
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMappingsForGroups(ctx, []string{group.ID}); err != nil {
 		return nil, err
 	}
 	output := &groupOutput{}
@@ -420,11 +619,19 @@ type groupUpdateInput struct {
 }
 
 func groupUpdateHandler(ctx context.Context, input *groupUpdateInput) (*groupOutput, error) {
+	affectedBefore, err := proxyService.RuntimeAffectedMappingIDsByGroups(ctx, []string{input.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
 	group, err := proxyService.GroupUpdate(ctx, nil, input.ID, input.Body)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	affectedAfter, err := proxyService.RuntimeAffectedMappingIDsByGroups(ctx, []string{group.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
 		return nil, err
 	}
 	output := &groupOutput{}
@@ -433,10 +640,14 @@ func groupUpdateHandler(ctx context.Context, input *groupUpdateInput) (*groupOut
 }
 
 func groupDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse, error) {
+	affected, err := proxyService.RuntimeAffectedMappingIDsByGroups(ctx, []string{input.ID})
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := proxyService.GroupDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMappings(affected); err != nil {
 		return nil, err
 	}
 	return h.NewMessageResponse("节点组已删除"), nil
@@ -473,7 +684,7 @@ func mappingCreateHandler(ctx context.Context, input *mappingInput) (*mappingOut
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
 		return nil, err
 	}
 	output := &mappingOutput{}
@@ -491,7 +702,7 @@ func mappingUpdateHandler(ctx context.Context, input *mappingUpdateInput) (*mapp
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
 		return nil, err
 	}
 	output := &mappingOutput{}
@@ -503,7 +714,7 @@ func mappingDeleteHandler(ctx context.Context, input *idInput) (*h.MessageRespon
 	if err := proxyService.MappingDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := reloadRuntimeAfterMutation(); err != nil {
+	if _, err := proxyService.RuntimeRemoveMapping(input.ID); err != nil {
 		return nil, err
 	}
 	return h.NewMessageResponse("端口映射已删除"), nil
@@ -532,6 +743,67 @@ func reloadRuntimeAfterMutation() error {
 	return nil
 }
 
+func syncRuntimeMapping(ctx context.Context, mappingID string) error {
+	if _, err := proxyService.RuntimeSyncMapping(ctx, mappingID); err != nil {
+		utils.Logger.Warn("配置已保存，但代理映射同步失败", zap.String("mappingId", mappingID), zap.Error(err))
+	}
+	return nil
+}
+
+func syncRuntimeMappings(mappingIDs []string) error {
+	mappingIDs = uniqueStrings(mappingIDs)
+	if len(mappingIDs) == 0 {
+		return nil
+	}
+	if _, err := proxyService.RuntimeSyncMappings(context.Background(), mappingIDs); err != nil {
+		utils.Logger.Warn("配置已保存，但代理映射同步失败", zap.Strings("mappingIds", mappingIDs), zap.Error(err))
+	}
+	return nil
+}
+
+func syncRuntimeMappingsForNodes(ctx context.Context, nodeIDs []string) error {
+	mappingIDs, err := proxyService.RuntimeAffectedMappingIDsByNodes(ctx, nodeIDs)
+	if err != nil {
+		return mapError(err)
+	}
+	return syncRuntimeMappings(mappingIDs)
+}
+
+func syncRuntimeMappingsForNodeDTOs(ctx context.Context, nodes []*proxyService.ProxyNodeDTO) error {
+	nodeIDs := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil {
+			nodeIDs = append(nodeIDs, node.ID)
+		}
+	}
+	return syncRuntimeMappingsForNodes(ctx, nodeIDs)
+}
+
+func syncRuntimeMappingsForGroups(ctx context.Context, groupIDs []string) error {
+	mappingIDs, err := proxyService.RuntimeAffectedMappingIDsByGroups(ctx, groupIDs)
+	if err != nil {
+		return mapError(err)
+	}
+	return syncRuntimeMappings(mappingIDs)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
 func mapError(err error) error {
 	switch {
 	case errors.Is(err, proxyService.ErrNodeNotFound),
@@ -548,11 +820,31 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrNoAvailableNode),
 		errors.Is(err, proxyService.ErrUTLSRequired),
 		errors.Is(err, proxyService.ErrInvalidSubscription),
-		errors.Is(err, proxyService.ErrInvalidGroup):
+		errors.Is(err, proxyService.ErrInvalidGroup),
+		errors.Is(err, proxyService.ErrInvalidHealthDuration),
+		errors.Is(err, proxyService.ErrInvalidChain):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())
 	}
+}
+
+func nodeIDsFromNodes(nodes []*tables.ProxyNodeTable) []string {
+	ids := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids
+}
+
+func nodeDTOWithGroups(ctx context.Context, node *tables.ProxyNodeTable) *proxyService.ProxyNodeDTO {
+	groups, err := proxyService.GroupList(ctx, nil)
+	if err != nil {
+		return proxyService.ToNodeDTO(node)
+	}
+	return proxyService.ToNodeDTOWithGroups(node, groups)
 }
 
 func humanaError(code int, message string) error {

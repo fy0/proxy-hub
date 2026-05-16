@@ -114,7 +114,9 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS) error {
 	} else if status.Running {
 		theLogger.Info("代理运行时已启动", zap.Int("inbounds", len(status.Inbounds)))
 	}
+	proxyService.HealthStart(context.Background(), cfg.ProxyHealth)
 	defer func() {
+		proxyService.HealthStop()
 		if err := proxyService.RuntimeStop(); err != nil {
 			theLogger.Warn("代理运行时关闭失败", zap.Error(err))
 		}
