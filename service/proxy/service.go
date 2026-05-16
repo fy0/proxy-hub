@@ -1251,6 +1251,30 @@ func removeString(values []string, target string) []string {
 	return next
 }
 
+func removeStrings(values []string, targets []string) []string {
+	targetSet := stringSet(targets)
+	if len(targetSet) == 0 {
+		return uniqueNonEmpty(values)
+	}
+	next := values[:0]
+	for _, value := range values {
+		if _, ok := targetSet[value]; ok {
+			continue
+		}
+		next = append(next, value)
+	}
+	return uniqueNonEmpty(next)
+}
+
+func stringSet(values []string) map[string]struct{} {
+	values = uniqueNonEmpty(values)
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
 func defaultNodeName(protocol, server string) string {
 	if server == "" {
 		return "未命名节点"

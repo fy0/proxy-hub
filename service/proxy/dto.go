@@ -206,6 +206,7 @@ type NodeImportResult struct {
 type NodeHealthProbeAllResult struct {
 	Items          []*tables.ProxyNodeHealthTable `json:"-"`
 	Total          int                            `json:"total"`
+	Queued         int                            `json:"queued"`
 	Available      int                            `json:"available"`
 	Failed         int                            `json:"failed"`
 	ReloadRequired bool                           `json:"reloadRequired"`
@@ -214,6 +215,7 @@ type NodeHealthProbeAllResult struct {
 type NodeHealthProbeAllDTO struct {
 	Items          []*ProxyNodeHealthDTO `json:"items"`
 	Total          int                   `json:"total"`
+	Queued         int                   `json:"queued"`
 	Available      int                   `json:"available"`
 	Failed         int                   `json:"failed"`
 	ReloadRequired bool                  `json:"reloadRequired"`
@@ -344,6 +346,7 @@ func ToNodeHealthProbeAllDTO(result *NodeHealthProbeAllResult) *NodeHealthProbeA
 	return &NodeHealthProbeAllDTO{
 		Items:          ToNodeHealthDTOs(result.Items),
 		Total:          result.Total,
+		Queued:         result.Queued,
 		Available:      result.Available,
 		Failed:         result.Failed,
 		ReloadRequired: result.ReloadRequired,

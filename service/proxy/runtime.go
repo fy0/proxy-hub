@@ -44,8 +44,6 @@ import (
 	"proxy-hub/utils"
 )
 
-const urlTestLink = "https://www.gstatic.com/generate_204"
-
 type RuntimeInbound struct {
 	MappingID string `json:"mappingId"`
 	Tag       string `json:"tag"`
@@ -499,27 +497,13 @@ func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (
 	}
 
 	groupTag := mappingOutboundTag(mapping.ID)
-	switch normalizeStrategy(mapping.Strategy) {
-	case StrategyFailover, StrategyLoadBalance:
-		return groupTag, &option.Outbound{
-			Type: constant.TypeURLTest,
-			Tag:  groupTag,
-			Options: &option.URLTestOutboundOptions{
-				Outbounds:   nodeTags,
-				URL:         urlTestLink,
-				Interval:    badoption.Duration(3 * time.Minute),
-				IdleTimeout: badoption.Duration(30 * time.Minute),
-			},
-		}
-	default:
-		return groupTag, &option.Outbound{
-			Type: constant.TypeSelector,
-			Tag:  groupTag,
-			Options: &option.SelectorOutboundOptions{
-				Outbounds: nodeTags,
-				Default:   activeTag,
-			},
-		}
+	return groupTag, &option.Outbound{
+		Type: constant.TypeSelector,
+		Tag:  groupTag,
+		Options: &option.SelectorOutboundOptions{
+			Outbounds: nodeTags,
+			Default:   activeTag,
+		},
 	}
 }
 
@@ -709,18 +693,6 @@ func setOutboundDetour(outbound *option.Outbound, detour string) error {
 }
 
 func buildProxyGroupOutbound(proxyGroup *tables.ProxyGroupTable, tag string, memberTags []string) option.Outbound {
-	if normalizeGroupStrategy(proxyGroup.Strategy) == GroupStrategyURLTest {
-		return option.Outbound{
-			Type: constant.TypeURLTest,
-			Tag:  tag,
-			Options: &option.URLTestOutboundOptions{
-				Outbounds:   memberTags,
-				URL:         urlTestLink,
-				Interval:    badoption.Duration(3 * time.Minute),
-				IdleTimeout: badoption.Duration(30 * time.Minute),
-			},
-		}
-	}
 	defaultTag := memberTags[0]
 	return option.Outbound{
 		Type: constant.TypeSelector,

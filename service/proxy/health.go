@@ -23,10 +23,16 @@ import (
 	"proxy-hub/utils"
 )
 
+const (
+	healthProbeQueueSize = 10000
+	healthProbeBatchSize = 256
+)
+
 type healthRunnerState struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	config utils.ProxyHealthConfig
+	queue  chan string
 }
 
 var (
@@ -51,6 +57,7 @@ func HealthStart(ctx context.Context, cfg utils.ProxyHealthConfig) {
 		cancel: cancel,
 		done:   make(chan struct{}),
 		config: cfg,
+		queue:  make(chan string, healthProbeQueueSize),
 	}
 	healthRunnerMu.Lock()
 	healthRunner = runner
@@ -117,32 +124,37 @@ func NodeProbe(ctx context.Context, nodeID string) (*tables.ProxyNodeHealthTable
 	if err != nil {
 		return nil, err
 	}
-	cfg := currentHealthConfig()
-	return probeAndSaveNode(ctx, nil, node, cfg, time.Now())
+	enqueueHealthProbeIDs([]string{node.ID})
+	row, err := getNodeHealth(ctx, nil, node.ID)
+	if err != nil {
+		return nil, err
+	}
+	if row != nil {
+		return row, nil
+	}
+	return &tables.ProxyNodeHealthTable{NodeID: node.ID}, nil
 }
 
 func NodeProbeAll(ctx context.Context) (*NodeHealthProbeAllResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cfg := currentHealthConfig()
 	nodes, err := NodeList(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	rows := probeNodes(ctx, nil, nodes, cfg)
-	result := &NodeHealthProbeAllResult{
-		Items: rows,
-		Total: len(rows),
-	}
-	for _, row := range rows {
-		if row != nil && row.Available && !isHealthBlacklisted(row, time.Now()) {
-			result.Available++
-		} else {
-			result.Failed++
+	nodeIDs := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil {
+			nodeIDs = append(nodeIDs, node.ID)
 		}
 	}
-	return result, nil
+	queued := enqueueHealthProbeIDs(nodeIDs)
+	return &NodeHealthProbeAllResult{
+		Total:  len(nodeIDs),
+		Queued: queued,
+		Failed: len(nodeIDs) - queued,
+	}, nil
 }
 
 func NodeRelease(ctx context.Context, nodeID string) (*tables.ProxyNodeHealthTable, error) {
@@ -227,22 +239,63 @@ func nodeHealthBlacklistedIDs(ctx context.Context, tx model.DBTx) (map[string]st
 func runHealthLoop(ctx context.Context, runner *healthRunnerState) {
 	defer close(runner.done)
 
-	probeAllWithLog(ctx, runner.config)
-	ticker := time.NewTicker(runner.config.Interval)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			probeAllWithLog(ctx, runner.config)
+		case nodeID := <-runner.queue:
+			probeNodeIDsWithLog(ctx, runner.config, drainHealthProbeBatch(runner.queue, nodeID))
 		}
 	}
 }
 
-func probeAllWithLog(ctx context.Context, cfg utils.ProxyHealthConfig) {
-	nodes, err := NodeList(ctx, nil)
+func drainHealthProbeBatch(queue <-chan string, first string) []string {
+	nodeIDs := []string{first}
+	for len(nodeIDs) < healthProbeBatchSize {
+		select {
+		case nodeID := <-queue:
+			nodeIDs = append(nodeIDs, nodeID)
+		default:
+			return uniqueNonEmpty(nodeIDs)
+		}
+	}
+	return uniqueNonEmpty(nodeIDs)
+}
+
+func enqueueHealthProbeIDs(nodeIDs []string) int {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return 0
+	}
+
+	healthRunnerMu.Lock()
+	runner := healthRunner
+	healthRunnerMu.Unlock()
+	if runner == nil {
+		cfg := currentHealthConfig()
+		go probeNodeIDsWithLog(context.Background(), cfg, nodeIDs)
+		return len(nodeIDs)
+	}
+
+	queued := 0
+	for _, nodeID := range nodeIDs {
+		select {
+		case runner.queue <- nodeID:
+			queued++
+		default:
+			utils.Logger.Warn("节点健康探测队列已满", zap.Int("queued", queued), zap.Int("dropped", len(nodeIDs)-queued))
+			return queued
+		}
+	}
+	return queued
+}
+
+func probeNodeIDsWithLog(ctx context.Context, cfg utils.ProxyHealthConfig, nodeIDs []string) {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return
+	}
+	nodes, err := findNodesByIDs(ctx, nil, nodeIDs)
 	if err != nil {
 		utils.Logger.Warn("加载节点健康探测列表失败", zap.Error(err))
 		return
@@ -270,32 +323,51 @@ func probeNodes(ctx context.Context, tx model.DBTx, nodes []*tables.ProxyNodeTab
 		err error
 		id  string
 	}
-	sem := make(chan struct{}, cfg.MaxConcurrency)
 	results := make(chan probeResult, len(nodes))
+	jobs := make(chan *tables.ProxyNodeTable)
 	var wg sync.WaitGroup
-	for _, node := range nodes {
-		node := node
-		if node == nil {
-			continue
-		}
+
+	workers := cfg.MaxConcurrency
+	if workers > len(nodes) {
+		workers = len(nodes)
+	}
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				results <- probeResult{id: node.ID, err: ctx.Err()}
-				return
+			for node := range jobs {
+				row, err := probeAndSaveNode(ctx, tx, node, cfg, time.Now())
+				results <- probeResult{row: row, err: err, id: node.ID}
 			}
-			row, err := probeAndSaveNode(ctx, tx, node, cfg, time.Now())
-			results <- probeResult{row: row, err: err, id: node.ID}
 		}()
 	}
+
+	sent := 0
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		select {
+		case jobs <- node:
+			sent++
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(results)
+			rows := make([]*tables.ProxyNodeHealthTable, 0, len(nodes))
+			for result := range results {
+				if result.row != nil {
+					rows = append(rows, result.row)
+				}
+			}
+			return rows
+		}
+	}
+	close(jobs)
 	wg.Wait()
 	close(results)
 
-	rows := make([]*tables.ProxyNodeHealthTable, 0, len(nodes))
+	rows := make([]*tables.ProxyNodeHealthTable, 0, sent)
 	for result := range results {
 		if result.err != nil {
 			utils.Logger.Warn("节点健康探测失败", zap.String("nodeId", result.id), zap.Error(result.err))

@@ -18,14 +18,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
-	subscriptionHTTPTimeout = 30 * time.Second
-	subscriptionMaxBytes    = 10 << 20
-	constantDirect          = "DIRECT"
-	constantReject          = "REJECT"
-	constantRejectDrop      = "REJECT-DROP"
+	subscriptionHTTPTimeout   = 30 * time.Second
+	subscriptionMaxBytes      = 10 << 20
+	subscriptionSyncBatchSize = 500
+	constantDirect            = "DIRECT"
+	constantReject            = "REJECT"
+	constantRejectDrop        = "REJECT-DROP"
 )
 
 type subscriptionConfig struct {
@@ -198,10 +200,14 @@ func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error
 	if err := tx.Where("subscription_id = ?", id).Find(&nodes).Error; err != nil {
 		return err
 	}
+	nodeIDs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if err := nodeDeleteInTx(ctx, tx, node.ID); err != nil && !errors.Is(err, ErrNodeNotFound) {
-			return err
+		if node != nil {
+			nodeIDs = append(nodeIDs, node.ID)
 		}
+	}
+	if err := deleteSubscriptionNodesBulk(ctx, tx, nodeIDs); err != nil {
+		return err
 	}
 	return tx.Delete(&subscription).Error
 }
@@ -318,10 +324,9 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 	}
 
 	result := &NodeImportResult{
-		Total:        len(parsed.Nodes) + len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
-		Failures:     append([]NodeImportFailure(nil), parsed.Failures...),
-		PreviewItems: append([]NodeImportPreviewItem(nil), parsed.PreviewItems...),
-		Skipped:      len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Total:    len(parsed.Nodes) + len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
+		Failures: append([]NodeImportFailure(nil), parsed.Failures...),
+		Skipped:  len(parsed.Failures) + skippedPreviewCount(parsed.PreviewItems),
 	}
 	existingNodes, err := nodesBySubscriptionSource(ctx, tx, subscription.ID)
 	if err != nil {
@@ -329,35 +334,59 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 	}
 	seenNodeKeys := map[string]struct{}{}
 	nodeIDByName := map[string]string{}
+	rootNodeIDs := make([]string, 0, len(parsed.Nodes))
+	nodeRows := make([]*tables.ProxyNodeTable, 0, len(parsed.Nodes))
+	nodeNamesByRow := make([]string, 0, len(parsed.Nodes))
+	removedNodeIDsByGroup := map[string][]string{}
 
 	for _, parsedNode := range parsed.Nodes {
 		seenNodeKeys[parsedNode.SourceKey] = struct{}{}
 		nodeReq, err := ParseNodeURI(parsedNode.RawURI)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
-			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
 			result.Skipped++
 			continue
 		}
 		nodeReq.SubscriptionID = subscription.ID
 		nodeReq.GroupID = subscription.GroupID
 		nodeReq.SourceKey = parsedNode.SourceKey
-		node, existed, err := upsertSubscriptionNode(ctx, tx, existingNodes[parsedNode.SourceKey], *nodeReq)
+		node, existed, err := subscriptionNodeRow(existingNodes[parsedNode.SourceKey], *nodeReq)
 		if err != nil {
 			result.Failures = append(result.Failures, NodeImportFailure{URI: parsedNode.Name, Message: err.Error()})
-			result.PreviewItems = append(result.PreviewItems, previewFailureItem(parsedNode.Name, err.Error()))
+			result.Skipped++
 			continue
 		}
 		if existed {
 			result.Updated++
-			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点将更新"))
 		} else {
 			result.Imported++
-			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
 		}
-		result.Items = append(result.Items, ToNodeDTO(node))
+		if existed && existingNodes[parsedNode.SourceKey] != nil {
+			previousGroupID := strings.TrimSpace(existingNodes[parsedNode.SourceKey].GroupID)
+			if previousGroupID != "" && previousGroupID != subscription.GroupID {
+				removedNodeIDsByGroup[previousGroupID] = append(removedNodeIDsByGroup[previousGroupID], node.ID)
+			}
+		}
+		nodeRows = append(nodeRows, node)
+		nodeNamesByRow = append(nodeNamesByRow, parsedNode.Name)
+	}
+	if err := upsertSubscriptionNodeRows(ctx, tx, nodeRows); err != nil {
+		return result, err
+	}
+	for index, node := range nodeRows {
+		if node == nil {
+			continue
+		}
+		rootNodeIDs = append(rootNodeIDs, node.ID)
 		nodeIDByName[node.Name] = node.ID
-		nodeIDByName[parsedNode.Name] = node.ID
+		if index < len(nodeNamesByRow) {
+			nodeIDByName[nodeNamesByRow[index]] = node.ID
+		}
+	}
+	for groupID, nodeIDs := range removedNodeIDsByGroup {
+		if err := removeNodesFromGroupMembership(ctx, tx, groupID, nodeIDs); err != nil {
+			return result, err
+		}
 	}
 
 	deletedNodeIDs := make([]string, 0)
@@ -366,11 +395,11 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 			continue
 		}
 		deletedNodeIDs = append(deletedNodeIDs, node.ID)
-		if err := nodeDeleteInTx(ctx, tx, node.ID); err != nil && !errors.Is(err, ErrNodeNotFound) {
-			return result, err
-		}
-		result.Deleted++
 	}
+	if err := deleteSubscriptionNodesBulk(ctx, tx, deletedNodeIDs); err != nil {
+		return result, err
+	}
+	result.Deleted += len(deletedNodeIDs)
 
 	existingGroups, err := groupsBySubscriptionSource(ctx, tx, subscription.ID)
 	if err != nil {
@@ -378,27 +407,20 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 	}
 	seenGroupKeys := map[string]struct{}{}
 	groupIDByName := map[string]string{}
+	rootGroupIDs := make([]string, 0, len(parsed.Groups))
 	for _, parsedGroup := range parsed.Groups {
 		seenGroupKeys[parsedGroup.SourceKey] = struct{}{}
 		group, err := ensureSubscriptionGroupShell(ctx, tx, subscription.ID, existingGroups[parsedGroup.SourceKey], parsedGroup)
 		if err != nil {
 			return result, err
 		}
+		existingGroups[parsedGroup.SourceKey] = group
 		groupIDByName[group.Name] = group.ID
-		if existingGroups[parsedGroup.SourceKey] == nil {
-			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点组将导入"))
-		} else {
-			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeGroup, parsedGroup.Name, ImportPreviewActionUpdate, ImportPreviewReasonUpdate, "节点组将更新"))
-		}
+		rootGroupIDs = append(rootGroupIDs, group.ID)
 	}
 
 	for _, parsedGroup := range parsed.Groups {
 		group := existingGroups[parsedGroup.SourceKey]
-		if group == nil {
-			if err := tx.Where("subscription_id = ? AND source_key = ?", subscription.ID, parsedGroup.SourceKey).First(&group).Error; err != nil {
-				return result, err
-			}
-		}
 		nodeIDs, groupIDs := subscriptionGroupMembers(parsedGroup, nodeIDByName, groupIDByName)
 		if err := tx.Model(group).Updates(map[string]any{
 			"strategy":          parsedGroup.Strategy,
@@ -411,11 +433,6 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		}).Error; err != nil {
 			return result, err
 		}
-		refreshed, err := GroupGet(ctx, tx, group.ID)
-		if err != nil {
-			return result, err
-		}
-		result.Groups = append(result.Groups, ToGroupDTO(refreshed))
 	}
 
 	deletedGroupIDs := make([]string, 0)
@@ -434,75 +451,148 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		}
 		result.Deleted += len(deletedGroupIDs)
 	}
-	if err := updateRootGroupFromSubscription(ctx, tx, subscription.GroupID, result.Items, result.Groups); err != nil {
+	if err := updateRootGroupReferences(ctx, tx, subscription.GroupID, rootNodeIDs, rootGroupIDs); err != nil {
 		return result, err
 	}
 	result.Failed = len(result.Failures)
 	return result, nil
 }
 
-func upsertSubscriptionNode(ctx context.Context, tx model.DBTx, existing *tables.ProxyNodeTable, req NodeUpsertRequest) (*tables.ProxyNodeTable, bool, error) {
+func subscriptionNodeRow(existing *tables.ProxyNodeTable, req NodeUpsertRequest) (*tables.ProxyNodeTable, bool, error) {
 	normalized, err := normalizeNodeRequest(req)
 	if err != nil {
 		return nil, false, err
 	}
+	node := &tables.ProxyNodeTable{
+		Name:             normalized.Name,
+		Protocol:         normalized.Protocol,
+		Server:           normalized.Server,
+		Port:             normalized.Port,
+		Username:         normalized.Username,
+		Password:         normalized.Password,
+		RawURI:           normalized.RawURI,
+		TagsJSON:         encodeStringSlice(normalized.Tags),
+		Remark:           normalized.Remark,
+		ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
+		SubscriptionID:   req.SubscriptionID,
+		GroupID:          req.GroupID,
+		SourceKey:        req.SourceKey,
+	}
 	if existing == nil {
-		node := &tables.ProxyNodeTable{
-			Name:             normalized.Name,
-			Protocol:         normalized.Protocol,
-			Server:           normalized.Server,
-			Port:             normalized.Port,
-			Username:         normalized.Username,
-			Password:         normalized.Password,
-			RawURI:           normalized.RawURI,
-			TagsJSON:         encodeStringSlice(normalized.Tags),
-			Remark:           normalized.Remark,
-			ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
-			SubscriptionID:   req.SubscriptionID,
-			GroupID:          req.GroupID,
-			SourceKey:        req.SourceKey,
-		}
-		if err := tx.WithContext(ctx).Create(node).Error; err != nil {
-			return nil, false, err
-		}
-		if req.GroupID != "" {
-			if err := addNodesToGroupMembership(ctx, tx, req.GroupID, []string{node.ID}); err != nil {
-				return nil, false, err
-			}
-		}
 		return node, false, nil
 	}
-	previousGroupID := strings.TrimSpace(existing.GroupID)
-	if previousGroupID != "" && previousGroupID != req.GroupID {
-		if err := removeNodesFromGroupMembership(ctx, tx, previousGroupID, []string{existing.ID}); err != nil {
-			return nil, true, err
+	node.ID = existing.ID
+	return node, true, nil
+}
+
+func upsertSubscriptionNodeRows(ctx context.Context, tx model.DBTx, nodes []*tables.ProxyNodeTable) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	return tx.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"name",
+			"protocol",
+			"server",
+			"port",
+			"username",
+			"password",
+			"raw_uri",
+			"tags_json",
+			"remark",
+			"chain_node_ids_json",
+			"subscription_id",
+			"group_id",
+			"source_key",
+			"updated_at",
+		}),
+	}).CreateInBatches(nodes, subscriptionSyncBatchSize).Error
+}
+
+func deleteSubscriptionNodesBulk(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	if err := ensureNodesNotReferencedByActiveChains(ctx, tx, nodeIDs); err != nil {
+		return err
+	}
+	if err := cleanupNodeReferences(ctx, tx, nodeIDs); err != nil {
+		return err
+	}
+	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
+		return err
+	}
+	return tx.WithContext(ctx).Where("id IN ?", nodeIDs).Delete(&tables.ProxyNodeTable{}).Error
+}
+
+func ensureNodesNotReferencedByActiveChains(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	deleted := stringSet(nodeIDs)
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.WithContext(ctx).Find(&nodes).Error; err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if _, deletingNode := deleted[node.ID]; deletingNode {
+			continue
+		}
+		if stringSlicesIntersect(decodeStringSlice(node.ChainNodeIDsJSON), nodeIDs) {
+			return ErrInvalidChain
 		}
 	}
-	if req.GroupID != "" {
-		if err := addNodesToGroupMembership(ctx, tx, req.GroupID, []string{existing.ID}); err != nil {
-			return nil, true, err
+	return nil
+}
+
+func cleanupNodeReferences(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+
+	var mappings []*tables.PortMappingTable
+	if err := tx.WithContext(ctx).Find(&mappings).Error; err != nil {
+		return err
+	}
+	for _, mapping := range mappings {
+		nextNodeIDs := removeStrings(decodeStringSlice(mapping.NodeIDsJSON), nodeIDs)
+		active := mapping.ActiveNodeID
+		if containsString(nodeIDs, active) {
+			active = ""
+			if len(nextNodeIDs) > 0 {
+				active = nextNodeIDs[0]
+			}
+		}
+		if err := tx.Model(mapping).Updates(map[string]any{
+			"node_ids_json":  encodeStringSlice(nextNodeIDs),
+			"active_node_id": active,
+			"updated_at":     time.Now(),
+		}).Error; err != nil {
+			return err
 		}
 	}
-	if err := tx.WithContext(ctx).Model(existing).Updates(map[string]any{
-		"name":                normalized.Name,
-		"protocol":            normalized.Protocol,
-		"server":              normalized.Server,
-		"port":                normalized.Port,
-		"username":            normalized.Username,
-		"password":            normalized.Password,
-		"raw_uri":             normalized.RawURI,
-		"tags_json":           encodeStringSlice(normalized.Tags),
-		"remark":              normalized.Remark,
-		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
-		"subscription_id":     req.SubscriptionID,
-		"group_id":            req.GroupID,
-		"source_key":          req.SourceKey,
-		"updated_at":          time.Now(),
-	}).Error; err != nil {
-		return nil, true, err
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.WithContext(ctx).Find(&groups).Error; err != nil {
+		return err
 	}
-	node, err := NodeGet(ctx, tx, existing.ID)
-	return node, true, err
+	for _, group := range groups {
+		nextNodeIDs := removeStrings(decodeStringSlice(group.NodeIDsJSON), nodeIDs)
+		if err := tx.Model(group).Updates(map[string]any{
+			"node_ids_json": encodeStringSlice(nextNodeIDs),
+			"updated_at":    time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureSubscriptionGroupShell(ctx context.Context, tx model.DBTx, subscriptionID string, existing *tables.ProxyGroupTable, parsedGroup parsedSubscriptionGroup) (*tables.ProxyGroupTable, error) {
@@ -607,28 +697,16 @@ func ensureSubscriptionRootGroup(ctx context.Context, tx model.DBTx, subscriptio
 	return group.ID, nil
 }
 
-func updateRootGroupFromSubscription(ctx context.Context, tx model.DBTx, groupID string, nodeDTOs []*ProxyNodeDTO, groupDTOs []*ProxyGroupDTO) error {
+func updateRootGroupReferences(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string, groupIDs []string) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return nil
 	}
-	nodeIDs := make([]string, 0, len(nodeDTOs))
-	for _, node := range nodeDTOs {
-		if node != nil {
-			nodeIDs = append(nodeIDs, node.ID)
-		}
-	}
-	groupIDs := make([]string, 0, len(groupDTOs))
-	for _, group := range groupDTOs {
-		if group != nil && group.ID != groupID {
-			groupIDs = append(groupIDs, group.ID)
-		}
-	}
 	return tx.WithContext(ctx).Model(&tables.ProxyGroupTable{}).
 		Where("id = ?", groupID).
 		Updates(map[string]any{
-			"node_ids_json":  encodeStringSlice(nodeIDs),
-			"group_ids_json": encodeStringSlice(groupIDs),
+			"node_ids_json":  encodeStringSlice(uniqueNonEmpty(nodeIDs)),
+			"group_ids_json": encodeStringSlice(removeString(uniqueNonEmpty(groupIDs), groupID)),
 			"updated_at":     time.Now(),
 		}).Error
 }

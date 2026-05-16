@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/utils"
 
 	"gorm.io/gorm/logger"
 )
@@ -390,15 +394,23 @@ proxy-groups:
 	if err != nil {
 		t.Fatalf("SubscriptionSync() error = %v", err)
 	}
-	if result.Imported != 2 || len(result.Groups) != 2 || result.Skipped != 0 {
-		t.Fatalf("SubscriptionSync() result = %+v, want 2 nodes and 2 groups", result)
+	if result.Imported != 2 || result.Skipped != 0 || len(result.Items) != 0 || len(result.Groups) != 0 {
+		t.Fatalf("SubscriptionSync() result = %+v, want compact response for 2 imported nodes", result)
 	}
 	if subscription.GroupID == "" {
 		t.Fatalf("subscription group ID is empty")
 	}
-	for _, item := range result.Items {
-		if item.GroupID != subscription.GroupID {
-			t.Fatalf("synced node group ID = %q, want %q", item.GroupID, subscription.GroupID)
+
+	nodes, err := NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList() error = %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("NodeList() length = %d, want 2", len(nodes))
+	}
+	for _, node := range nodes {
+		if node.SubscriptionID == subscription.ID && node.GroupID != subscription.GroupID {
+			t.Fatalf("synced node group ID = %q, want %q", node.GroupID, subscription.GroupID)
 		}
 	}
 
@@ -523,14 +535,8 @@ rules:
 	if err != nil {
 		t.Fatalf("SubscriptionSync() error = %v", err)
 	}
-	if result.Imported != 2 || len(result.Groups) != 2 {
+	if result.Imported != 2 || result.Skipped != 2 || len(result.Groups) != 0 || len(result.PreviewItems) != 0 {
 		t.Fatalf("SubscriptionSync() result = %+v, want 2 nodes and 2 kept groups", result)
-	}
-	if !previewContains(result.PreviewItems, "ruleset-target", ImportPreviewActionSkip, ImportPreviewReasonRulesetPolicyGroup) {
-		t.Fatalf("preview items = %+v, want skipped ruleset policy group", result.PreviewItems)
-	}
-	if !previewContains(result.PreviewItems, "route-only / DIRECT", ImportPreviewActionSkip, ImportPreviewReasonGroupOnlyDirect) {
-		t.Fatalf("preview items = %+v, want skipped group-only DIRECT", result.PreviewItems)
 	}
 
 	groups, err := GroupList(ctx, nil)
@@ -642,17 +648,125 @@ proxy-groups:
 	if err != nil {
 		t.Fatalf("SubscriptionSync() error = %v", err)
 	}
-	if len(result.Groups) != 1 {
-		t.Fatalf("synced groups = %+v, want one imported group", result.Groups)
+	if result.Imported != 1 {
+		t.Fatalf("SubscriptionSync() result = %+v, want one imported node", result)
+	}
+	groups, err := GroupList(ctx, nil)
+	if err != nil {
+		t.Fatalf("GroupList() error = %v", err)
+	}
+	var importedGroup *tables.ProxyGroupTable
+	for _, group := range groups {
+		if group.Name == "auto" {
+			importedGroup = group
+			break
+		}
+	}
+	if importedGroup == nil {
+		t.Fatalf("groups = %+v, want imported auto group", groups)
 	}
 
 	_, err = SubscriptionCreate(ctx, nil, SubscriptionUpsertRequest{
 		Name:    "target",
 		URL:     "https://example.com/target.yaml",
-		GroupID: result.Groups[0].ID,
+		GroupID: importedGroup.ID,
 	})
 	if err != ErrInvalidGroup {
 		t.Fatalf("SubscriptionCreate(imported group) error = %v, want %v", err, ErrInvalidGroup)
+	}
+}
+
+func TestSubscriptionSyncLargeClashSubscriptionReturnsCompactResult(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	subscription, err := SubscriptionCreate(ctx, nil, SubscriptionUpsertRequest{
+		Name: "large",
+		URL:  "https://example.com/large.yaml",
+	})
+	if err != nil {
+		t.Fatalf("SubscriptionCreate() error = %v", err)
+	}
+
+	raw := largeClashSubscriptionRaw(1200)
+	result, err := SubscriptionSync(ctx, nil, subscription.ID, SubscriptionSyncRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("SubscriptionSync() error = %v", err)
+	}
+	if result.Imported != 1200 || result.Failed != 0 || result.Total != 1200 {
+		t.Fatalf("SubscriptionSync() result = %+v, want 1200 imported", result)
+	}
+	if len(result.Items) != 0 || len(result.Groups) != 0 || len(result.PreviewItems) != 0 {
+		t.Fatalf("SubscriptionSync() detail lengths = items %d groups %d preview %d, want compact response",
+			len(result.Items),
+			len(result.Groups),
+			len(result.PreviewItems),
+		)
+	}
+
+	nodes, err := NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList() error = %v", err)
+	}
+	if len(nodes) != 1200 {
+		t.Fatalf("NodeList() length = %d, want 1200", len(nodes))
+	}
+	rootGroup, err := GroupGet(ctx, nil, subscription.GroupID)
+	if err != nil {
+		t.Fatalf("GroupGet(root) error = %v", err)
+	}
+	if len(decodeStringSlice(rootGroup.NodeIDsJSON)) != 1200 {
+		t.Fatalf("root group node IDs = %d, want 1200", len(decodeStringSlice(rootGroup.NodeIDsJSON)))
+	}
+
+	result, err = SubscriptionSync(ctx, nil, subscription.ID, SubscriptionSyncRequest{Raw: raw})
+	if err != nil {
+		t.Fatalf("SubscriptionSync(repeat) error = %v", err)
+	}
+	if result.Updated != 1200 || result.Imported != 0 {
+		t.Fatalf("SubscriptionSync(repeat) result = %+v, want 1200 updated and 0 imported", result)
+	}
+	nodes, err = NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList(repeat) error = %v", err)
+	}
+	if len(nodes) != 1200 {
+		t.Fatalf("NodeList(repeat) length = %d, want no duplicates", len(nodes))
+	}
+}
+
+func TestHealthStartDoesNotProbeAllNodes(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(HealthStop)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	for i := 0; i < 5; i++ {
+		if _, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+			Name:     fmt.Sprintf("node-%d", i),
+			Protocol: ProtocolSOCKS5,
+			Server:   "127.0.0.1",
+			Port:     &port,
+		}); err != nil {
+			t.Fatalf("NodeCreate(%d) error = %v", i, err)
+		}
+	}
+
+	HealthStart(ctx, utils.ProxyHealthConfig{
+		Enabled:        true,
+		ProbeURL:       "http://127.0.0.1/",
+		Interval:       time.Millisecond,
+		Timeout:        time.Millisecond,
+		MaxConcurrency: 1,
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	rows, err := NodeHealthList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeHealthList() error = %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("NodeHealthList() length = %d, want no automatic startup probes", len(rows))
 	}
 }
 
@@ -827,6 +941,19 @@ func TestSettingsImportRejectsBrokenReferenceWithoutMutation(t *testing.T) {
 
 func uint16Ptr(value uint16) *uint16 {
 	return &value
+}
+
+func largeClashSubscriptionRaw(count int) string {
+	var builder strings.Builder
+	builder.WriteString("proxies:\n")
+	for i := 0; i < count; i++ {
+		fmt.Fprintf(&builder, "  - name: node-%04d\n", i)
+		builder.WriteString("    type: trojan\n")
+		fmt.Fprintf(&builder, "    server: node-%04d.example.com\n", i)
+		builder.WriteString("    port: 443\n")
+		builder.WriteString("    password: secret\n")
+	}
+	return builder.String()
 }
 
 func previewContains(items []NodeImportPreviewItem, name, action, reason string) bool {

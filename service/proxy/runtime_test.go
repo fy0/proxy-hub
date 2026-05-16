@@ -150,6 +150,71 @@ func TestBuildSingBoxOptionsRoutesMappingToGroup(t *testing.T) {
 	}
 }
 
+func TestBuildSingBoxOptionsDoesNotEmitURLTestOutbounds(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "url test group",
+		Strategy: GroupStrategyURLTest,
+		NodeIDs:  []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyFailover,
+		NodeIDs:          []string{first.ID, second.ID},
+		GroupIDs:         []string{group.ID},
+		ActiveNodeID:     &first.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	options, _, err := BuildSingBoxOptions(ctx, nil)
+	if err != nil {
+		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+	}
+
+	for _, outbound := range options.Outbounds {
+		if outbound.Type == constant.TypeURLTest {
+			t.Fatalf("outbound %q type = %q, want no URL test outbounds during runtime load", outbound.Tag, outbound.Type)
+		}
+	}
+	groupOutbound := findTestOutbound(options.Outbounds, proxyGroupOutboundTag(group.ID))
+	if groupOutbound == nil || groupOutbound.Type != constant.TypeSelector {
+		t.Fatalf("group outbound = %+v, want selector", groupOutbound)
+	}
+	mappingOutbound := findTestOutbound(options.Outbounds, mappingOutboundTag(mapping.ID))
+	if mappingOutbound == nil || mappingOutbound.Type != constant.TypeSelector {
+		t.Fatalf("mapping outbound = %+v, want selector", mappingOutbound)
+	}
+}
+
 func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
 	initProxyInMemoryDB(t)
 
