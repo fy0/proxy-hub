@@ -179,6 +179,31 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 		MaxAge:     staticAssetMaxAgeSeconds,
 		Browse:     false,
 	}))
+
+	app.Use(mountPath, func(c *fiber.Ctx) error {
+		if c.Response().StatusCode() != fiber.StatusNotFound || !shouldFallbackToSPA(c) {
+			return c.Next()
+		}
+		if err := filesystem.SendFile(c, fs, "/static/index.html"); err != nil {
+			return err
+		}
+		setNoCacheHeaders(c)
+		return nil
+	})
+}
+
+func shouldFallbackToSPA(c *fiber.Ctx) bool {
+	if c.Method() != fiber.MethodGet && c.Method() != fiber.MethodHead {
+		return false
+	}
+	requestPath := c.Path()
+	if strings.HasPrefix(requestPath, "/api/") ||
+		strings.HasPrefix(requestPath, "/schemas/") ||
+		strings.HasPrefix(requestPath, "/docs/") ||
+		requestPath == "/openapi.json" {
+		return false
+	}
+	return path.Ext(requestPath) == ""
 }
 
 func normalizeStaticMountPath(mountPath string) string {

@@ -1,0 +1,363 @@
+.settings-shell {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 24px 32px 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  background:
+    radial-gradient(circle at 18% -2%, rgb(231 241 255 / 0.72), transparent 26%),
+    radial-gradient(circle at 84% 0%, rgb(245 248 255 / 0.82), transparent 22%),
+    linear-gradient(180deg, rgb(253 254 255) 0%, rgb(249 251 254) 100%);
+}
+
+.settings-header,
+.settings-panel {
+  width: min(1420px, 100%);
+}
+
+.settings-brand-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.settings-brand-logo {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  transform: rotate(30deg);
+}
+
+.settings-brand-logo::before,
+.settings-brand-logo::after,
+.settings-brand-logo-core {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+
+.settings-brand-logo::before {
+  background: linear-gradient(145deg, rgb(74 222 128), rgb(37 99 235));
+}
+
+.settings-brand-logo::after {
+  inset: 5px;
+  background: rgb(233 246 255);
+}
+
+.settings-brand-logo-core {
+  inset: 11px;
+  background: linear-gradient(145deg, rgb(45 212 191), rgb(59 130 246));
+}
+
+.settings-brand-name {
+  color: rgb(17 24 39);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.settings-brand-version {
+  align-self: flex-end;
+  margin-bottom: 2px;
+  color: rgb(100 116 139);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.settings-back-link {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 12px;
+  color: rgb(76 89 117);
+  font-size: 14px;
+  font-weight: 650;
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+}
+
+.settings-back-link:hover {
+  color: rgb(37 99 235);
+  background: rgb(243 247 255);
+}
+
+.settings-panel {
+  display: grid;
+  gap: 22px;
+}
+
+.settings-page-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-page-heading p {
+  margin: 0 0 8px;
+  color: rgb(37 99 235);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settings-page-heading h1 {
+  margin: 0;
+  color: rgb(15 23 42);
+  font-size: 34px;
+  line-height: 1.12;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.settings-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.settings-action-card {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgb(15 23 42 / 0.06);
+}
+
+.settings-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.settings-card-heading h2 {
+  margin: 0;
+  color: rgb(15 23 42);
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.settings-card-heading p {
+  margin: 7px 0 0;
+  color: rgb(100 116 139);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.settings-card-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: rgb(37 99 235);
+  background: rgb(239 246 255);
+}
+
+.settings-summary-list {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-summary-list div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgb(248 250 252);
+}
+
+.settings-summary-list dt {
+  color: rgb(100 116 139);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-summary-list dd {
+  margin: 0;
+  color: rgb(15 23 42);
+  font-size: 13px;
+  font-weight: 750;
+  text-align: right;
+}
+
+.settings-primary-action[data-slot='button'] {
+  width: fit-content;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 12px;
+  background: rgb(37 99 235);
+  color: #ffffff;
+}
+
+.settings-file-picker {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border: 1px dashed rgb(191 204 228);
+  border-radius: 14px;
+  color: rgb(51 65 85);
+  background: rgb(250 252 255);
+  cursor: pointer;
+}
+
+.settings-file-picker span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.settings-file-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-import-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-import-summary span {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: rgb(22 101 52);
+  background: rgb(240 253 244);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: rgb(51 65 85);
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 650;
+}
+
+.settings-confirm input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: rgb(37 99 235);
+}
+
+.settings-message {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgb(217 226 239);
+  border-radius: 12px;
+  color: rgb(51 65 85);
+  background: #ffffff;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.spin-icon {
+  animation: settings-spin 900ms linear infinite;
+}
+
+@keyframes settings-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 860px) {
+  .settings-shell {
+    padding: 12px;
+    gap: 18px;
+  }
+
+  .settings-brand-bar,
+  .settings-page-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-brand-logo {
+    width: 30px;
+    height: 30px;
+  }
+
+  .settings-brand-name {
+    font-size: 26px;
+  }
+
+  .settings-actions-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-action-card {
+    padding: 18px;
+  }
+
+  .settings-page-heading h1 {
+    font-size: 28px;
+  }
+
+  .settings-primary-action[data-slot='button'],
+  .settings-back-link {
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .settings-import-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-summary-list div {
+    display: grid;
+  }
+
+  .settings-summary-list dd {
+    text-align: left;
+  }
+}

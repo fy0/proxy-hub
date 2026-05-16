@@ -40,6 +40,7 @@ export const messages = {
       removeRoute: '移除线路',
       restoreDemo: '刷新数据',
       save: '保存',
+      settings: '设置',
       syncSubscription: '同步订阅',
     },
     home: {
@@ -294,6 +295,44 @@ export const messages = {
     about: {
       title: '关于页面',
     },
+    settings: {
+      counts: {
+        groups: '{count} 个分组',
+        mappings: '{count} 个端口',
+        nodes: '{count} 个节点',
+        subscriptions: '{count} 个订阅',
+      },
+      eyebrow: '备份与恢复',
+      export: {
+        button: '导出设置',
+        lead: '下载当前节点、节点组、订阅和端口映射。',
+        title: '导出全设置',
+      },
+      formatLabel: '文件格式',
+      formatValue: 'ProxyHub JSON v1',
+      import: {
+        button: '覆盖导入',
+        confirmOverwrite: '我确认导入后会覆盖当前代理配置。',
+        lead: '上传导出的 JSON 文件，完整替换当前代理配置。',
+        selectFile: '选择 JSON 备份文件',
+        title: '导入全设置',
+      },
+      messages: {
+        confirmRequired: '请先确认覆盖当前代理配置。',
+        exported: '设置文件已开始下载。',
+        fileReady: '备份文件已读取，可以导入。',
+        fileType: '请选择 .json 文件。',
+        imported: '已导入 {nodes} 个节点、{groups} 个分组、{subscriptions} 个订阅、{mappings} 个端口。',
+        importedWithWarning: '设置已导入，但运行时重载失败：{warning}',
+        invalidBackup: '备份文件格式不正确。',
+        invalidJsonShape: '备份文件必须是 JSON 对象。',
+        requestFailed: '请求后端失败，请确认服务已启动。',
+        selectFile: '请先选择备份文件。',
+      },
+      scopeLabel: '包含范围',
+      scopeValue: '代理配置，不含账号和系统配置',
+      title: '设置',
+    },
     login: {
       errors: {
         failed: '登录失败，请检查用户名和密码。',
@@ -370,6 +409,7 @@ export const messages = {
       removeRoute: 'Remove route',
       restoreDemo: 'Refresh data',
       save: 'Save',
+      settings: 'Settings',
       syncSubscription: 'Sync subscription',
     },
     home: {
@@ -627,6 +667,45 @@ export const messages = {
     },
     about: {
       title: 'About',
+    },
+    settings: {
+      counts: {
+        groups: '{count} groups',
+        mappings: '{count} ports',
+        nodes: '{count} nodes',
+        subscriptions: '{count} subscriptions',
+      },
+      eyebrow: 'Backup and restore',
+      export: {
+        button: 'Export settings',
+        lead: 'Download current nodes, groups, subscriptions, and port mappings.',
+        title: 'Export all settings',
+      },
+      formatLabel: 'File format',
+      formatValue: 'ProxyHub JSON v1',
+      import: {
+        button: 'Overwrite import',
+        confirmOverwrite: 'I understand this will overwrite the current proxy configuration.',
+        lead: 'Upload an exported JSON file to replace the current proxy configuration.',
+        selectFile: 'Choose JSON backup file',
+        title: 'Import all settings',
+      },
+      messages: {
+        confirmRequired: 'Confirm overwrite before importing.',
+        exported: 'The settings file download has started.',
+        fileReady: 'Backup file is ready to import.',
+        fileType: 'Choose a .json file.',
+        imported:
+          'Imported {nodes} nodes, {groups} groups, {subscriptions} subscriptions, and {mappings} ports.',
+        importedWithWarning: 'Settings imported, but runtime reload failed: {warning}',
+        invalidBackup: 'The backup file format is invalid.',
+        invalidJsonShape: 'The backup file must be a JSON object.',
+        requestFailed: 'Backend request failed. Check that the service is running.',
+        selectFile: 'Choose a backup file first.',
+      },
+      scopeLabel: 'Includes',
+      scopeValue: 'Proxy config, excluding accounts and system config',
+      title: 'Settings',
     },
     login: {
       errors: {

@@ -19,8 +19,10 @@ func TestMountStaticDisablesCacheForIndexOnly(t *testing.T) {
 
 	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/"), "/")
 	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/index.html"), "/index.html")
+	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/settings"), "/settings")
 	assertStaticAssetLongCache(t, mustTestRequest(t, app, http.MethodGet, "/app.js"), "/app.js")
 	assertStaticAssetLongCache(t, mustTestRequest(t, app, http.MethodGet, "/favicon.ico"), "/favicon.ico")
+	assertNotFound(t, mustTestRequest(t, app, http.MethodGet, "/missing.js"), "/missing.js")
 }
 
 func TestMountStaticDisablesCacheForIndexOnCustomWebURL(t *testing.T) {
@@ -30,6 +32,7 @@ func TestMountStaticDisablesCacheForIndexOnCustomWebURL(t *testing.T) {
 
 	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/kanban"), "/kanban")
 	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/kanban/index.html"), "/kanban/index.html")
+	assertIndexNoCache(t, mustTestRequest(t, app, http.MethodGet, "/kanban/settings"), "/kanban/settings")
 	assertStaticAssetLongCache(t, mustTestRequest(t, app, http.MethodGet, "/kanban/app.js"), "/kanban/app.js")
 	assertStaticAssetLongCache(t, mustTestRequest(t, app, http.MethodGet, "/kanban/favicon.ico"), "/kanban/favicon.ico")
 }
@@ -81,6 +84,14 @@ func assertStaticAssetLongCache(t *testing.T, resp *http.Response, target string
 	}
 	if got := resp.Header.Get("Expires"); got != "" {
 		t.Fatalf("%s Expires = %q", target, got)
+	}
+}
+
+func assertNotFound(t *testing.T, resp *http.Response, target string) {
+	t.Helper()
+
+	if got := resp.StatusCode; got != http.StatusNotFound {
+		t.Fatalf("%s status = %d, want %d", target, got, http.StatusNotFound)
 	}
 }
 

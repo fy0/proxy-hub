@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -693,6 +694,134 @@ func TestMappingCreateAssignsAscendingOrderAndListsOldestFirst(t *testing.T) {
 	}
 	if mappings[0].ID != first.ID || mappings[1].ID != second.ID {
 		t.Fatalf("MappingList() IDs = (%q, %q), want (%q, %q)", mappings[0].ID, mappings[1].ID, first.ID, second.ID)
+	}
+}
+
+func TestSettingsImportRoundTripReplacesExistingConfig(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+		Username: "user",
+		Password: "pass",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "manual", NodeIDs: []string{node.ID}})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	_, err = MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10090,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{node.ID},
+		ActiveNodeID:     &node.ID,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	backup, err := SettingsExport(ctx, nil)
+	if err != nil {
+		t.Fatalf("SettingsExport() error = %v", err)
+	}
+
+	extra, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "extra",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(extra) error = %v", err)
+	}
+
+	result, err := SettingsImport(ctx, *backup)
+	if err != nil {
+		t.Fatalf("SettingsImport() error = %v", err)
+	}
+	if result.Nodes != 1 || result.Groups != 1 || result.Mappings != 1 {
+		t.Fatalf("SettingsImport() result = %+v, want one node/group/mapping", result)
+	}
+
+	nodes, err := NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != node.ID || nodes[0].Password != "pass" {
+		t.Fatalf("nodes after import = %+v, want original node only", nodes)
+	}
+	if _, err := NodeGet(ctx, nil, extra.ID); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("NodeGet(extra) error = %v, want %v", err, ErrNodeNotFound)
+	}
+
+	mappings, err := MappingList(ctx, nil)
+	if err != nil {
+		t.Fatalf("MappingList() error = %v", err)
+	}
+	if len(mappings) != 1 ||
+		!containsString(decodeStringSlice(mappings[0].NodeIDsJSON), node.ID) ||
+		!containsString(decodeStringSlice(mappings[0].GroupIDsJSON), group.ID) {
+		t.Fatalf("mappings after import = %+v, want restored references", mappings)
+	}
+}
+
+func TestSettingsImportRejectsBrokenReferenceWithoutMutation(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	original, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "original",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	backup := SettingsBackupDTO{
+		Kind:          SettingsBackupKind,
+		SchemaVersion: SettingsBackupSchemaVersion,
+		ExportedAt:    original.CreatedAt,
+		Data: SettingsBackupDataDTO{
+			Groups: []*ProxyGroupDTO{{
+				ID:       "group-1",
+				Name:     "broken",
+				Type:     GroupTypeManual,
+				Strategy: GroupStrategySelector,
+				NodeIDs:  []string{"missing-node"},
+			}},
+		},
+	}
+
+	_, err = SettingsImport(ctx, backup)
+	if !errors.Is(err, ErrInvalidSettingsBackup) {
+		t.Fatalf("SettingsImport() error = %v, want %v", err, ErrInvalidSettingsBackup)
+	}
+
+	nodes, err := NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != original.ID {
+		t.Fatalf("nodes after rejected import = %+v, want original data unchanged", nodes)
 	}
 }
 

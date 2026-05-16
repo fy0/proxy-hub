@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Route,
   Server,
+  Settings,
   Trash2,
   Users,
   X,
@@ -1399,23 +1400,29 @@ function routeFailureLabel(node: ProxyNode): string {
           <span class="brand-version">v{{ displayAppVersion }}</span>
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          class="status-refresh"
-          :aria-label="t('common.refreshStatus')"
-          :title="t('common.refreshStatus')"
-          :disabled="isLoading || isSaving"
-          @click="handleReset"
-        >
-          <RefreshCw
-            class="size-4"
-            :class="{ 'spin-icon': isLoading || isSaving }"
-            aria-hidden="true"
-          />
-          <span>{{ t('common.refreshStatus') }}</span>
-        </Button>
+        <div class="brand-actions">
+          <RouterLink class="settings-link" :to="{ name: 'settings' }" :title="t('common.settings')">
+            <Settings class="size-4" aria-hidden="true" />
+            <span>{{ t('common.settings') }}</span>
+          </RouterLink>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            class="status-refresh"
+            :aria-label="t('common.refreshStatus')"
+            :title="t('common.refreshStatus')"
+            :disabled="isLoading || isSaving"
+            @click="handleReset"
+          >
+            <RefreshCw
+              class="size-4"
+              :class="{ 'spin-icon': isLoading || isSaving }"
+              aria-hidden="true"
+            />
+            <span>{{ t('common.refreshStatus') }}</span>
+          </Button>
+        </div>
       </header>
 
       <section class="notice-bar" :class="{ error: hasNoticeError }" role="status">

@@ -34,6 +34,23 @@ func Register(api huma.API) {
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
+		Path:        "/settings/export",
+		Summary:     "导出代理设置",
+		OperationID: "proxy-settings-export",
+		Tags:        []string{proxyTag},
+	}, settingsExportHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/settings/import",
+		Summary:     "导入代理设置",
+		Description: "覆盖恢复节点、节点组、订阅和端口映射配置。",
+		OperationID: "proxy-settings-import",
+		Tags:        []string{proxyTag},
+	}, settingsImportHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
 		Path:        "/nodes",
 		Summary:     "节点列表",
 		OperationID: "proxy-node-list",
@@ -259,6 +276,34 @@ func stateHandler(ctx context.Context, _ *struct{}) (*stateOutput, error) {
 		return nil, mapError(err)
 	}
 	return &stateOutput{Body: *snapshot}, nil
+}
+
+type settingsExportOutput struct {
+	Body proxyService.SettingsBackupDTO `json:"body"`
+}
+
+func settingsExportHandler(ctx context.Context, _ *struct{}) (*settingsExportOutput, error) {
+	backup, err := proxyService.SettingsExport(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &settingsExportOutput{Body: *backup}, nil
+}
+
+type settingsImportInput struct {
+	Body proxyService.SettingsBackupDTO
+}
+
+type settingsImportOutput struct {
+	Body proxyService.SettingsImportResultDTO `json:"body"`
+}
+
+func settingsImportHandler(ctx context.Context, input *settingsImportInput) (*settingsImportOutput, error) {
+	result, err := proxyService.SettingsImport(ctx, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &settingsImportOutput{Body: *result}, nil
 }
 
 type nodeListOutput struct {
@@ -822,7 +867,8 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrInvalidSubscription),
 		errors.Is(err, proxyService.ErrInvalidGroup),
 		errors.Is(err, proxyService.ErrInvalidHealthDuration),
-		errors.Is(err, proxyService.ErrInvalidChain):
+		errors.Is(err, proxyService.ErrInvalidChain),
+		errors.Is(err, proxyService.ErrInvalidSettingsBackup):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())

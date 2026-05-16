@@ -93,6 +93,35 @@
   font-weight: 700;
 }
 
+.brand-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-link {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 12px;
+  color: rgb(76 89 117);
+  font-size: 14px;
+  font-weight: 650;
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+}
+
+.settings-link:hover {
+  color: rgb(37 99 235);
+  background: rgb(243 247 255);
+}
+
 .node-group-summary-card,
 .node-row {
   border: 1px solid rgb(15 23 42 / 0.08);
@@ -2047,6 +2076,15 @@ textarea:focus {
 
   .status-refresh[data-slot='button'] {
     justify-content: center;
+  }
+
+  .brand-actions {
+    justify-content: stretch;
+  }
+
+  .settings-link,
+  .status-refresh[data-slot='button'] {
+    flex: 1 1 0;
   }
 
   .workspace-copy h1 {
