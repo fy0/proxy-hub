@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useClipboard } from '@vueuse/core';
 import { computed, reactive, ref, watch } from 'vue';
 import {
   Check,
@@ -75,6 +76,9 @@ interface NodeGroupSummaryItem {
 
 const { formatDateTime, t } = useI18n();
 const appStore = useAppStore();
+const clipboard = useClipboard({
+  legacy: true,
+});
 
 const protocolLabels = computed<Record<ProxyProtocol, string>>(() => ({
   vless: t('home.protocol.vless'),
@@ -347,6 +351,25 @@ function mappingGroups(mapping: PortMapping): ProxyGroup[] {
 
 function mappingEndpoint(mapping: PortMapping): string {
   return `${mapping.listenAddress}:${mapping.listenPort}`;
+}
+
+function currentPageEndpointHost(): string {
+  if (typeof window === 'undefined') {
+    return '127.0.0.1';
+  }
+
+  const hostname = window.location.hostname || '127.0.0.1';
+  const unbracketedHostname =
+    hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return unbracketedHostname.includes(':') ? `[${unbracketedHostname}]` : unbracketedHostname;
+}
+
+function copyableEndpointProtocol(mapping: PortMapping): 'http' | 'socks5' {
+  return mapping.outboundProtocol === 'socks5' ? 'socks5' : 'http';
+}
+
+function copyableMappingEndpoint(mapping: PortMapping): string {
+  return `${copyableEndpointProtocol(mapping)}://${currentPageEndpointHost()}:${mapping.listenPort}`;
 }
 
 const groupedNodeIds = computed(() => {
@@ -1276,7 +1299,10 @@ function showCopyMessage(message: string): void {
 
 async function copyTextToClipboard(text: string, successMessage: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(text);
+    if (!clipboard.isSupported.value) {
+      throw new Error('Clipboard is not supported');
+    }
+    await clipboard.copy(text);
     showCopyMessage(successMessage);
   } catch {
     showCopyMessage(text);
@@ -1284,10 +1310,7 @@ async function copyTextToClipboard(text: string, successMessage: string): Promis
 }
 
 async function copyEndpoint(mapping: PortMapping): Promise<void> {
-  const endpoint =
-    mapping.outboundProtocol === 'mixed'
-      ? `mixed://${mapping.listenAddress}:${mapping.listenPort}`
-      : `${mapping.outboundProtocol}://${mapping.listenAddress}:${mapping.listenPort}`;
+  const endpoint = copyableMappingEndpoint(mapping);
 
   copiedMappingId.value = mapping.id;
   copiedNodeId.value = null;
