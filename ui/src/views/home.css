@@ -129,6 +129,11 @@
   box-shadow: 0 10px 28px rgb(15 23 42 / 0.04);
 }
 
+.node-row.blacklisted {
+  border-color: rgb(248 113 113 / 0.42);
+  background: rgb(255 247 247);
+}
+
 .notice-bar {
   min-height: 58px;
   display: flex;
@@ -282,6 +287,13 @@
   font-weight: 560;
 }
 
+.workspace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
 .tab-bar {
   display: flex;
   align-items: center;
@@ -332,6 +344,36 @@
 
 .tab-bar button.active svg {
   color: #ffffff;
+}
+
+.top-add-port-button[data-slot='button'] {
+  flex: 0 0 auto;
+  min-height: 50px;
+  padding: 0 22px;
+  border: 1px dashed rgb(99 102 241 / 0.32);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.62);
+  color: rgb(79 70 229);
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.9),
+    0 10px 24px rgb(79 70 229 / 0.08);
+}
+
+.top-add-port-button[data-slot='button']:hover {
+  border-color: rgb(99 102 241 / 0.52);
+  background: rgb(248 250 255);
+  color: rgb(79 70 229);
+}
+
+.top-add-port-button[data-slot='button'] svg {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgb(238 242 255);
+  color: rgb(79 70 229);
 }
 
 .panel {
@@ -951,6 +993,11 @@
   color: rgb(220 38 38);
 }
 
+.route-health.blacklisted small {
+  background: rgb(254 242 242);
+  box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.28);
+}
+
 .route-card-actions {
   position: absolute;
   top: 6px;
@@ -1491,6 +1538,11 @@ textarea:focus {
   gap: 8px;
   color: rgb(100 116 139);
   font-size: 12px;
+}
+
+.node-meta .blacklisted {
+  color: rgb(185 28 28);
+  font-weight: 750;
 }
 
 .manual-node-form,
@@ -2171,6 +2223,12 @@ textarea:focus {
     font-size: 13px;
   }
 
+  .workspace-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .tab-bar {
     gap: 10px;
   }
@@ -2179,6 +2237,11 @@ textarea:focus {
     min-height: 42px;
     padding: 0 14px;
     font-size: 13px;
+  }
+
+  .top-add-port-button[data-slot='button'] {
+    width: 100%;
+    min-height: 44px;
   }
 
   .port-grid,

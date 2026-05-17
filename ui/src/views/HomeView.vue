@@ -40,6 +40,7 @@ import type {
   ProxyNodeOption,
   ProxyProtocol,
   RouteStrategy,
+  RuntimeExcludedNode,
 } from '@/types/proxyHub';
 import './home.css';
 
@@ -296,6 +297,12 @@ const runtimeFailuresByMappingId = computed(
   () => new Map((runtime.value?.failures ?? []).map(failure => [failure.mappingId, failure]))
 );
 
+const runtimeExcludedNodes = computed<RuntimeExcludedNode[]>(() => {
+  const excludedNodes = (runtime.value as { excludedNodes?: RuntimeExcludedNode[] } | null)
+    ?.excludedNodes;
+  return excludedNodes ?? [];
+});
+
 function runtimeFailureReason(error: string | null | undefined): string {
   const reason = error?.trim();
   return reason || t('home.messages.runtimeFailureUnknown');
@@ -327,6 +334,12 @@ const portStripItems = computed(() =>
 
 const runtimeInboundCount = computed(() => runtime.value?.inbounds?.length ?? 0);
 const hasNoticeError = computed(() => Boolean(errorMessage.value) || Boolean(runtime.value?.error));
+const runtimeExcludedNodeCount = computed(() => runtimeExcludedNodes.value.length);
+
+const runtimeExcludedNodeNotice = computed(() => {
+  if (runtimeExcludedNodeCount.value === 0) return '';
+  return t('home.messages.runtimeExcludedNodes', { count: runtimeExcludedNodeCount.value });
+});
 
 const backendNotice = computed(() => {
   if (errorMessage.value) return errorMessage.value;
@@ -335,7 +348,10 @@ const backendNotice = computed(() => {
   if (runtime.value?.error)
     return t('home.messages.runtimeError', { message: runtime.value.error });
   if (runtime.value?.running) {
-    return t('home.messages.runtimeRunning', { count: runtimeInboundCount.value });
+    const runningMessage = t('home.messages.runtimeRunning', { count: runtimeInboundCount.value });
+    return runtimeExcludedNodeNotice.value
+      ? `${runningMessage} ${runtimeExcludedNodeNotice.value}`
+      : runningMessage;
   }
   if (runtime.value) return t('home.messages.runtimeStopped');
 
@@ -1723,6 +1739,16 @@ function routeSuccessLabel(node: ProxyNode): string {
 function routeFailureLabel(node: ProxyNode): string {
   return String(node.health?.failureCount ?? 0);
 }
+
+function nodeHealthTitle(node: ProxyNode): string {
+  const error = node.health?.lastError?.trim();
+  if (!node.health?.blacklisted && !error) return '';
+  if (node.health?.blacklisted && error) {
+    return t('home.nodeHealth.blacklistedWithReason', { reason: error });
+  }
+  if (node.health?.blacklisted) return t('home.nodeHealth.blacklisted');
+  return error ?? '';
+}
 </script>
 
 <template>
@@ -1810,45 +1836,55 @@ function routeFailureLabel(node: ProxyNode): string {
         </div>
       </header>
 
-      <nav class="tab-bar" :aria-label="t('home.aria.tabs')">
-        <button
-          :class="{ active: currentTab === 'mappings' }"
+      <div class="workspace-toolbar">
+        <nav class="tab-bar" :aria-label="t('home.aria.tabs')">
+          <button
+            :class="{ active: currentTab === 'mappings' }"
+            type="button"
+            @click="openTab('mappings')"
+          >
+            <Link2 class="size-4" aria-hidden="true" />
+            <span>{{ t('home.tabs.mappings') }}</span>
+          </button>
+          <button
+            :class="{ active: currentTab === 'nodes' }"
+            type="button"
+            @click="openTab('nodes')"
+          >
+            <Server class="size-4" aria-hidden="true" />
+            <span>{{ nodesTabLabel }}</span>
+          </button>
+          <button
+            :class="{ active: currentTab === 'subscriptions' }"
+            type="button"
+            @click="openTab('subscriptions')"
+          >
+            <RefreshCw class="size-4" aria-hidden="true" />
+            <span>{{ t('home.tabs.subscriptions') }}</span>
+          </button>
+          <button
+            :class="{ active: currentTab === 'import' }"
+            type="button"
+            @click="openTab('import')"
+          >
+            <Import class="size-4" aria-hidden="true" />
+            <span>{{ t('home.tabs.import') }}</span>
+          </button>
+        </nav>
+
+        <Button
+          v-if="currentTab === 'mappings'"
           type="button"
-          @click="openTab('mappings')"
+          class="top-add-port-button"
+          @click="openNewMappingDialog"
         >
-          <Link2 class="size-4" aria-hidden="true" />
-          <span>{{ t('home.tabs.mappings') }}</span>
-        </button>
-        <button :class="{ active: currentTab === 'nodes' }" type="button" @click="openTab('nodes')">
-          <Server class="size-4" aria-hidden="true" />
-          <span>{{ nodesTabLabel }}</span>
-        </button>
-        <button
-          :class="{ active: currentTab === 'subscriptions' }"
-          type="button"
-          @click="openTab('subscriptions')"
-        >
-          <RefreshCw class="size-4" aria-hidden="true" />
-          <span>{{ t('home.tabs.subscriptions') }}</span>
-        </button>
-        <button
-          :class="{ active: currentTab === 'import' }"
-          type="button"
-          @click="openTab('import')"
-        >
-          <Import class="size-4" aria-hidden="true" />
-          <span>{{ t('home.tabs.import') }}</span>
-        </button>
-      </nav>
+          <Plus class="size-4" aria-hidden="true" />
+          <span>{{ t('common.addPort') }}</span>
+        </Button>
+      </div>
 
       <section v-if="currentTab === 'mappings'" class="panel port-panel">
         <div class="port-grid">
-          <button type="button" class="add-port-card" @click="openNewMappingDialog">
-            <Plus class="size-8" aria-hidden="true" />
-            <span>{{ t('common.addPort') }}</span>
-            <small>{{ t('home.sections.addPortHint') }}</small>
-          </button>
-
           <article
             v-for="mapping in mappings"
             :key="mapping.id"
@@ -2000,7 +2036,11 @@ function routeFailureLabel(node: ProxyNode): string {
                   <span class="route-kind-badge">{{ t('home.routeKind.node') }}</span>
                   <span class="route-detail">{{ protocolLabels[node.protocol] }}</span>
                 </span>
-                <span class="route-health">
+                <span
+                  class="route-health"
+                  :class="{ blacklisted: node.health?.blacklisted }"
+                  :title="nodeHealthTitle(node)"
+                >
                   <small class="latency" :title="t('home.nodeHealth.latency')">
                     {{ routeLatencyLabel(node) }}
                   </small>
@@ -2082,6 +2122,12 @@ function routeFailureLabel(node: ProxyNode): string {
               </ActionTooltip>
             </div>
           </article>
+
+          <button type="button" class="add-port-card" @click="openNewMappingDialog">
+            <Plus class="size-8" aria-hidden="true" />
+            <span>{{ t('common.addPort') }}</span>
+            <small>{{ t('home.sections.addPortHint') }}</small>
+          </button>
         </div>
       </section>
 
@@ -2152,7 +2198,9 @@ function routeFailureLabel(node: ProxyNode): string {
                   v-for="row in virtualNodeRows"
                   :key="row.data.id"
                   class="node-row"
+                  :class="{ blacklisted: row.data.health?.blacklisted }"
                   :style="{ height: '116px' }"
+                  :title="nodeHealthTitle(row.data)"
                 >
                   <div class="node-protocol" :class="{ chain: row.data.protocol === 'chain' }">
                     {{ protocolLabels[row.data.protocol] }}
@@ -2207,6 +2255,9 @@ function routeFailureLabel(node: ProxyNode): string {
                     <small v-if="row.data.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
                     <small v-if="row.data.protocol !== 'chain' && !row.data.username && !row.data.password">{{
                       t('common.noAccount')
+                    }}</small>
+                    <small v-if="row.data.health?.blacklisted" class="blacklisted">{{
+                      t('home.nodeHealth.blacklisted')
                     }}</small>
                   </div>
                 </article>
