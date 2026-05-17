@@ -42,6 +42,7 @@ export const messages = {
       save: '保存',
       settings: '设置',
       syncSubscription: '同步订阅',
+      test: '测试',
     },
     home: {
       actions: {
@@ -70,6 +71,8 @@ export const messages = {
         addPortTitle: '添加端口',
         editPortTitle: '编辑端口',
         mappingLead: '默认不配置用户名和密码。',
+        testMappingTitle: '测试端口',
+        testNodeTitle: '测试节点',
       },
       confirm: {
         deleteNodeMessage: '将删除节点「{name}」，并从端口线路和节点组中移除。此操作不可撤销。',
@@ -113,6 +116,7 @@ export const messages = {
         chainNodes: '串联节点',
         chainPreview: '链路顺序',
         searchNodes: '搜索节点',
+        testUrl: '测试 URL',
         username: '用户名',
       },
       groupMeta: {
@@ -225,6 +229,7 @@ export const messages = {
         nodeName: '例如：香港节点',
         nodeUri: 'vless://...、hy2://... 或 ss://...',
         nodeSearch: '按节点名称搜索',
+        testUrl: 'https://www.gstatic.com/generate_204',
         chainName: '例如：A 访问 B',
         tags: '多个标签用逗号分隔',
         shareLinks: 'vless://...\nhy2://...\nss://...\ntuic://...',
@@ -284,6 +289,17 @@ export const messages = {
         nodes: '节点库',
         nodesWithCount: '节点库（{count}）',
         subscriptions: '订阅',
+      },
+      test: {
+        checkedAt: '测试时间',
+        failed: '失败',
+        latency: '延迟',
+        result: '结果',
+        retest: '重测',
+        running: '测试中',
+        success: '成功',
+        target: '目标',
+        waiting: '等待测试',
       },
       routeSource: {
         group: '已有分组',
@@ -420,6 +436,7 @@ export const messages = {
       save: 'Save',
       settings: 'Settings',
       syncSubscription: 'Sync subscription',
+      test: 'Test',
     },
     home: {
       actions: {
@@ -448,6 +465,8 @@ export const messages = {
         addPortTitle: 'Add port',
         editPortTitle: 'Edit port',
         mappingLead: 'Username and password are empty by default.',
+        testMappingTitle: 'Test port',
+        testNodeTitle: 'Test node',
       },
       confirm: {
         deleteNodeMessage:
@@ -494,6 +513,7 @@ export const messages = {
         chainNodes: 'Chain nodes',
         chainPreview: 'Route order',
         searchNodes: 'Search nodes',
+        testUrl: 'Test URL',
         username: 'Username',
       },
       groupMeta: {
@@ -606,6 +626,7 @@ export const messages = {
         nodeName: 'e.g. Hong Kong node',
         nodeUri: 'vless://..., hy2://..., or ss://...',
         nodeSearch: 'Search by node name',
+        testUrl: 'https://www.gstatic.com/generate_204',
         chainName: 'e.g. A via B',
         tags: 'Separate tags with commas',
         shareLinks: 'vless://...\nhy2://...\nss://...\ntuic://...',
@@ -666,6 +687,17 @@ export const messages = {
         nodes: 'Nodes',
         nodesWithCount: 'Nodes ({count})',
         subscriptions: 'Subscriptions',
+      },
+      test: {
+        checkedAt: 'Checked at',
+        failed: 'Failed',
+        latency: 'Latency',
+        result: 'Result',
+        retest: 'Retest',
+        running: 'Testing',
+        success: 'Success',
+        target: 'Target',
+        waiting: 'Waiting',
       },
       routeSource: {
         group: 'Existing group',

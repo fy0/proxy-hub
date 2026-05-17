@@ -152,3 +152,15 @@ export interface RuntimeExcludedNode {
   tag: string;
   error: string;
 }
+
+export interface ProxyTestResult {
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  probeUrl: string;
+  available: boolean;
+  latencyMs: number;
+  error: string;
+  checkedAt: string;
+  health: ProxyNodeHealth | null;
+}

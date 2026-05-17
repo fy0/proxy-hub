@@ -19,4 +19,5 @@ var (
 	ErrInvalidHealthDuration = errors.New("invalid proxy health duration")
 	ErrInvalidChain          = errors.New("invalid proxy chain")
 	ErrInvalidSettingsBackup = errors.New("invalid proxy settings backup")
+	ErrInvalidProbeURL       = errors.New("invalid proxy test url")
 )

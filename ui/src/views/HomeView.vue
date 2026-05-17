@@ -6,6 +6,7 @@ import {
   Copy,
   Edit3,
   Import,
+  Gauge,
   Link2,
   MoreVertical,
   Plus,
@@ -38,6 +39,7 @@ import type {
   ProxyGroup,
   ProxyNode,
   ProxyNodeOption,
+  ProxyTestResult,
   ProxyProtocol,
   RouteStrategy,
   RuntimeExcludedNode,
@@ -59,6 +61,15 @@ interface ConfirmationDialog {
 
 interface DuplicateRouteNodeDialog {
   node: ProxyNode;
+}
+
+interface TestDialogState {
+  targetType: 'mapping' | 'node';
+  targetId: string;
+  title: string;
+  subtitle: string;
+  result: ProxyTestResult | null;
+  error: string;
 }
 
 interface NodeGroupFilterOption {
@@ -142,6 +153,7 @@ const {
   importNodes,
   updateNode,
   removeNode,
+  testNode,
   addGroup,
   removeGroup,
   previewSubscription,
@@ -151,6 +163,7 @@ const {
   addMapping,
   updateMapping,
   removeMapping,
+  testMapping,
   loadNodes,
   loadMoreNodes,
   fetchNodeOptions,
@@ -200,6 +213,9 @@ const routeTargetMappingId = ref<string | null>(null);
 const openRouteActionKey = ref<string | null>(null);
 const confirmationDialog = ref<ConfirmationDialog | null>(null);
 const duplicateRouteNodeDialog = ref<DuplicateRouteNodeDialog | null>(null);
+const testDialog = ref<TestDialogState | null>(null);
+const testUrl = ref('https://www.gstatic.com/generate_204');
+const isTesting = ref(false);
 
 const emptyMappingForm = () => ({
   listenAddress: '0.0.0.0',
@@ -1375,6 +1391,69 @@ function requestRemoveNode(node: ProxyNode): void {
   };
 }
 
+function openMappingTestDialog(mapping: PortMapping): void {
+  closeRouteActionMenu();
+  testDialog.value = {
+    targetType: 'mapping',
+    targetId: mapping.id,
+    title: t('home.dialogs.testMappingTitle'),
+    subtitle: mappingEndpoint(mapping),
+    result: null,
+    error: '',
+  };
+  void runCurrentTest();
+}
+
+function openNodeTestDialog(node: ProxyNode): void {
+  closeRouteActionMenu();
+  testDialog.value = {
+    targetType: 'node',
+    targetId: node.id,
+    title: t('home.dialogs.testNodeTitle'),
+    subtitle: node.name,
+    result: null,
+    error: '',
+  };
+  void runCurrentTest();
+}
+
+function closeTestDialog(): void {
+  if (isTesting.value) return;
+  testDialog.value = null;
+}
+
+async function runCurrentTest(): Promise<void> {
+  const dialog = testDialog.value;
+  if (!dialog) return;
+
+  isTesting.value = true;
+  dialog.error = '';
+  try {
+    const result =
+      dialog.targetType === 'mapping'
+        ? await testMapping(dialog.targetId, testUrl.value)
+        : await testNode(dialog.targetId, testUrl.value);
+    testUrl.value = result.probeUrl || testUrl.value;
+    if (testDialog.value?.targetId === dialog.targetId) {
+      testDialog.value = {
+        ...dialog,
+        result,
+        error: '',
+      };
+    }
+  } catch (error) {
+    if (testDialog.value?.targetId === dialog.targetId) {
+      testDialog.value = {
+        ...dialog,
+        result: null,
+        error: error instanceof Error ? error.message : t('home.messages.requestFailed'),
+      };
+    }
+  } finally {
+    isTesting.value = false;
+  }
+}
+
 function closeConfirmationDialog(): void {
   confirmationDialog.value = null;
 }
@@ -1740,6 +1819,22 @@ function routeFailureLabel(node: ProxyNode): string {
   return String(node.health?.failureCount ?? 0);
 }
 
+function testStatusLabel(result: ProxyTestResult | null, error = ''): string {
+  if (isTesting.value) return t('home.test.running');
+  if (error) return t('home.test.failed');
+  if (!result) return t('home.test.waiting');
+  return result.available ? t('home.test.success') : t('home.test.failed');
+}
+
+function testLatencyLabel(result: ProxyTestResult | null): string {
+  if (!result) return '-';
+  return `${Math.max(0, result.latencyMs)}ms`;
+}
+
+function testCheckedAtLabel(result: ProxyTestResult | null): string {
+  return result?.checkedAt ? formatDateTime(result.checkedAt) : '-';
+}
+
 function nodeHealthTitle(node: ProxyNode): string {
   const error = node.health?.lastError?.trim();
   if (!node.health?.blacklisted && !error) return '';
@@ -1963,6 +2058,13 @@ function nodeHealthTitle(node: ProxyNode): string {
                         <Plus class="size-4" aria-hidden="true" />
                         <span>{{ t('common.addRoute') }}</span>
                       </DropdownMenuItem>
+                      <DropdownMenuItem
+                        class="port-actions-menu-item"
+                        @select="openMappingTestDialog(mapping)"
+                      >
+                        <Gauge class="size-4" aria-hidden="true" />
+                        <span>{{ t('common.test') }}</span>
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"
@@ -2018,6 +2120,15 @@ function nodeHealthTitle(node: ProxyNode): string {
                     class="route-action-menu"
                     role="menu"
                   >
+                    <button
+                      type="button"
+                      class="route-action-menu-item"
+                      role="menuitem"
+                      @click.stop="openNodeTestDialog(node)"
+                    >
+                      <Gauge class="size-4" aria-hidden="true" />
+                      <span>{{ t('common.test') }}</span>
+                    </button>
                     <button
                       type="button"
                       class="route-action-menu-item danger"
@@ -2231,6 +2342,17 @@ function nodeHealthTitle(node: ProxyNode): string {
                         @click="openEditNodeDialog(row.data)"
                       >
                         <Edit3 class="size-4" aria-hidden="true" />
+                      </Button>
+                    </ActionTooltip>
+                    <ActionTooltip :label="t('common.test')">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        :aria-label="t('common.test')"
+                        @click="openNodeTestDialog(row.data)"
+                      >
+                        <Gauge class="size-4" aria-hidden="true" />
                       </Button>
                     </ActionTooltip>
                     <ActionTooltip :label="t('common.deleteNode')">
@@ -3277,6 +3399,89 @@ function nodeHealthTitle(node: ProxyNode): string {
             <Link2 class="size-4" aria-hidden="true" />
             {{ t('home.confirm.duplicateRouteReuse') }}
           </Button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="testDialog"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeTestDialog"
+    >
+      <section
+        class="modal-card test-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="test-dialog-title"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="test-dialog-title">{{ testDialog.title }}</h2>
+            <p>{{ testDialog.subtitle }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            :disabled="isTesting"
+            @click="closeTestDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <form class="test-url-form" @submit.prevent="runCurrentTest">
+          <label>
+            <span>{{ t('home.form.testUrl') }}</span>
+            <input
+              v-model.trim="testUrl"
+              type="url"
+              autocomplete="off"
+              :placeholder="t('home.placeholders.testUrl')"
+              required
+            />
+          </label>
+          <Button type="submit" :disabled="isTesting">
+            <RefreshCw class="size-4" :class="{ 'spin-icon': isTesting }" aria-hidden="true" />
+            {{ t('home.test.retest') }}
+          </Button>
+        </form>
+
+        <div class="test-result-panel" :class="{ success: testDialog.result?.available, failed: testDialog.result && !testDialog.result.available }">
+          <div class="test-result-summary">
+            <span class="test-result-icon">
+              <Gauge class="size-4" aria-hidden="true" />
+            </span>
+            <div>
+              <strong>{{ testStatusLabel(testDialog.result, testDialog.error) }}</strong>
+              <small>{{ testDialog.result?.probeUrl || testUrl }}</small>
+            </div>
+          </div>
+
+          <dl class="test-result-grid">
+            <div>
+              <dt>{{ t('home.test.latency') }}</dt>
+              <dd>{{ testLatencyLabel(testDialog.result) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('home.test.checkedAt') }}</dt>
+              <dd>{{ testCheckedAtLabel(testDialog.result) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('home.test.target') }}</dt>
+              <dd>{{ testDialog.result?.targetName || testDialog.subtitle }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('home.test.result') }}</dt>
+              <dd>{{ testStatusLabel(testDialog.result, testDialog.error) }}</dd>
+            </div>
+          </dl>
+
+          <p v-if="testDialog.error || testDialog.result?.error" class="test-error">
+            {{ testDialog.error || testDialog.result?.error }}
+          </p>
         </div>
       </section>
     </div>

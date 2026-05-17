@@ -10,7 +10,9 @@ import {
   getProxyState,
   postProxyGroups,
   postProxyMappings,
+  postProxyMappingsByIdTest,
   postProxyNodes,
+  postProxyNodesByIdTest,
   postProxyNodesImport,
   postProxyNodesImportPreview,
   postProxySubscriptions,
@@ -32,6 +34,7 @@ import type {
   ProxyNodeDto,
   ProxyNodeOptionDto,
   ProxySubscriptionDto,
+  ProxyTestResultDto,
   RuntimeStatus,
   StateSnapshotDto,
   SubscriptionUpsertRequestWritable,
@@ -53,6 +56,7 @@ import type {
   ProxyNodeOption,
   ProxyProtocol,
   ProxySubscription,
+  ProxyTestResult,
   RouteStrategy,
 } from '@/types/proxyHub';
 import { t } from '@/i18n';
@@ -404,6 +408,20 @@ function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null 
     lastSuccessAt: dto.lastSuccessAt,
     lastFailureAt: dto.lastFailureAt,
     updatedAt: dto.updatedAt,
+  };
+}
+
+function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
+  return {
+    targetType: dto.targetType,
+    targetId: dto.targetId,
+    targetName: dto.targetName,
+    probeUrl: dto.probeUrl,
+    available: dto.available,
+    latencyMs: dto.latencyMs,
+    error: dto.error ?? '',
+    checkedAt: dto.checkedAt,
+    health: toProxyNodeHealth(dto.health),
   };
 }
 
@@ -962,6 +980,23 @@ async function removeNode(id: string): Promise<void> {
   });
 }
 
+async function testNode(id: string, probeUrl = ''): Promise<ProxyTestResult> {
+  return runMutation(async () => {
+    const { data } = await postProxyNodesByIdTest({
+      path: { id },
+      body: { probeUrl: probeUrl.trim() || undefined },
+      throwOnError: true,
+    });
+    const result = toProxyTestResult(data);
+    if (result.health) {
+      nodes.value = nodes.value.map(node =>
+        node.id === id ? { ...node, health: result.health } : node
+      );
+    }
+    return result;
+  });
+}
+
 async function addGroup(input: GroupInput): Promise<ProxyGroup> {
   return runMutation(async () => {
     const { data } = await postProxyGroups({ body: groupToRequest(input), throwOnError: true });
@@ -1102,6 +1137,17 @@ async function removeMapping(id: string): Promise<void> {
   });
 }
 
+async function testMapping(id: string, probeUrl = ''): Promise<ProxyTestResult> {
+  return runMutation(async () => {
+    const { data } = await postProxyMappingsByIdTest({
+      path: { id },
+      body: { probeUrl: probeUrl.trim() || undefined },
+      throwOnError: true,
+    });
+    return toProxyTestResult(data);
+  });
+}
+
 async function resetDemoData(): Promise<void> {
   await refreshProxyHubState();
 }
@@ -1161,6 +1207,7 @@ export function useProxyHubState() {
     importNodes,
     updateNode,
     removeNode,
+    testNode,
     addGroup,
     updateGroup,
     removeGroup,
@@ -1172,6 +1219,7 @@ export function useProxyHubState() {
     addMapping,
     updateMapping,
     removeMapping,
+    testMapping,
     resetDemoData,
     snapshot,
   };

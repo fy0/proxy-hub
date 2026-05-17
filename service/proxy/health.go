@@ -7,7 +7,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -202,6 +204,84 @@ func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (
 		"updated_at":        now,
 	}
 	return upsertNodeHealth(ctx, nil, nodeID, updates)
+}
+
+func NodeTest(ctx context.Context, nodeID string, req ProxyTestRequest) (*ProxyTestResultDTO, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	node, err := NodeGet(ctx, nil, nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := normalizeHealthConfig(currentHealthConfig())
+	probeURL, err := normalizeProbeURL(req.ProbeURL, cfg.ProbeURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ProbeURL = probeURL
+	checkedAt := time.Now()
+	health, err := probeAndSaveNodeForced(ctx, nil, node, cfg, checkedAt, true)
+	if err != nil {
+		return nil, err
+	}
+
+	result := testResultFromHealth("node", node.ID, node.Name, cfg.ProbeURL, checkedAt, health)
+	result.Health = ToNodeHealthDTO(health)
+	return result, nil
+}
+
+func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*ProxyTestResultDTO, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mapping, err := MappingGet(ctx, nil, mappingID)
+	if err != nil {
+		return nil, err
+	}
+
+	checkedAt := time.Now()
+	cfg := normalizeHealthConfig(currentHealthConfig())
+	probeURL, err := normalizeProbeURL(req.ProbeURL, cfg.ProbeURL)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ProxyTestResultDTO{
+		TargetType: "mapping",
+		TargetID:   mapping.ID,
+		TargetName: mappingRuntimeListen(mapping),
+		ProbeURL:   probeURL,
+		CheckedAt:  checkedAt,
+	}
+	if !mapping.Enabled {
+		result.Error = "port mapping is disabled"
+		return result, nil
+	}
+
+	status := RuntimeStatusGet()
+	if failure := runtimeFailureForMapping(status, mapping.ID); failure != nil {
+		result.Error = failure.Error
+		return result, nil
+	}
+	if !runtimeHasInboundForMapping(status, mapping.ID) {
+		result.Error = "port mapping runtime is not running"
+		return result, nil
+	}
+
+	proxyURL, err := mappingProbeProxyURL(mapping)
+	if err != nil {
+		return nil, err
+	}
+	probeErr, latencyMs := executeHTTPProbe(ctx, probeURL, cfg.Timeout, proxyURL)
+	result.LatencyMs = latencyMs
+	if probeErr != nil {
+		result.Error = probeErr.Error()
+		return result, nil
+	}
+	result.Available = true
+	return result, nil
 }
 
 func blacklistRuntimeExcludedNode(ctx context.Context, node *tables.ProxyNodeTable, runtimeErr error) (*tables.ProxyNodeHealthTable, error) {
@@ -403,6 +483,10 @@ func probeNodes(ctx context.Context, tx model.DBTx, nodes []*tables.ProxyNodeTab
 }
 
 func probeAndSaveNode(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig, now time.Time) (*tables.ProxyNodeHealthTable, error) {
+	return probeAndSaveNodeForced(ctx, tx, node, cfg, now, false)
+}
+
+func probeAndSaveNodeForced(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig, now time.Time, force bool) (*tables.ProxyNodeHealthTable, error) {
 	if node == nil {
 		return nil, ErrNodeNotFound
 	}
@@ -412,7 +496,7 @@ func probeAndSaveNode(ctx context.Context, tx model.DBTx, node *tables.ProxyNode
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil && isHealthBlacklisted(existing, now) {
+	if !force && existing != nil && isHealthBlacklisted(existing, now) {
 		return existing, nil
 	}
 
@@ -485,26 +569,143 @@ func probeNode(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.Proxy
 		}
 	}()
 
+	probeErr, _ := executeHTTPProbe(probeCtx, probeURL, timeout, proxyURL)
+	return probeErr
+}
+
+func normalizeProbeURL(value string, fallback string) (string, error) {
+	probeURL := strings.TrimSpace(value)
+	if probeURL == "" {
+		probeURL = strings.TrimSpace(fallback)
+	}
+	if probeURL == "" {
+		probeURL = utils.DefaultProxyHealthConfig().ProbeURL
+	}
+	parsed, err := url.Parse(probeURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", ErrInvalidProbeURL
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed.String(), nil
+	default:
+		return "", ErrInvalidProbeURL
+	}
+}
+
+func executeHTTPProbe(ctx context.Context, probeURL string, timeout time.Duration, proxyURL *url.URL) (error, int64) {
+	if timeout <= 0 {
+		timeout = utils.DefaultProxyHealthConfig().Timeout
+	}
+	probeURL, err := normalizeProbeURL(probeURL, "")
+	if err != nil {
+		return err, 0
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		return err
+		return err, 0
+	}
+	transport := &http.Transport{}
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-		},
+		Timeout:   timeout,
+		Transport: transport,
 	}
+
+	started := time.Now()
 	resp, err := client.Do(req)
+	latencyMs := time.Since(started).Milliseconds()
+	if latencyMs < 0 {
+		latencyMs = 0
+	}
 	if err != nil {
-		return err
+		return err, latencyMs
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("probe status %d", resp.StatusCode)
+		return fmt.Errorf("probe status %d", resp.StatusCode), latencyMs
+	}
+	return nil, latencyMs
+}
+
+func testResultFromHealth(targetType, targetID, targetName, probeURL string, checkedAt time.Time, health *tables.ProxyNodeHealthTable) *ProxyTestResultDTO {
+	result := &ProxyTestResultDTO{
+		TargetType: targetType,
+		TargetID:   targetID,
+		TargetName: targetName,
+		ProbeURL:   probeURL,
+		CheckedAt:  checkedAt,
+	}
+	if health == nil {
+		return result
+	}
+	result.Available = health.Available
+	result.LatencyMs = health.LastLatencyMs
+	result.Error = health.LastError
+	if health.LastCheckedAt != nil {
+		result.CheckedAt = *health.LastCheckedAt
+	}
+	return result
+}
+
+func runtimeHasInboundForMapping(status RuntimeStatus, mappingID string) bool {
+	for _, inbound := range status.Inbounds {
+		if inbound.MappingID == mappingID {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeFailureForMapping(status RuntimeStatus, mappingID string) *RuntimeInboundFailure {
+	for _, failure := range status.Failures {
+		if failure.MappingID == mappingID {
+			return &failure
+		}
 	}
 	return nil
+}
+
+func mappingProbeProxyURL(mapping *tables.PortMappingTable) (*url.URL, error) {
+	if mapping == nil {
+		return nil, ErrMappingNotFound
+	}
+	host := strings.TrimSpace(mapping.ListenAddress)
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	if parsedIP, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && parsedIP.IsUnspecified() {
+		if parsedIP.Is6() {
+			host = "::1"
+		} else {
+			host = "127.0.0.1"
+		}
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+
+	scheme := "http"
+	if normalizeOutboundProtocol(mapping.OutboundProtocol) == OutboundProtocolSOCKS {
+		scheme = "socks5"
+	}
+	proxyURL := &url.URL{
+		Scheme: scheme,
+		Host:   fmt.Sprintf("%s:%d", host, mapping.ListenPort),
+	}
+	username := strings.TrimSpace(mapping.Username)
+	password := strings.TrimSpace(mapping.Password)
+	if username != "" || password != "" {
+		proxyURL.User = url.UserPassword(username, password)
+	}
+	return proxyURL, nil
 }
 
 func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*url.URL, *box.Box, error) {

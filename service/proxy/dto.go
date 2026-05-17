@@ -251,6 +251,22 @@ type NodeBlacklistRequest struct {
 	Duration string `json:"duration,omitempty" doc:"拉黑时长，例如 30m、1h；为空使用配置默认值"`
 }
 
+type ProxyTestRequest struct {
+	ProbeURL string `json:"probeUrl,omitempty" doc:"用于测试代理可访问性的 HTTP/HTTPS URL"`
+}
+
+type ProxyTestResultDTO struct {
+	TargetType string              `json:"targetType"`
+	TargetID   string              `json:"targetId"`
+	TargetName string              `json:"targetName"`
+	ProbeURL   string              `json:"probeUrl"`
+	Available  bool                `json:"available"`
+	LatencyMs  int64               `json:"latencyMs"`
+	Error      string              `json:"error,omitempty"`
+	CheckedAt  time.Time           `json:"checkedAt"`
+	Health     *ProxyNodeHealthDTO `json:"health,omitempty"`
+}
+
 type SubscriptionUpsertRequest struct {
 	Name    string `json:"name,omitempty" validate:"omitempty,max=100"`
 	URL     string `json:"url" validate:"required,max=2000"`

@@ -131,6 +131,14 @@ func Register(api huma.API) {
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPost,
+		Path:        "/nodes/{id}/test",
+		Summary:     "测试单个节点",
+		OperationID: "proxy-node-test",
+		Tags:        []string{proxyTag},
+	}, nodeTestHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
 		Path:        "/nodes/{id}/release",
 		Summary:     "释放节点黑名单",
 		OperationID: "proxy-node-release",
@@ -256,6 +264,14 @@ func Register(api huma.API) {
 		OperationID: "proxy-mapping-delete",
 		Tags:        []string{proxyTag},
 	}, mappingDeleteHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/mappings/{id}/test",
+		Summary:     "测试端口映射",
+		OperationID: "proxy-mapping-test",
+		Tags:        []string{proxyTag},
+	}, mappingTestHandler)
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
@@ -569,6 +585,23 @@ func nodeProbeAllHandler(ctx context.Context, _ *struct{}) (*nodeProbeAllOutput,
 	return &nodeProbeAllOutput{Body: *dto}, nil
 }
 
+type nodeTestInput struct {
+	ID   string `path:"id"`
+	Body proxyService.ProxyTestRequest
+}
+
+type proxyTestOutput struct {
+	Body proxyService.ProxyTestResultDTO `json:"body"`
+}
+
+func nodeTestHandler(ctx context.Context, input *nodeTestInput) (*proxyTestOutput, error) {
+	result, err := proxyService.NodeTest(ctx, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &proxyTestOutput{Body: *result}, nil
+}
+
 func nodeReleaseHandler(ctx context.Context, input *idInput) (*nodeHealthOutput, error) {
 	health, err := proxyService.NodeRelease(ctx, input.ID)
 	if err != nil {
@@ -862,6 +895,19 @@ func mappingDeleteHandler(ctx context.Context, input *idInput) (*h.MessageRespon
 	return h.NewMessageResponse("端口映射已删除"), nil
 }
 
+type mappingTestInput struct {
+	ID   string `path:"id"`
+	Body proxyService.ProxyTestRequest
+}
+
+func mappingTestHandler(ctx context.Context, input *mappingTestInput) (*proxyTestOutput, error) {
+	result, err := proxyService.MappingTest(ctx, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &proxyTestOutput{Body: *result}, nil
+}
+
 type runtimeStatusOutput struct {
 	Body proxyService.RuntimeStatus `json:"body"`
 }
@@ -965,7 +1011,8 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrInvalidGroup),
 		errors.Is(err, proxyService.ErrInvalidHealthDuration),
 		errors.Is(err, proxyService.ErrInvalidChain),
-		errors.Is(err, proxyService.ErrInvalidSettingsBackup):
+		errors.Is(err, proxyService.ErrInvalidSettingsBackup),
+		errors.Is(err, proxyService.ErrInvalidProbeURL):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())

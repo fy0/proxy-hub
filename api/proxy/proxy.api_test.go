@@ -126,6 +126,83 @@ func TestSettingsExportImportHandlersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMappingTestHandlerReturnsDisabledResult(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+	t.Cleanup(func() {
+		_ = proxyService.RuntimeStop()
+	})
+
+	mapping, err := proxyService.MappingCreate(context.Background(), nil, proxyService.MappingUpsertRequest{
+		Enabled:          false,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10081,
+		OutboundProtocol: proxyService.OutboundProtocolMixed,
+		Strategy:         proxyService.StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	app, apiGroup := newProxyAPITestApp(t)
+	Register(apiGroup)
+
+	body, err := json.Marshal(proxyService.ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("json.Marshal request error = %v", err)
+	}
+	resp := mustProxyAPITestRequest(t, app, http.MethodPost, "/api/v1/proxy/mappings/"+mapping.ID+"/test", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var result proxyService.ProxyTestResultDTO
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Available {
+		t.Fatalf("Available = true, want false")
+	}
+	if result.TargetType != "mapping" || result.TargetID != mapping.ID || result.ProbeURL != "https://example.com/generate_204" {
+		t.Fatalf("result = %+v, want mapping test result", result)
+	}
+	if result.Error == "" {
+		t.Fatalf("Error is empty, want disabled reason")
+	}
+}
+
+func TestNodeTestHandlerRejectsInvalidProbeURL(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+
+	nodePort := uint16(1080)
+	node, err := proxyService.NodeCreate(context.Background(), nil, proxyService.NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: proxyService.ProtocolHTTP,
+		Server:   "127.0.0.1",
+		Port:     &nodePort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	app, apiGroup := newProxyAPITestApp(t)
+	Register(apiGroup)
+
+	body, err := json.Marshal(proxyService.ProxyTestRequest{ProbeURL: "ftp://example.com/file"})
+	if err != nil {
+		t.Fatalf("json.Marshal request error = %v", err)
+	}
+	resp := mustProxyAPITestRequest(t, app, http.MethodPost, "/api/v1/proxy/nodes/"+node.ID+"/test", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func newProxyAPITestApp(t *testing.T) (*fiber.App, huma.API) {
 	t.Helper()
 	app := fiber.New()
