@@ -325,7 +325,9 @@ function parseProxyUri(rawValue: string): NodeInput {
       server: parsed.hostname,
       port: toPort(parsed.port),
       username: passwordOnlyProtocol ? '' : username,
-      password: passwordOnlyProtocol ? username : password || (protocol === 'tuic' ? queryPassword : ''),
+      password: passwordOnlyProtocol
+        ? username
+        : password || (protocol === 'tuic' ? queryPassword : ''),
       rawUri,
       tags: uriTags(protocol, parsed.searchParams),
       chainNodeIds: [],
@@ -842,7 +844,12 @@ async function loadNodes(input: NodeQueryInput = {}, append = false): Promise<vo
     const items = (data.items ?? []).map(toProxyNode);
     nodes.value = append ? [...nodes.value, ...items] : items;
     currentNodeTotal.value = data.total;
-    if (!input.keyword?.trim() && !input.groupId?.trim() && !input.defaultOnly && !input.physicalOnly) {
+    if (
+      !input.keyword?.trim() &&
+      !input.groupId?.trim() &&
+      !input.defaultOnly &&
+      !input.physicalOnly
+    ) {
       nodeTotal.value = data.total;
     }
     nodesPage.value = data.page;
@@ -933,15 +940,25 @@ async function addNode(input: NodeInput): Promise<ProxyNode> {
   });
 }
 
-async function addNodeFromUri(rawUri: string, nameOverride = '', groupId = ''): Promise<ProxyNode> {
+async function addNodeFromUri(
+  rawUri: string,
+  nameOverride = '',
+  groupId = '',
+  groupIds: string[] = [],
+  remarkOverride = ''
+): Promise<ProxyNode> {
   const input = parseProxyUri(rawUri);
   const name = nameOverride.trim();
+  const normalizedGroupIds = Array.from(
+    new Set([groupId, ...groupIds].map(value => value.trim()).filter(Boolean))
+  );
 
   return addNode({
     ...input,
     name: name || input.name,
-    groupId,
-    groupIds: groupId ? [groupId] : [],
+    groupId: normalizedGroupIds[0] ?? '',
+    groupIds: normalizedGroupIds,
+    remark: remarkOverride.trim() || input.remark,
   });
 }
 

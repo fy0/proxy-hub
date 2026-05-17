@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, Edit3, Gauge, Plus, Route, Trash2, X } from 'lucide-vue-next';
+import { Copy, Edit3, Gauge, Plus, Trash2, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import ActionTooltip from '@/components/ActionTooltip.vue';
 import { useI18n } from '@/i18n';
@@ -38,23 +38,11 @@ const {
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
-  chainNodeForm,
   groups,
-  chainNodeSearch,
-  chainNodeGroupId,
   groupFilterOptions,
-  chainNodeOptions,
-  toggleChainNodeSelection,
   optionProtocolLabel,
   optionNameLabel,
   optionEndpointLabel,
-  chainNodeTotal,
-  isLoadingChainNodes,
-  loadMoreChainOptions,
-  chainNodeFormPreview,
-  selectedChainNodes,
-  removeChainNodeSelection,
-  handleChainNodeSubmit,
   importMessage,
   manualGroupForm,
   manualGroupNodeSearch,
@@ -254,115 +242,6 @@ const {
       </p>
     </section>
 
-    <div class="panel-heading sub-heading">
-      <div>
-        <h2>{{ t('home.sections.chainTitle') }}</h2>
-        <p>{{ t('home.sections.chainLead') }}</p>
-      </div>
-      <Route class="panel-icon" aria-hidden="true" />
-    </div>
-
-    <form class="manual-node-form chain-node-form" @submit.prevent="handleChainNodeSubmit">
-      <div class="field-grid two">
-        <label>
-          <span>{{ t('home.form.chainName') }}</span>
-          <input
-            v-model.trim="chainNodeForm.name"
-            type="text"
-            :placeholder="t('home.placeholders.chainName')"
-            required
-          />
-        </label>
-        <label>
-          <span>{{ t('home.form.nodeGroup') }}</span>
-          <select v-model="chainNodeForm.groupId">
-            <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
-            <option v-for="group in groups" :key="group.id" :value="group.id">
-              {{ group.name }}
-            </option>
-          </select>
-        </label>
-      </div>
-
-      <div class="chain-node-builder">
-        <fieldset>
-          <span>{{ t('home.form.chainNodes') }}</span>
-          <div class="node-option-toolbar">
-            <input
-              v-model.trim="chainNodeSearch"
-              type="search"
-              autocomplete="off"
-              :placeholder="t('home.placeholders.nodeSearch')"
-            />
-            <select v-model="chainNodeGroupId">
-              <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                {{ group.label }}
-              </option>
-            </select>
-          </div>
-          <div class="chain-node-options">
-            <label
-              v-for="node in chainNodeOptions"
-              :key="node.id"
-              :class="{ selected: chainNodeForm.chainNodeIds.includes(node.id) }"
-            >
-              <input
-                type="checkbox"
-                :checked="chainNodeForm.chainNodeIds.includes(node.id)"
-                @change="toggleChainNodeSelection(node.id)"
-              />
-              <span class="node-option-card">
-                <em>{{ optionProtocolLabel(node) }}</em>
-                <strong>{{ optionNameLabel(node) }}</strong>
-                <small>{{ optionEndpointLabel(node) }}</small>
-              </span>
-            </label>
-            <Button
-              v-if="chainNodeOptions.length < chainNodeTotal"
-              type="button"
-              variant="outline"
-              :disabled="isLoadingChainNodes"
-              @click="loadMoreChainOptions"
-            >
-              {{
-                isLoadingChainNodes ? t('home.messages.loadingNodes') : t('home.actions.loadMore')
-              }}
-            </Button>
-          </div>
-        </fieldset>
-        <div class="chain-node-preview">
-          <strong>{{ t('home.form.chainPreview') }}</strong>
-          <span v-if="chainNodeForm.chainNodeIds.length">{{ chainNodeFormPreview() }}</span>
-          <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
-          <div v-if="chainNodeForm.chainNodeIds.length" class="chain-node-order">
-            <button
-              v-for="(node, index) in selectedChainNodes()"
-              :key="node.id"
-              type="button"
-              @click="removeChainNodeSelection(node.id)"
-            >
-              <em>{{ index + 1 }}</em>
-              <span>{{ node.name }}</span>
-              <X class="size-3" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <label>
-        <span>{{ t('home.form.remark') }}</span>
-        <input
-          v-model.trim="chainNodeForm.remark"
-          type="text"
-          :placeholder="t('common.optional')"
-        />
-      </label>
-
-      <Button type="submit">
-        <Route class="size-4" aria-hidden="true" />
-        {{ t('common.addChainNode') }}
-      </Button>
-    </form>
     <span class="inline-message">{{ importMessage }}</span>
 
     <div class="panel-heading sub-heading">

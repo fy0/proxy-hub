@@ -50,6 +50,7 @@ export const messages = {
       },
       aria: {
         activePorts: '端口运行状态',
+        addNodeMenu: '选择添加节点类型',
         closeDialog: '关闭',
         copyEndpoint: '复制端点',
         deleteNode: '删除节点',
@@ -67,6 +68,7 @@ export const messages = {
       dialogs: {
         addNodeLead: '名称可留空，会从 URI 自动识别。',
         addNodeTitle: '添加节点',
+        addChainNodeTitle: '添加串联节点',
         editNodeTitle: '编辑节点',
         addPortTitle: '添加端口',
         editPortTitle: '编辑端口',
@@ -122,6 +124,7 @@ export const messages = {
       groupMeta: {
         groupCount: '{count} 个分组',
         nodeCount: '{count} 个节点',
+        selectedGroups: '{first}、{second} 等 {count} 个',
         summary: '{nodeCount} 个节点 · {groupCount} 个分组 · {builtins} 个内置出口',
         ungrouped: '默认',
       },
@@ -211,6 +214,10 @@ export const messages = {
         chainEmpty: '请选择两个或更多节点',
         passwordConfigured: '密码：已配置',
         username: '用户名：{value}',
+      },
+      nodeCreate: {
+        chainNode: '串联节点',
+        uriNode: 'URI 节点',
       },
       nodeHealth: {
         blacklisted: '已排除',
@@ -362,7 +369,8 @@ export const messages = {
         exported: '设置文件已开始下载。',
         fileReady: '备份文件已读取，可以导入。',
         fileType: '请选择 .json 文件。',
-        imported: '已导入 {nodes} 个节点、{groups} 个分组、{subscriptions} 个订阅、{mappings} 个端口。',
+        imported:
+          '已导入 {nodes} 个节点、{groups} 个分组、{subscriptions} 个订阅、{mappings} 个端口。',
         importedWithWarning: '设置已导入，但运行时重载失败：{warning}',
         invalidBackup: '备份文件格式不正确。',
         invalidJsonShape: '备份文件必须是 JSON 对象。',
@@ -459,6 +467,7 @@ export const messages = {
       },
       aria: {
         activePorts: 'Port runtime status',
+        addNodeMenu: 'Choose node type',
         closeDialog: 'Close',
         copyEndpoint: 'Copy endpoint',
         deleteNode: 'Delete node',
@@ -476,6 +485,7 @@ export const messages = {
       dialogs: {
         addNodeLead: 'Leave the name empty to infer it from the URI.',
         addNodeTitle: 'Add node',
+        addChainNodeTitle: 'Add chain node',
         editNodeTitle: 'Edit node',
         addPortTitle: 'Add port',
         editPortTitle: 'Edit port',
@@ -534,6 +544,7 @@ export const messages = {
       groupMeta: {
         groupCount: '{count} group(s)',
         nodeCount: '{count} node(s)',
+        selectedGroups: '{first}, {second}, +{count}',
         summary: '{nodeCount} node(s) · {groupCount} group(s) · {builtins} built-in',
         ungrouped: 'Default',
       },
@@ -623,6 +634,10 @@ export const messages = {
         chainEmpty: 'Select two or more nodes',
         passwordConfigured: 'Password: configured',
         username: 'Username: {value}',
+      },
+      nodeCreate: {
+        chainNode: 'Chain node',
+        uriNode: 'URI node',
       },
       nodeHealth: {
         blacklisted: 'Excluded',

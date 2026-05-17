@@ -43,13 +43,6 @@ interface ManualNodeForm {
   remark: string;
 }
 
-interface ChainNodeForm {
-  name: string;
-  chainNodeIds: string[];
-  groupId: string;
-  remark: string;
-}
-
 interface SubscriptionForm {
   name: string;
   url: string;
@@ -141,23 +134,11 @@ export interface HomeViewContext {
   nodeBlacklistLabel: (node: ProxyNode) => string;
   isLoadingNodes: Readable<boolean>;
   loadNextNodePage: () => Promise<void>;
-  chainNodeForm: ChainNodeForm;
   groups: Readable<ProxyGroup[]>;
-  chainNodeSearch: Ref<string>;
-  chainNodeGroupId: Ref<string>;
   groupFilterOptions: (includeAll?: boolean) => GroupFilterOption[];
-  chainNodeOptions: Readable<ProxyNodeOption[]>;
-  toggleChainNodeSelection: (nodeId: string) => void;
   optionProtocolLabel: (option: ProxyNodeOption) => string;
   optionNameLabel: (option: ProxyNodeOption) => string;
   optionEndpointLabel: (option: ProxyNodeOption) => string;
-  chainNodeTotal: Readable<number>;
-  isLoadingChainNodes: Readable<boolean>;
-  loadMoreChainOptions: () => void;
-  chainNodeFormPreview: () => string;
-  selectedChainNodes: () => ProxyNode[];
-  removeChainNodeSelection: (nodeId: string) => void;
-  handleChainNodeSubmit: () => Promise<void>;
   importMessage: Ref<string>;
   manualGroupForm: ManualGroupForm;
   manualGroupNodeSearch: Ref<string>;

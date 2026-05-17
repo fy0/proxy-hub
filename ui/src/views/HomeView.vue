@@ -1,8 +1,26 @@
 <script setup lang="ts">
 import { useClipboard, useVirtualList } from '@vueuse/core';
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { Check, Link2, Plus, RefreshCw, Server, Settings, Trash2, Users, X } from 'lucide-vue-next';
+import {
+  Check,
+  ChevronDown,
+  Link2,
+  Plus,
+  RefreshCw,
+  Route,
+  Server,
+  Settings,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import HomeTabs from './home/HomeTabs.vue';
 import ImportPanel from './home/ImportPanel.vue';
 import MappingsPanel from './home/MappingsPanel.vue';
@@ -55,6 +73,8 @@ interface TestDialogState {
   result: ProxyTestResult | null;
   error: string;
 }
+
+type AddNodeDialogMode = 'uri' | 'chain';
 
 const { formatDateTime, t } = useI18n();
 const appStore = useAppStore();
@@ -177,6 +197,7 @@ const copiedMappingId = ref<string | null>(null);
 const copiedNodeId = ref<string | null>(null);
 const editingMappingId = ref<string | null>(null);
 const editingNodeId = ref<string | null>(null);
+const addNodeDialogMode = ref<AddNodeDialogMode | null>(null);
 const routeTargetMappingId = ref<string | null>(null);
 const openRouteActionKey = ref<string | null>(null);
 const confirmationDialog = ref<ConfirmationDialog | null>(null);
@@ -226,6 +247,16 @@ const manualNodeForm = reactive({
   remark: '',
 });
 
+const nodeCreateForm = reactive({
+  name: '',
+  rawUri: '',
+  groupIds: [] as string[],
+  remark: '',
+});
+const nodeCreateNameEdited = ref(false);
+const nodeCreateError = ref('');
+const nodeCreateGroupsExpanded = ref(false);
+
 const nodeEditForm = reactive({
   name: '',
   groupIds: [] as string[],
@@ -234,13 +265,16 @@ const nodeEditForm = reactive({
   remark: '',
 });
 const nodeEditError = ref('');
+const nodeEditGroupsExpanded = ref(false);
 
 const chainNodeForm = reactive({
   name: '',
   chainNodeIds: [] as string[],
-  groupId: '',
+  groupIds: [] as string[],
   remark: '',
 });
+const chainNodeError = ref('');
+const chainNodeGroupsExpanded = ref(false);
 
 const subscriptionForm = reactive({
   name: '',
@@ -898,6 +932,30 @@ function selectNodeEditDefaultGroup(): void {
   nodeEditForm.groupIds = [];
 }
 
+function toggleNodeCreateGroup(groupId: string): void {
+  if (nodeCreateForm.groupIds.includes(groupId)) {
+    nodeCreateForm.groupIds = nodeCreateForm.groupIds.filter(id => id !== groupId);
+    return;
+  }
+  nodeCreateForm.groupIds = [...nodeCreateForm.groupIds, groupId];
+}
+
+function selectNodeCreateDefaultGroup(): void {
+  nodeCreateForm.groupIds = [];
+}
+
+function toggleChainNodeGroup(groupId: string): void {
+  if (chainNodeForm.groupIds.includes(groupId)) {
+    chainNodeForm.groupIds = chainNodeForm.groupIds.filter(id => id !== groupId);
+    return;
+  }
+  chainNodeForm.groupIds = [...chainNodeForm.groupIds, groupId];
+}
+
+function selectChainNodeDefaultGroup(): void {
+  chainNodeForm.groupIds = [];
+}
+
 function toggleManualGroupNode(nodeId: string): void {
   if (manualGroupForm.nodeIds.includes(nodeId)) {
     manualGroupForm.nodeIds = manualGroupForm.nodeIds.filter(id => id !== nodeId);
@@ -909,6 +967,23 @@ function toggleManualGroupNode(nodeId: string): void {
 
 function selectedManualGroupNodes(): ProxyNode[] {
   return selectedChainNodesFromIds(manualGroupForm.nodeIds);
+}
+
+function groupSelectionSummary(groupIds: string[]): string {
+  const ids = Array.from(new Set(groupIds.filter(Boolean)));
+  if (ids.length === 0) return t('home.groupMeta.ungrouped');
+
+  const names = ids
+    .map(id => groupById.value.get(id)?.name)
+    .filter((name): name is string => Boolean(name));
+  if (names.length === 0) return t('home.groupMeta.ungrouped');
+  if (names.length <= 2) return names.join('、');
+
+  return t('home.groupMeta.selectedGroups', {
+    first: names[0],
+    second: names[1],
+    count: names.length - 2,
+  });
 }
 
 function nodeEndpointLabel(node: ProxyNode): string {
@@ -1010,6 +1085,74 @@ function nodeUriPopoverText(node: ProxyNode): string {
   return nodeExportUri(node) ? t('common.exportNodeUri') : t('home.messages.nodeUriUnavailable');
 }
 
+function resetNodeCreateForm(): void {
+  Object.assign(nodeCreateForm, {
+    name: '',
+    rawUri: '',
+    groupIds: [],
+    remark: '',
+  });
+  nodeCreateNameEdited.value = false;
+  nodeCreateError.value = '';
+  nodeCreateGroupsExpanded.value = false;
+}
+
+function resetChainNodeForm(): void {
+  Object.assign(chainNodeForm, {
+    name: '',
+    chainNodeIds: [],
+    groupIds: [],
+    remark: '',
+  });
+  chainNodeSearch.value = '';
+  chainNodeGroupId.value = '';
+  chainNodeError.value = '';
+  chainNodeGroupsExpanded.value = false;
+}
+
+function openAddNodeDialog(mode: AddNodeDialogMode): void {
+  closeRouteActionMenu();
+  addNodeDialogMode.value = mode;
+  if (mode === 'uri') {
+    resetNodeCreateForm();
+    return;
+  }
+  resetChainNodeForm();
+  reloadChainOptions();
+}
+
+function closeAddNodeDialog(): void {
+  addNodeDialogMode.value = null;
+  resetNodeCreateForm();
+  resetChainNodeForm();
+}
+
+function handleNodeCreateNameInput(): void {
+  nodeCreateNameEdited.value = true;
+}
+
+async function saveNodeCreateDialog(): Promise<void> {
+  if (!nodeCreateForm.rawUri.trim()) {
+    nodeCreateError.value = t('home.messages.routeNodeRequired');
+    return;
+  }
+
+  try {
+    const node = await addNodeFromUri(
+      nodeCreateForm.rawUri,
+      nodeCreateForm.name,
+      nodeCreateForm.groupIds[0] ?? '',
+      [...nodeCreateForm.groupIds],
+      nodeCreateForm.remark
+    );
+    importMessage.value = t('home.messages.nodeAdded', { name: node.name });
+    closeAddNodeDialog();
+  } catch (error) {
+    nodeCreateError.value =
+      error instanceof Error ? error.message : t('home.messages.requestFailed');
+  }
+}
+
 function resetNodeEditForm(): void {
   Object.assign(nodeEditForm, {
     name: '',
@@ -1019,6 +1162,7 @@ function resetNodeEditForm(): void {
     remark: '',
   });
   nodeEditError.value = '';
+  nodeEditGroupsExpanded.value = false;
 }
 
 function openEditNodeDialog(node: ProxyNode): void {
@@ -1160,6 +1304,16 @@ function selectRouteNode(nodeId: string): void {
   routeNodeForm.existingNodeId = nodeId;
   ensureNodeOptions([nodeId]).catch(() => undefined);
 }
+
+watch(
+  () => nodeCreateForm.rawUri,
+  uri => {
+    nodeCreateError.value = '';
+    if (nodeCreateNameEdited.value) return;
+
+    nodeCreateForm.name = inferNodeNameFromUri(uri);
+  }
+);
 
 watch(
   () => routeNodeForm.uri,
@@ -1593,7 +1747,7 @@ async function handleManualNodeSubmit(): Promise<void> {
 
 async function handleChainNodeSubmit(): Promise<void> {
   if (chainNodeForm.chainNodeIds.length < 2) {
-    importMessage.value = t('home.messages.chainNodesRequired');
+    chainNodeError.value = t('home.messages.chainNodesRequired');
     return;
   }
 
@@ -1608,18 +1762,16 @@ async function handleChainNodeSubmit(): Promise<void> {
       rawUri: '',
       tags: [],
       chainNodeIds: chainNodeForm.chainNodeIds,
-      groupId: chainNodeForm.groupId,
-      groupIds: chainNodeForm.groupId ? [chainNodeForm.groupId] : [],
+      groupId: chainNodeForm.groupIds[0] ?? '',
+      groupIds: [...chainNodeForm.groupIds],
       remark: chainNodeForm.remark,
     });
 
-    chainNodeForm.name = '';
-    chainNodeForm.chainNodeIds = [];
-    chainNodeForm.groupId = '';
-    chainNodeForm.remark = '';
     importMessage.value = t('home.messages.chainNodeAdded', { name: node.name });
-  } catch {
-    // The composable exposes the backend error in the notice bar.
+    closeAddNodeDialog();
+  } catch (error) {
+    chainNodeError.value =
+      error instanceof Error ? error.message : t('home.messages.requestFailed');
   }
 }
 
@@ -1978,23 +2130,11 @@ const homeContext = {
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
-  chainNodeForm,
   groups,
-  chainNodeSearch,
-  chainNodeGroupId,
   groupFilterOptions,
-  chainNodeOptions,
-  toggleChainNodeSelection,
   optionProtocolLabel,
   optionNameLabel,
   optionEndpointLabel,
-  chainNodeTotal,
-  isLoadingChainNodes,
-  loadMoreChainOptions,
-  chainNodeFormPreview,
-  selectedChainNodes,
-  removeChainNodeSelection,
-  handleChainNodeSubmit,
   importMessage,
   manualGroupForm,
   manualGroupNodeSearch,
@@ -2124,6 +2264,35 @@ const homeContext = {
           <Plus class="size-4" aria-hidden="true" />
           <span>{{ t('common.addPort') }}</span>
         </Button>
+
+        <div v-else-if="currentTab === 'nodes'" class="top-add-node-control">
+          <Button type="button" class="top-add-node-button" @click="openAddNodeDialog('uri')">
+            <Plus class="size-4" aria-hidden="true" />
+            <span>{{ t('common.addNode') }}</span>
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button
+                type="button"
+                class="top-add-node-menu-button"
+                :aria-label="t('home.aria.addNodeMenu')"
+                :title="t('home.aria.addNodeMenu')"
+              >
+                <ChevronDown class="size-4" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" :side-offset="8" class="add-node-menu">
+              <DropdownMenuItem class="add-node-menu-item" @select="openAddNodeDialog('uri')">
+                <Link2 class="size-4" aria-hidden="true" />
+                <span>{{ t('home.nodeCreate.uriNode') }}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem class="add-node-menu-item" @select="openAddNodeDialog('chain')">
+                <Route class="size-4" aria-hidden="true" />
+                <span>{{ t('home.nodeCreate.chainNode') }}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       <MappingsPanel v-if="currentTab === 'mappings'" :context="homeContext" />
@@ -2131,6 +2300,296 @@ const homeContext = {
       <SubscriptionsPanel v-else-if="currentTab === 'subscriptions'" :context="homeContext" />
       <ImportPanel v-else :context="homeContext" />
     </section>
+
+    <div
+      v-if="addNodeDialogMode === 'uri'"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeAddNodeDialog"
+    >
+      <form
+        class="modal-card node-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="node-create-dialog-title"
+        @submit.prevent="saveNodeCreateDialog"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="node-create-dialog-title">{{ t('home.dialogs.addNodeTitle') }}</h2>
+            <p>{{ t('home.dialogs.addNodeLead') }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeAddNodeDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.nodeName') }}</span>
+          <input
+            v-model.trim="nodeCreateForm.name"
+            type="text"
+            autocomplete="off"
+            :placeholder="t('home.placeholders.nodeName')"
+            @input="handleNodeCreateNameInput"
+          />
+        </label>
+
+        <label>
+          <span>{{ t('home.form.nodeUri') }} <em class="required-mark">*</em></span>
+          <input
+            v-model.trim="nodeCreateForm.rawUri"
+            type="text"
+            required
+            autocomplete="off"
+            :placeholder="t('home.placeholders.nodeUri')"
+          />
+        </label>
+
+        <div class="node-edit-group-field" role="group" :aria-label="t('home.form.nodeGroup')">
+          <span class="node-edit-group-label">{{ t('home.form.nodeGroup') }}</span>
+          <button
+            type="button"
+            class="node-group-collapse-trigger"
+            :aria-expanded="nodeCreateGroupsExpanded"
+            @click="nodeCreateGroupsExpanded = !nodeCreateGroupsExpanded"
+          >
+            <strong>{{ groupSelectionSummary(nodeCreateForm.groupIds) }}</strong>
+            <ChevronDown class="size-4" aria-hidden="true" />
+          </button>
+          <div
+            class="node-group-collapse-panel"
+            :data-expanded="nodeCreateGroupsExpanded"
+            :aria-hidden="!nodeCreateGroupsExpanded"
+          >
+            <div class="node-edit-group-options">
+              <label
+                class="node-edit-default-group"
+                :class="{ selected: nodeCreateForm.groupIds.length === 0 }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="nodeCreateForm.groupIds.length === 0"
+                  @change="selectNodeCreateDefaultGroup"
+                />
+                {{ t('home.groupMeta.ungrouped') }}
+              </label>
+              <label
+                v-for="group in groups"
+                :key="group.id"
+                :class="{ selected: nodeCreateForm.groupIds.includes(group.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="nodeCreateForm.groupIds.includes(group.id)"
+                  @change="toggleNodeCreateGroup(group.id)"
+                />
+                {{ group.name }}
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.remark') }}</span>
+          <input
+            v-model.trim="nodeCreateForm.remark"
+            type="text"
+            :placeholder="t('common.optional')"
+          />
+        </label>
+
+        <p v-if="nodeCreateError" class="route-node-error">{{ nodeCreateError }}</p>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeAddNodeDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="submit">
+            <Check class="size-4" aria-hidden="true" />
+            {{ t('common.save') }}
+          </Button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      v-if="addNodeDialogMode === 'chain'"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeAddNodeDialog"
+    >
+      <form
+        class="modal-card chain-node-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chain-node-create-dialog-title"
+        @submit.prevent="handleChainNodeSubmit"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="chain-node-create-dialog-title">{{ t('home.dialogs.addChainNodeTitle') }}</h2>
+            <p>{{ t('home.sections.chainLead') }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeAddNodeDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.chainName') }}</span>
+          <input
+            v-model.trim="chainNodeForm.name"
+            type="text"
+            autocomplete="off"
+            :placeholder="t('home.placeholders.chainName')"
+            required
+          />
+        </label>
+
+        <div class="chain-node-builder">
+          <fieldset>
+            <span>{{ t('home.form.chainNodes') }}</span>
+            <div class="node-option-toolbar">
+              <input
+                v-model.trim="chainNodeSearch"
+                type="search"
+                autocomplete="off"
+                :placeholder="t('home.placeholders.nodeSearch')"
+              />
+              <select v-model="chainNodeGroupId">
+                <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
+                  {{ group.label }}
+                </option>
+              </select>
+            </div>
+            <div class="chain-node-options">
+              <label
+                v-for="node in chainNodeOptions"
+                :key="node.id"
+                :class="{ selected: chainNodeForm.chainNodeIds.includes(node.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="chainNodeForm.chainNodeIds.includes(node.id)"
+                  @change="toggleChainNodeSelection(node.id)"
+                />
+                <span class="node-option-card">
+                  <em>{{ optionProtocolLabel(node) }}</em>
+                  <strong>{{ optionNameLabel(node) }}</strong>
+                  <small>{{ optionEndpointLabel(node) }}</small>
+                </span>
+              </label>
+              <Button
+                v-if="chainNodeOptions.length < chainNodeTotal"
+                type="button"
+                variant="outline"
+                :disabled="isLoadingChainNodes"
+                @click="loadMoreChainOptions"
+              >
+                {{
+                  isLoadingChainNodes ? t('home.messages.loadingNodes') : t('home.actions.loadMore')
+                }}
+              </Button>
+            </div>
+          </fieldset>
+          <div class="chain-node-preview">
+            <strong>{{ t('home.form.chainPreview') }}</strong>
+            <span v-if="chainNodeForm.chainNodeIds.length">{{ chainNodeFormPreview() }}</span>
+            <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
+            <div v-if="chainNodeForm.chainNodeIds.length" class="chain-node-order">
+              <button
+                v-for="(node, index) in selectedChainNodes()"
+                :key="node.id"
+                type="button"
+                @click="removeChainNodeSelection(node.id)"
+              >
+                <em>{{ index + 1 }}</em>
+                <span>{{ node.name }}</span>
+                <X class="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="node-edit-group-field" role="group" :aria-label="t('home.form.nodeGroup')">
+          <span class="node-edit-group-label">{{ t('home.form.nodeGroup') }}</span>
+          <button
+            type="button"
+            class="node-group-collapse-trigger"
+            :aria-expanded="chainNodeGroupsExpanded"
+            @click="chainNodeGroupsExpanded = !chainNodeGroupsExpanded"
+          >
+            <strong>{{ groupSelectionSummary(chainNodeForm.groupIds) }}</strong>
+            <ChevronDown class="size-4" aria-hidden="true" />
+          </button>
+          <div
+            class="node-group-collapse-panel"
+            :data-expanded="chainNodeGroupsExpanded"
+            :aria-hidden="!chainNodeGroupsExpanded"
+          >
+            <div class="node-edit-group-options">
+              <label
+                class="node-edit-default-group"
+                :class="{ selected: chainNodeForm.groupIds.length === 0 }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="chainNodeForm.groupIds.length === 0"
+                  @change="selectChainNodeDefaultGroup"
+                />
+                {{ t('home.groupMeta.ungrouped') }}
+              </label>
+              <label
+                v-for="group in groups"
+                :key="group.id"
+                :class="{ selected: chainNodeForm.groupIds.includes(group.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="chainNodeForm.groupIds.includes(group.id)"
+                  @change="toggleChainNodeGroup(group.id)"
+                />
+                {{ group.name }}
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.remark') }}</span>
+          <input
+            v-model.trim="chainNodeForm.remark"
+            type="text"
+            :placeholder="t('common.optional')"
+          />
+        </label>
+
+        <p v-if="chainNodeError" class="route-node-error">{{ chainNodeError }}</p>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeAddNodeDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="submit">
+            <Check class="size-4" aria-hidden="true" />
+            {{ t('common.save') }}
+          </Button>
+        </div>
+      </form>
+    </div>
 
     <div
       v-if="isMappingDialogOpen"
@@ -2501,34 +2960,49 @@ const homeContext = {
           </div>
         </div>
 
-        <fieldset class="node-edit-group-field">
-          <span>{{ t('home.form.nodeGroup') }}</span>
-          <div class="node-edit-group-options">
-            <label
-              class="node-edit-default-group"
-              :class="{ selected: nodeEditForm.groupIds.length === 0 }"
-            >
-              <input
-                type="checkbox"
-                :checked="nodeEditForm.groupIds.length === 0"
-                @change="selectNodeEditDefaultGroup"
-              />
-              {{ t('home.groupMeta.ungrouped') }}
-            </label>
-            <label
-              v-for="group in groups"
-              :key="group.id"
-              :class="{ selected: nodeEditForm.groupIds.includes(group.id) }"
-            >
-              <input
-                type="checkbox"
-                :checked="nodeEditForm.groupIds.includes(group.id)"
-                @change="toggleNodeEditGroup(group.id)"
-              />
-              {{ group.name }}
-            </label>
+        <div class="node-edit-group-field" role="group" :aria-label="t('home.form.nodeGroup')">
+          <span class="node-edit-group-label">{{ t('home.form.nodeGroup') }}</span>
+          <button
+            type="button"
+            class="node-group-collapse-trigger"
+            :aria-expanded="nodeEditGroupsExpanded"
+            @click="nodeEditGroupsExpanded = !nodeEditGroupsExpanded"
+          >
+            <strong>{{ groupSelectionSummary(nodeEditForm.groupIds) }}</strong>
+            <ChevronDown class="size-4" aria-hidden="true" />
+          </button>
+          <div
+            class="node-group-collapse-panel"
+            :data-expanded="nodeEditGroupsExpanded"
+            :aria-hidden="!nodeEditGroupsExpanded"
+          >
+            <div class="node-edit-group-options">
+              <label
+                class="node-edit-default-group"
+                :class="{ selected: nodeEditForm.groupIds.length === 0 }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="nodeEditForm.groupIds.length === 0"
+                  @change="selectNodeEditDefaultGroup"
+                />
+                {{ t('home.groupMeta.ungrouped') }}
+              </label>
+              <label
+                v-for="group in groups"
+                :key="group.id"
+                :class="{ selected: nodeEditForm.groupIds.includes(group.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="nodeEditForm.groupIds.includes(group.id)"
+                  @change="toggleNodeEditGroup(group.id)"
+                />
+                {{ group.name }}
+              </label>
+            </div>
           </div>
-        </fieldset>
+        </div>
 
         <label>
           <span>{{ t('home.form.remark') }}</span>
