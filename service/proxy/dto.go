@@ -60,6 +60,15 @@ type ProxyNodeDTO struct {
 	Health         *ProxyNodeHealthDTO `json:"health,omitempty"`
 }
 
+type ProxyNodeOptionDTO struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Protocol string   `json:"protocol"`
+	Server   string   `json:"server"`
+	Port     *uint16  `json:"port"`
+	GroupIDs []string `json:"groupIds"`
+}
+
 type ProxyNodeHealthDTO struct {
 	NodeID           string     `json:"nodeId"`
 	Available        bool       `json:"available"`
@@ -101,6 +110,7 @@ type ProxyGroupDTO struct {
 	IncludesAll    bool      `json:"includesAll"`
 	Filter         string    `json:"filter"`
 	Remark         string    `json:"remark"`
+	NodeCount      int       `json:"nodeCount"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
@@ -131,6 +141,22 @@ type StateSnapshotDTO struct {
 	Mappings      []*PortMappingDTO       `json:"mappings"`
 	Runtime       RuntimeStatus           `json:"runtime"`
 	LastSavedAt   time.Time               `json:"lastSavedAt"`
+	NodeTotal     int64                   `json:"nodeTotal"`
+	DefaultTotal  int64                   `json:"defaultTotal"`
+}
+
+type StateSnapshotOptions struct {
+	IncludeNodes        bool
+	IncludeGroupMembers bool
+}
+
+type NodeListRequest struct {
+	Keyword      string
+	NameOnly     bool
+	GroupID      string
+	DefaultOnly  bool
+	PhysicalOnly bool
+	IDs          []string
 }
 
 type NodeUpsertRequest struct {
@@ -311,6 +337,20 @@ func ToNodeDTOWithHealthAndGroups(node *tables.ProxyNodeTable, health *tables.Pr
 	return dto
 }
 
+func ToNodeOptionDTO(node *tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) *ProxyNodeOptionDTO {
+	if node == nil {
+		return nil
+	}
+	return &ProxyNodeOptionDTO{
+		ID:       node.ID,
+		Name:     node.Name,
+		Protocol: node.Protocol,
+		Server:   node.Server,
+		Port:     node.Port,
+		GroupIDs: groupIDsForNodeFromGroups(node.ID, node.GroupID, groups),
+	}
+}
+
 func ToNodeHealthDTO(health *tables.ProxyNodeHealthTable) *ProxyNodeHealthDTO {
 	if health == nil {
 		return nil
@@ -388,6 +428,7 @@ func ToGroupDTO(group *tables.ProxyGroupTable) *ProxyGroupDTO {
 		IncludesAll:    group.IncludesAll,
 		Filter:         group.Filter,
 		Remark:         group.Remark,
+		NodeCount:      len(decodeStringSlice(group.NodeIDsJSON)),
 		CreatedAt:      group.CreatedAt,
 		UpdatedAt:      group.UpdatedAt,
 	}
@@ -455,6 +496,14 @@ func ToNodeDTOsWithHealthAndGroups(nodes []*tables.ProxyNodeTable, healthByNodeI
 			health = healthByNodeID[node.ID]
 		}
 		items = append(items, ToNodeDTOWithHealthAndGroups(node, health, groups))
+	}
+	return items
+}
+
+func ToNodeOptionDTOs(nodes []*tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) []*ProxyNodeOptionDTO {
+	items := make([]*ProxyNodeOptionDTO, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, ToNodeOptionDTO(node, groups))
 	}
 	return items
 }

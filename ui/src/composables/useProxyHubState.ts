@@ -4,6 +4,8 @@ import {
   deleteProxyMappingsById,
   deleteProxyNodesById,
   deleteProxySubscriptionsById,
+  getProxyNodeOptions,
+  getProxyNodes,
   getProxyRuntimeStatus,
   getProxyState,
   postProxyGroups,
@@ -28,6 +30,7 @@ import type {
   PortMappingDto,
   ProxyGroupDto,
   ProxyNodeDto,
+  ProxyNodeOptionDto,
   ProxySubscriptionDto,
   RuntimeStatus,
   StateSnapshotDto,
@@ -47,6 +50,7 @@ import type {
   ProxyHubStateSnapshot,
   ProxyNode,
   ProxyNodeHealth,
+  ProxyNodeOption,
   ProxyProtocol,
   ProxySubscription,
   RouteStrategy,
@@ -104,7 +108,35 @@ export interface ImportNodesResult {
   preview: ImportPreviewResult;
 }
 
+export interface NodeQueryInput {
+  keyword?: string;
+  groupId?: string;
+  defaultOnly?: boolean;
+  physicalOnly?: boolean;
+  page?: number;
+  size?: number;
+  withHealth?: boolean;
+}
+
+export interface NodeOptionQueryInput {
+  keyword?: string;
+  nameOnly?: boolean;
+  groupId?: string;
+  defaultOnly?: boolean;
+  physicalOnly?: boolean;
+  page?: number;
+  size?: number;
+  ids?: string[];
+}
+
 const nodes = ref<ProxyNode[]>([]);
+const nodeTotal = ref(0);
+const currentNodeTotal = ref(0);
+const defaultNodeTotal = ref(0);
+const nodesPage = ref(1);
+const nodesPageSize = ref(50);
+const isLoadingNodes = ref(false);
+const nodeOptionsCache = ref<Record<string, ProxyNodeOption>>({});
 const groups = ref<ProxyGroup[]>([]);
 const subscriptions = ref<ProxySubscription[]>([]);
 const mappings = ref<PortMapping[]>([]);
@@ -345,6 +377,17 @@ function toProxyNode(dto: ProxyNodeDto): ProxyNode {
   };
 }
 
+function toProxyNodeOption(dto: ProxyNodeOptionDto): ProxyNodeOption {
+  return {
+    id: dto.id,
+    name: dto.name,
+    protocol: normalizeProtocol(dto.protocol),
+    server: dto.server,
+    port: toPort(dto.port),
+    groupIds: dto.groupIds ?? [],
+  };
+}
+
 function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null {
   if (!dto) return null;
 
@@ -393,6 +436,7 @@ function toProxyGroup(dto: ProxyGroupDto): ProxyGroup {
     includesAll: dto.includesAll,
     filter: dto.filter,
     remark: dto.remark,
+    nodeCount: dto.nodeCount ?? dto.nodeIds?.length ?? 0,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
   };
@@ -441,13 +485,37 @@ function toImportPreviewResult(dto: NodeImportResult): ImportPreviewResult {
   };
 }
 
+function nodeToOption(node: ProxyNode): ProxyNodeOption {
+  return {
+    id: node.id,
+    name: node.name,
+    protocol: node.protocol,
+    server: node.server,
+    port: node.port,
+    groupIds: node.groupIds,
+  };
+}
+
+function cacheNodeOptions(options: ProxyNodeOption[]): void {
+  if (options.length === 0) return;
+  const next = { ...nodeOptionsCache.value };
+  for (const option of options) {
+    next[option.id] = option;
+  }
+  nodeOptionsCache.value = next;
+}
+
 function applySnapshot(snapshot: StateSnapshotDto): void {
   nodes.value = (snapshot.nodes ?? []).map(toProxyNode);
+  nodeTotal.value = snapshot.nodeTotal ?? nodes.value.length;
+  currentNodeTotal.value = nodes.value.length;
+  defaultNodeTotal.value = snapshot.defaultTotal ?? 0;
   groups.value = (snapshot.groups ?? []).map(toProxyGroup);
   subscriptions.value = (snapshot.subscriptions ?? []).map(toProxySubscription);
   mappings.value = (snapshot.mappings ?? []).map(toPortMapping);
   runtime.value = snapshot.runtime;
   lastSavedAt.value = snapshot.lastSavedAt;
+  cacheNodeOptions(nodes.value.map(nodeToOption));
 }
 
 function markSaved(timestamp = new Date().toISOString()): void {
@@ -500,10 +568,13 @@ function upsertNode(node: ProxyNode): void {
   const index = nodes.value.findIndex(item => item.id === node.id);
   if (index === -1) {
     nodes.value = [node, ...nodes.value];
+    nodeTotal.value += 1;
+    cacheNodeOptions([nodeToOption(node)]);
     return;
   }
 
   nodes.value = nodes.value.map(item => (item.id === node.id ? node : item));
+  cacheNodeOptions([nodeToOption(node)]);
 }
 
 function upsertGroup(group: ProxyGroup): void {
@@ -627,9 +698,14 @@ function mergeNodePatch(node: ProxyNode, patch: Partial<NodeInput>): NodeInput {
 
 function removeNodeFromLocalState(id: string): void {
   nodes.value = nodes.value.filter(node => node.id !== id);
+  nodeTotal.value = Math.max(0, nodeTotal.value - 1);
+  const nextOptions = { ...nodeOptionsCache.value };
+  delete nextOptions[id];
+  nodeOptionsCache.value = nextOptions;
   groups.value = groups.value.map(group => ({
     ...group,
     nodeIds: group.nodeIds.filter(nodeId => nodeId !== id),
+    nodeCount: Math.max(0, group.nodeCount - (group.nodeIds.includes(id) ? 1 : 0)),
     updatedAt: new Date().toISOString(),
   }));
   mappings.value = mappings.value.map(mapping => {
@@ -682,7 +758,10 @@ export async function refreshProxyHubState(): Promise<void> {
   clearBackendError();
 
   try {
-    const { data } = await getProxyState({ throwOnError: true });
+    const { data } = await getProxyState({
+      query: { includeNodes: false, includeGroupMembers: false },
+      throwOnError: true,
+    });
     applySnapshot(data);
   } catch (error) {
     setBackendError(error);
@@ -699,6 +778,82 @@ async function refreshRuntimeStatus(): Promise<void> {
   } catch {
     // Runtime status is secondary; the main mutation result is already applied.
   }
+}
+
+async function loadNodes(input: NodeQueryInput = {}, append = false): Promise<void> {
+  isLoadingNodes.value = true;
+  clearBackendError();
+  const page = input.page ?? 1;
+  const size = input.size ?? nodesPageSize.value;
+
+  try {
+    const { data } = await getProxyNodes({
+      query: {
+        page,
+        size,
+        keyword: input.keyword?.trim() || undefined,
+        groupId: input.groupId?.trim() || undefined,
+        defaultOnly: input.defaultOnly || undefined,
+        physicalOnly: input.physicalOnly || undefined,
+        withHealth: input.withHealth ?? true,
+      },
+      throwOnError: true,
+    });
+    const items = (data.items ?? []).map(toProxyNode);
+    nodes.value = append ? [...nodes.value, ...items] : items;
+    currentNodeTotal.value = data.total;
+    if (!input.keyword?.trim() && !input.groupId?.trim() && !input.defaultOnly && !input.physicalOnly) {
+      nodeTotal.value = data.total;
+    }
+    nodesPage.value = data.page;
+    nodesPageSize.value = data.size;
+    cacheNodeOptions(items.map(nodeToOption));
+  } catch (error) {
+    setBackendError(error);
+    throw error;
+  } finally {
+    isLoadingNodes.value = false;
+  }
+}
+
+async function loadMoreNodes(input: NodeQueryInput = {}): Promise<void> {
+  if (nodes.value.length >= currentNodeTotal.value || isLoadingNodes.value) return;
+  await loadNodes({ ...input, page: nodesPage.value + 1, size: nodesPageSize.value }, true);
+}
+
+async function fetchNodeOptions(input: NodeOptionQueryInput = {}): Promise<{
+  items: ProxyNodeOption[];
+  total: number;
+  page: number;
+  size: number;
+}> {
+  const { data } = await getProxyNodeOptions({
+    query: {
+      page: input.page ?? 1,
+      size: input.size ?? 50,
+      keyword: input.keyword?.trim() || undefined,
+      nameOnly: input.nameOnly || undefined,
+      groupId: input.groupId?.trim() || undefined,
+      defaultOnly: input.defaultOnly || undefined,
+      physicalOnly: input.physicalOnly || undefined,
+      ids: input.ids && input.ids.length > 0 ? input.ids : undefined,
+    },
+    throwOnError: true,
+  });
+  const items = (data.items ?? []).map(toProxyNodeOption);
+  cacheNodeOptions(items);
+  return {
+    items,
+    total: data.total,
+    page: data.page,
+    size: data.size,
+  };
+}
+
+async function ensureNodeOptions(ids: string[]): Promise<void> {
+  const missing = ids.filter(id => id && !nodeOptionsCache.value[id]);
+  if (missing.length === 0) return;
+  await fetchNodeOptions({ ids: Array.from(new Set(missing)), size: Math.min(200, missing.length) });
 }
 
 function ensureInitialLoad(): void {
@@ -751,6 +906,7 @@ async function importNodes(raw: string, groupId = ''): Promise<ImportNodesResult
   return runMutation(async () => {
     const { data } = await postProxyNodesImport({
       body: { raw, groupId: groupId.trim() || undefined },
+      query: { includeItems: false },
       throwOnError: true,
     });
     const imported = (data.items ?? []).map(toProxyNode);
@@ -768,6 +924,7 @@ async function importNodes(raw: string, groupId = ''): Promise<ImportNodesResult
     if (data.failures?.length) {
       errorMessage.value = data.failures.map(failure => failure.message).join('\n');
     }
+    await refreshProxyHubState();
     return {
       nodes: imported,
       groups: importedGroups,
@@ -885,6 +1042,7 @@ async function syncSubscription(id: string): Promise<void> {
     const { data } = await postProxySubscriptionsByIdSync({
       path: { id },
       body: {},
+      query: { includeItems: false },
       throwOnError: true,
     });
     if (data.failures?.length) {
@@ -963,6 +1121,7 @@ export function useProxyHubState() {
 
   const enabledMappings = computed(() => mappings.value.filter(mapping => mapping.enabled));
   const nodeById = computed(() => new Map(nodes.value.map(node => [node.id, node])));
+  const nodeOptionById = computed(() => new Map(Object.entries(nodeOptionsCache.value)));
   const groupById = computed(() => new Map(groups.value.map(group => [group.id, group])));
   const subscriptionById = computed(
     () => new Map(subscriptions.value.map(subscription => [subscription.id, subscription]))
@@ -970,6 +1129,13 @@ export function useProxyHubState() {
 
   return {
     nodes,
+    nodeTotal,
+    currentNodeTotal,
+    defaultNodeTotal,
+    nodesPage,
+    nodesPageSize,
+    isLoadingNodes,
+    nodeOptionsCache,
     groups,
     subscriptions,
     mappings,
@@ -981,9 +1147,14 @@ export function useProxyHubState() {
     loginRequired,
     enabledMappings,
     nodeById,
+    nodeOptionById,
     groupById,
     subscriptionById,
     refreshState: refreshProxyHubState,
+    loadNodes,
+    loadMoreNodes,
+    fetchNodeOptions,
+    ensureNodeOptions,
     addNode,
     addNodeFromUri,
     previewImportNodes,

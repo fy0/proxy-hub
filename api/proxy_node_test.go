@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,201 @@ import (
 	proxyService "proxy-hub/service/proxy"
 	"proxy-hub/utils"
 )
+
+func newProxyNodeAPITestApp(t *testing.T) *fiber.App {
+	t.Helper()
+	app := fiber.New()
+	_, v1 := h.NewAPI(app, &utils.AppConfig{
+		APITitle:   "Proxy Hub API",
+		APIVersion: "test",
+		DocsPath:   "/docs",
+	})
+	h.HumaTypesRegister()
+	h.HumaValidatePatch()
+	proxyAPI.Register(v1)
+	t.Cleanup(func() {
+		_ = app.Shutdown()
+	})
+	return app
+}
+
+func uint16Ptr(value uint16) *uint16 {
+	return &value
+}
+
+func TestProxyNodeListSupportsPagingSearchAndFilters(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+
+	ctx := context.Background()
+	group, err := proxyService.GroupCreate(ctx, nil, proxyService.GroupUpsertRequest{
+		Name:     "HK",
+		Strategy: proxyService.GroupStrategySelector,
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	hk, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "Hong Kong 01",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "hk.example.com",
+		Port:     uint16Ptr(1080),
+		GroupIDs: []string{group.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(hk) error = %v", err)
+	}
+	if _, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "Singapore 01",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "sg.example.com",
+		Port:     uint16Ptr(1081),
+	}); err != nil {
+		t.Fatalf("NodeCreate(sg) error = %v", err)
+	}
+	if _, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:         "Chain",
+		Protocol:     proxyService.ProtocolChain,
+		ChainNodeIDs: []string{hk.ID, hk.ID + "-missing"},
+	}); err == nil {
+		t.Fatalf("NodeCreate(chain) error = nil, want invalid chain")
+	}
+
+	app := newProxyNodeAPITestApp(t)
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/nodes?page=1&size=1&keyword=hong&groupId="+group.ID, nil))
+	if err != nil {
+		t.Fatalf("app.Test list failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resp.Body.Close()
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var body struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+		Page  int   `json:"page"`
+		Size  int   `json:"size"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Total != 1 || body.Page != 1 || body.Size != 1 || len(body.Items) != 1 || body.Items[0].ID != hk.ID {
+		t.Fatalf("list response = %+v, want one HK item", body)
+	}
+}
+
+func TestProxyStateCanOmitNodesAndGroupMembers(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+
+	ctx := context.Background()
+	group, err := proxyService.GroupCreate(ctx, nil, proxyService.GroupUpsertRequest{
+		Name:     "Manual",
+		Strategy: proxyService.GroupStrategySelector,
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	node, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "Node",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+		GroupIDs: []string{group.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	if _, err := proxyService.GroupUpdate(ctx, nil, group.ID, proxyService.GroupUpsertRequest{
+		Name:     group.Name,
+		Strategy: proxyService.GroupStrategySelector,
+		NodeIDs:  []string{node.ID},
+	}); err != nil {
+		t.Fatalf("GroupUpdate() error = %v", err)
+	}
+
+	app := newProxyNodeAPITestApp(t)
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/state?includeNodes=false&includeGroupMembers=false", nil))
+	if err != nil {
+		t.Fatalf("app.Test state failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resp.Body.Close()
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var body struct {
+		Nodes        []any `json:"nodes"`
+		NodeTotal    int64 `json:"nodeTotal"`
+		DefaultTotal int64 `json:"defaultTotal"`
+		Groups       []struct {
+			NodeIDs   []string `json:"nodeIds"`
+			NodeCount int      `json:"nodeCount"`
+		} `json:"groups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Nodes) != 0 || body.NodeTotal != 1 || body.DefaultTotal != 0 {
+		t.Fatalf("state counts nodes=%d total=%d default=%d, want no nodes total=1 default=0", len(body.Nodes), body.NodeTotal, body.DefaultTotal)
+	}
+	if len(body.Groups) != 1 || len(body.Groups[0].NodeIDs) != 0 || body.Groups[0].NodeCount != 1 {
+		t.Fatalf("groups = %+v, want member ids omitted with count", body.Groups)
+	}
+}
+
+func TestProxyNodeOptionsReturnsLightweightItems(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+
+	ctx := context.Background()
+	node, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "Edge",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+		RawURI:   "socks5://127.0.0.1:1080#Edge",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	app := newProxyNodeAPITestApp(t)
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/node-options?ids="+node.ID, nil))
+	if err != nil {
+		t.Fatalf("app.Test options failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resp.Body.Close()
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	items, _ := raw["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(items))
+	}
+	item, _ := items[0].(map[string]any)
+	if item["id"] != node.ID || item["rawUri"] != nil || item["password"] != nil {
+		t.Fatalf("option item = %+v, want lightweight item for node", item)
+	}
+}
 
 func TestProxyNodeCreateAcceptsRawVLESSWithoutManualFields(t *testing.T) {
 	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {

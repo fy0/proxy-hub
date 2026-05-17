@@ -128,6 +128,45 @@ func NodeList(ctx context.Context, tx model.DBTx) ([]*tables.ProxyNodeTable, err
 	return nodes, nil
 }
 
+func NodeListPaged(ctx context.Context, tx model.DBTx, req NodeListRequest, page, size int) ([]*tables.ProxyNodeTable, int64, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	page, size = normalizePage(page, size)
+
+	query, err := applyNodeListRequest(ctx, tx.Model(&tables.ProxyNodeTable{}), tx, req)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var total int64
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var nodes []*tables.ProxyNodeTable
+	if err := query.
+		Order("created_at DESC").
+		Limit(size).
+		Offset((page - 1) * size).
+		Find(&nodes).Error; err != nil {
+		return nil, 0, err
+	}
+	return nodes, total, nil
+}
+
+func NodeCount(ctx context.Context, tx model.DBTx, req NodeListRequest) (int64, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+	query, err := applyNodeListRequest(ctx, tx.Model(&tables.ProxyNodeTable{}), tx, req)
+	if err != nil {
+		return 0, err
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func NodeDelete(ctx context.Context, tx model.DBTx, id string) error {
 	if tx != nil {
 		return nodeDeleteInTx(ctx, tx, id)
@@ -691,13 +730,21 @@ func MappingDelete(ctx context.Context, tx model.DBTx, id string) error {
 	return tx.Delete(&mapping).Error
 }
 
-func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error) {
-	nodes, err := NodeList(ctx, tx)
+func StateSnapshot(ctx context.Context, tx model.DBTx, options ...StateSnapshotOptions) (*StateSnapshotDTO, error) {
+	opts := StateSnapshotOptions{IncludeNodes: true, IncludeGroupMembers: true}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
+	groups, err := GroupList(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	healthByNodeID := NodeHealthMap(ctx, tx, nodeIDsFromNodes(nodes))
-	groups, err := GroupList(ctx, tx)
+	nodeTotal, err := NodeCount(ctx, tx, NodeListRequest{})
+	if err != nil {
+		return nil, err
+	}
+	defaultTotal, err := NodeCount(ctx, tx, NodeListRequest{DefaultOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -709,14 +756,38 @@ func StateSnapshot(ctx context.Context, tx model.DBTx) (*StateSnapshotDTO, error
 	if err != nil {
 		return nil, err
 	}
-	return &StateSnapshotDTO{
-		Nodes:         ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups),
-		Groups:        ToGroupDTOs(groups),
+	groupDTOs := ToGroupDTOs(groups)
+	if !opts.IncludeGroupMembers {
+		for _, group := range groupDTOs {
+			if group != nil {
+				group.NodeIDs = nil
+				group.GroupIDs = nil
+				group.BuiltinTags = nil
+			}
+		}
+	}
+
+	var nodeDTOs []*ProxyNodeDTO
+	if opts.IncludeNodes {
+		nodes, err := NodeList(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		healthByNodeID := NodeHealthMap(ctx, tx, nodeIDsFromNodes(nodes))
+		nodeDTOs = ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
+	}
+
+	snapshot := &StateSnapshotDTO{
+		Nodes:         nodeDTOs,
+		Groups:        groupDTOs,
 		Subscriptions: ToSubscriptionDTOs(subscriptions),
 		Mappings:      ToMappingDTOs(mappings),
 		Runtime:       RuntimeStatusGet(),
 		LastSavedAt:   time.Now(),
-	}, nil
+		NodeTotal:     nodeTotal,
+		DefaultTotal:  defaultTotal,
+	}
+	return snapshot, nil
 }
 
 func nodeIDsFromNodes(nodes []*tables.ProxyNodeTable) []string {
@@ -824,6 +895,84 @@ func findNodesByGroupOrIDs(ctx context.Context, tx model.DBTx, groupID string, i
 		ordered = append(ordered, node)
 	}
 	return ordered, nil
+}
+
+func normalizePage(page, size int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+	if size > 200 {
+		size = 200
+	}
+	return page, size
+}
+
+func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, req NodeListRequest) (*gorm.DB, error) {
+	query = query.WithContext(ctx)
+	req.Keyword = strings.TrimSpace(req.Keyword)
+	req.GroupID = strings.TrimSpace(req.GroupID)
+	req.IDs = uniqueNonEmpty(req.IDs)
+
+	if len(req.IDs) > 0 {
+		query = query.Where("id IN ?", req.IDs)
+	}
+	if req.PhysicalOnly {
+		query = query.Where("protocol <> ?", ProtocolChain)
+	}
+	if req.Keyword != "" {
+		pattern := "%" + strings.ToLower(req.Keyword) + "%"
+		if req.NameOnly {
+			query = query.Where("lower(name) LIKE ?", pattern)
+		} else {
+			query = query.Where(
+				"lower(name) LIKE ? OR lower(protocol) LIKE ? OR lower(server) LIKE ? OR lower(username) LIKE ? OR lower(remark) LIKE ? OR lower(tags_json) LIKE ?",
+				pattern, pattern, pattern, pattern, pattern, pattern,
+			)
+		}
+	}
+
+	if req.GroupID != "" || req.DefaultOnly {
+		groups, err := GroupList(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		if req.DefaultOnly {
+			grouped := make([]string, 0)
+			for _, group := range groups {
+				grouped = append(grouped, decodeStringSlice(group.NodeIDsJSON)...)
+			}
+			query = query.Where("group_id = ''")
+			if grouped = uniqueNonEmpty(grouped); len(grouped) > 0 {
+				query = query.Where("id NOT IN ?", grouped)
+			}
+		}
+		if req.GroupID != "" {
+			var memberIDs []string
+			found := false
+			for _, group := range groups {
+				if group == nil || group.ID != req.GroupID {
+					continue
+				}
+				found = true
+				memberIDs = decodeStringSlice(group.NodeIDsJSON)
+				break
+			}
+			if !found {
+				return nil, ErrGroupNotFound
+			}
+			memberIDs = uniqueNonEmpty(memberIDs)
+			if len(memberIDs) == 0 {
+				query = query.Where("group_id = ?", req.GroupID)
+			} else {
+				query = query.Where("group_id = ? OR id IN ?", req.GroupID, memberIDs)
+			}
+		}
+	}
+
+	return query, nil
 }
 
 func findGroupsByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.ProxyGroupTable, error) {

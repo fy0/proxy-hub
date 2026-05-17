@@ -1361,6 +1361,26 @@ textarea:focus {
   background: rgb(248 250 252);
 }
 
+.node-search-row {
+  display: flex;
+  align-items: flex-end;
+}
+
+.node-search-field {
+  width: min(460px, 100%);
+}
+
+.virtual-node-table {
+  display: grid;
+  gap: 10px;
+}
+
+.node-virtual-scroll {
+  height: min(620px, 70vh);
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .empty-node-state {
   min-height: 82px;
   display: flex;
@@ -1504,16 +1524,64 @@ textarea:focus {
   background: #ffffff;
 }
 
+.chain-node-options.compact {
+  max-height: 220px;
+}
+
 .chain-node-options label {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-radius: 8px;
   color: rgb(51 65 85);
   font-size: 12px;
   font-weight: 750;
+}
+
+.node-option-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  align-items: center;
+}
+
+.node-option-card em {
+  grid-row: 1 / span 2;
+  min-width: 58px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgb(219 234 254);
+  color: rgb(37 99 235);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.node-option-card strong {
+  min-width: 0;
+  color: rgb(15 23 42);
+  font-size: 13px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-option-card small {
+  min-width: 0;
+  color: rgb(100 116 139);
+  font-size: 11px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chain-node-options label.selected {
@@ -1527,6 +1595,83 @@ textarea:focus {
   min-height: 0;
   padding: 0;
   accent-color: rgb(34 197 94);
+}
+
+.node-option-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.45fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.node-picker-box {
+  display: grid;
+  gap: 8px;
+}
+
+.route-node-option-list {
+  max-height: 240px;
+  display: grid;
+  gap: 7px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgb(148 163 184 / 0.24);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.route-node-option-list button {
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 9px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgb(51 65 85);
+  text-align: left;
+}
+
+.route-node-option-list button.selected,
+.route-node-option-list button:hover {
+  border-color: rgb(34 197 94 / 0.26);
+  background: rgb(240 253 244);
+}
+
+.route-node-option-list em {
+  grid-row: 1 / span 2;
+  min-width: 58px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgb(219 234 254);
+  color: rgb(37 99 235);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.route-node-option-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(15 23 42);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.route-node-option-list small {
+  min-width: 0;
+  color: rgb(100 116 139);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chain-node-preview {

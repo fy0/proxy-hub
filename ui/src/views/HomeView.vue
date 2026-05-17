@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { useClipboard } from '@vueuse/core';
-import { computed, reactive, ref, watch } from 'vue';
+import { useClipboard, useVirtualList } from '@vueuse/core';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
   Copy,
@@ -37,6 +37,7 @@ import type {
   PortMapping,
   ProxyGroup,
   ProxyNode,
+  ProxyNodeOption,
   ProxyProtocol,
   RouteStrategy,
 } from '@/types/proxyHub';
@@ -117,11 +118,16 @@ const strategyOptions = computed<Array<{ label: string; value: RouteStrategy }>>
 
 const {
   nodes,
+  nodeTotal,
+  currentNodeTotal,
+  defaultNodeTotal,
+  isLoadingNodes,
   groups,
   subscriptions,
   mappings,
   enabledMappings,
   nodeById,
+  nodeOptionById,
   groupById,
   runtime,
   isLoading,
@@ -144,11 +150,40 @@ const {
   addMapping,
   updateMapping,
   removeMapping,
+  loadNodes,
+  loadMoreNodes,
+  fetchNodeOptions,
+  ensureNodeOptions,
 } = useProxyHubState();
 
 const currentTab = ref<TabKey>('mappings');
 const activeNodeGroupFilter = ref<NodeGroupFilterKey>('all');
 const hideEmptyNodeGroups = ref(false);
+const nodeSearch = ref('');
+const chainNodeSearch = ref('');
+const chainNodeGroupId = ref('');
+const chainNodeOptions = ref<ProxyNodeOption[]>([]);
+const chainNodeTotal = ref(0);
+const chainNodePage = ref(1);
+const isLoadingChainNodes = ref(false);
+const editChainNodeSearch = ref('');
+const editChainNodeGroupId = ref('');
+const editChainNodeOptions = ref<ProxyNodeOption[]>([]);
+const editChainNodeTotal = ref(0);
+const editChainNodePage = ref(1);
+const isLoadingEditChainNodes = ref(false);
+const manualGroupNodeSearch = ref('');
+const manualGroupNodeGroupId = ref('');
+const manualGroupNodeOptions = ref<ProxyNodeOption[]>([]);
+const manualGroupNodeTotal = ref(0);
+const manualGroupNodePage = ref(1);
+const isLoadingManualGroupNodes = ref(false);
+const routeNodeSearch = ref('');
+const routeNodeGroupId = ref('');
+const routeNodeOptions = ref<ProxyNodeOption[]>([]);
+const routeNodeTotal = ref(0);
+const routeNodePage = ref(1);
+const isLoadingRouteNodes = ref(false);
 const rawImport = ref('');
 const rawImportGroupId = ref('');
 const importPreview = ref<ImportPreviewResult | null>(null);
@@ -314,7 +349,7 @@ const loginRoute = computed(() => ({
   },
 }));
 
-const nodesTabLabel = computed(() => t('home.tabs.nodesWithCount', { count: nodes.value.length }));
+const nodesTabLabel = computed(() => t('home.tabs.nodesWithCount', { count: nodeTotal.value }));
 const mappingCountLabel = computed(
   () => `${enabledMappings.value.length}/${mappings.value.length}`
 );
@@ -339,9 +374,47 @@ function resetMappingForm(): void {
   Object.assign(mappingForm, emptyMappingForm());
 }
 
+function optionToProxyNode(option: ProxyNodeOption): ProxyNode {
+  return {
+    id: option.id,
+    name: option.name,
+    protocol: option.protocol,
+    server: option.server,
+    port: option.port,
+    username: '',
+    password: '',
+    rawUri: '',
+    tags: [],
+    remark: '',
+    chainNodeIds: [],
+    subscriptionId: '',
+    groupId: option.groupIds[0] ?? '',
+    groupIds: option.groupIds,
+    sourceKey: '',
+    health: null,
+    createdAt: '',
+    updatedAt: '',
+  };
+}
+
+function nodeFromCache(id: string): ProxyNode | null {
+  return nodeById.value.get(id) ?? optionToProxyNode(nodeOptionById.value.get(id) ?? nullOption(id));
+}
+
+function nullOption(id: string): ProxyNodeOption {
+  return {
+    id,
+    name: id,
+    protocol: 'unknown',
+    server: '',
+    port: null,
+    groupIds: [],
+  };
+}
+
 function mappingNodes(mapping: PortMapping): ProxyNode[] {
   return mapping.nodeIds
-    .map(id => nodeById.value.get(id))
+    .map(id => nodeFromCache(id))
     .filter((node): node is ProxyNode => Boolean(node));
 }
 
@@ -374,30 +447,16 @@ function copyableMappingEndpoint(mapping: PortMapping): string {
   return `${copyableEndpointProtocol(mapping)}://${currentPageEndpointHost()}:${mapping.listenPort}`;
 }
 
-const groupedNodeIds = computed(() => {
-  const ids = new Set<string>();
-  for (const group of groups.value) {
-    for (const nodeId of group.nodeIds) ids.add(nodeId);
-  }
-  return ids;
-});
-
-const defaultNodes = computed(() =>
-  nodes.value.filter(node => !node.groupId && !groupedNodeIds.value.has(node.id))
-);
 const manualGroups = computed(() => groups.value.filter(group => group.type === 'manual'));
-const physicalNodes = computed(() => nodes.value.filter(node => node.protocol !== 'chain'));
 const visibleGroups = computed(() =>
-  hideEmptyNodeGroups.value
-    ? groups.value.filter(group => groupNodes(group).length > 0)
-    : groups.value
+  hideEmptyNodeGroups.value ? groups.value.filter(group => group.nodeCount > 0) : groups.value
 );
 
 const nodeGroupFilterOptions = computed<NodeGroupFilterOption[]>(() => [
   {
     key: 'all',
     label: t('home.groupFilters.all'),
-    countLabel: t('home.groupMeta.nodeCount', { count: nodes.value.length }),
+    countLabel: t('home.groupMeta.nodeCount', { count: nodeTotal.value }),
   },
   {
     key: 'summary',
@@ -407,7 +466,7 @@ const nodeGroupFilterOptions = computed<NodeGroupFilterOption[]>(() => [
   {
     key: 'default',
     label: t('home.groupFilters.default'),
-    countLabel: t('home.groupMeta.nodeCount', { count: defaultNodes.value.length }),
+    countLabel: t('home.groupMeta.nodeCount', { count: defaultNodeTotal.value }),
   },
   ...visibleGroups.value.map(group => ({
     key: toGroupFilterKey(group.id),
@@ -415,7 +474,7 @@ const nodeGroupFilterOptions = computed<NodeGroupFilterOption[]>(() => [
       group.type === 'subscription'
         ? t('home.groupFilters.subscriptionLabel', { name: group.name })
         : group.name,
-    countLabel: t('home.groupMeta.nodeCount', { count: groupNodes(group).length }),
+    countLabel: t('home.groupMeta.nodeCount', { count: group.nodeCount }),
   })),
 ]);
 
@@ -430,12 +489,40 @@ const selectedNodeGroupTitle = computed(() => {
 });
 
 const selectedNodeGroupNodes = computed(() => {
-  if (activeNodeGroupFilter.value === 'all') return nodes.value;
-  if (activeNodeGroupFilter.value === 'default') return defaultNodes.value;
-  if (selectedGroup.value) return groupNodes(selectedGroup.value);
-
-  return [];
+  return nodes.value;
 });
+
+const nodeListQuery = computed(() => ({
+  keyword: nodeSearch.value,
+  groupId: groupIdFromFilterKey(activeNodeGroupFilter.value),
+  defaultOnly: activeNodeGroupFilter.value === 'default',
+  page: 1,
+  size: 80,
+  withHealth: true,
+}));
+
+const {
+  list: virtualNodeRows,
+  containerProps: nodeListContainerProps,
+  wrapperProps: nodeListWrapperProps,
+  scrollTo: scrollNodeListTo,
+} = useVirtualList(selectedNodeGroupNodes, {
+  itemHeight: 116,
+  overscan: 8,
+});
+
+let nodeSearchTimer: number | null = null;
+
+async function reloadCurrentNodes(): Promise<void> {
+  if (activeNodeGroupFilter.value === 'summary') return;
+  await loadNodes(nodeListQuery.value);
+  scrollNodeListTo(0);
+}
+
+async function loadNextNodePage(): Promise<void> {
+  if (activeNodeGroupFilter.value === 'summary') return;
+  await loadMoreNodes(nodeListQuery.value);
+}
 
 const editingNode = computed(() =>
   editingNodeId.value ? (nodes.value.find(node => node.id === editingNodeId.value) ?? null) : null
@@ -446,7 +533,7 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     key: 'default',
     title: t('home.groupFilters.default'),
     typeLabel: t('home.groupFilters.virtual'),
-    count: defaultNodes.value.length,
+    count: defaultNodeTotal.value,
     detail: t('home.groupFilters.defaultDetail'),
     strategyLabel: t('home.groupFilters.defaultStrategy'),
     filter: '',
@@ -456,7 +543,7 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     key: toGroupFilterKey(group.id),
     title: group.name,
     typeLabel: t(`home.groupType.${group.type}`),
-    count: groupNodes(group).length,
+    count: group.nodeCount,
     detail: groupSummary(group),
     strategyLabel: t(`home.groupStrategy.${group.strategy}`),
     filter: group.filter,
@@ -471,6 +558,28 @@ watch(
       activeNodeGroupFilter.value = 'all';
     }
   }
+);
+
+watch(
+  [activeNodeGroupFilter, nodeSearch],
+  () => {
+    if (nodeSearchTimer !== null) {
+      window.clearTimeout(nodeSearchTimer);
+    }
+    nodeSearchTimer = window.setTimeout(() => {
+      reloadCurrentNodes().catch(() => undefined);
+      nodeSearchTimer = null;
+    }, 220);
+  },
+  { immediate: true }
+);
+
+watch(
+  () => mappings.value.flatMap(mapping => mapping.nodeIds).join('|'),
+  ids => {
+    ensureNodeOptions(ids.split('|').filter(Boolean)).catch(() => undefined);
+  },
+  { immediate: true }
 );
 
 function groupNodes(group: ProxyGroup): ProxyNode[] {
@@ -496,8 +605,197 @@ function selectNodeGroupFilter(key: NodeGroupFilterKey): void {
   activeNodeGroupFilter.value = key;
 }
 
+function nodeFilterGroupId(value: string): string | undefined {
+  return value || undefined;
+}
+
+async function refreshOptionList(
+  target: {
+    options: typeof chainNodeOptions;
+    total: typeof chainNodeTotal;
+    page: typeof chainNodePage;
+    loading: typeof isLoadingChainNodes;
+  },
+  input: {
+    keyword: string;
+    groupId: string;
+    physicalOnly?: boolean;
+    selectedIds?: string[];
+    page?: number;
+  },
+  append = false
+): Promise<void> {
+  target.loading.value = true;
+  try {
+    const groupQuery = optionGroupQuery(input.groupId);
+    const result = await fetchNodeOptions({
+      keyword: input.keyword,
+      nameOnly: true,
+      groupId: nodeFilterGroupId(groupQuery.groupId),
+      defaultOnly: groupQuery.defaultOnly,
+      physicalOnly: input.physicalOnly,
+      page: input.page ?? 1,
+      size: 80,
+    });
+    const selectedResult = input.selectedIds?.length
+      ? await fetchNodeOptions({ ids: input.selectedIds, size: Math.min(200, input.selectedIds.length) })
+      : null;
+    const merged = mergeNodeOptions(
+      append ? target.options.value : [],
+      selectedResult?.items ?? [],
+      result.items
+    );
+    target.options.value = merged;
+    target.total.value = result.total;
+    target.page.value = result.page;
+  } finally {
+    target.loading.value = false;
+  }
+}
+
+function mergeNodeOptions(...groupsToMerge: ProxyNodeOption[][]): ProxyNodeOption[] {
+  const byId = new Map<string, ProxyNodeOption>();
+  for (const items of groupsToMerge) {
+    for (const item of items) byId.set(item.id, item);
+  }
+  return Array.from(byId.values());
+}
+
+function groupFilterOptions(includeAll = true): Array<{ id: string; label: string }> {
+  return [
+    ...(includeAll ? [{ id: '', label: t('home.groupFilters.all') }] : []),
+    { id: '__default__', label: t('home.groupFilters.default') },
+    ...groups.value.map(group => ({ id: group.id, label: group.name })),
+  ];
+}
+
+function optionGroupQuery(groupId: string): { groupId: string; defaultOnly: boolean } {
+  if (groupId === '__default__') return { groupId: '', defaultOnly: true };
+  return { groupId, defaultOnly: false };
+}
+
+const chainOptionTarget = {
+  options: chainNodeOptions,
+  total: chainNodeTotal,
+  page: chainNodePage,
+  loading: isLoadingChainNodes,
+};
+const editChainOptionTarget = {
+  options: editChainNodeOptions,
+  total: editChainNodeTotal,
+  page: editChainNodePage,
+  loading: isLoadingEditChainNodes,
+};
+const manualGroupOptionTarget = {
+  options: manualGroupNodeOptions,
+  total: manualGroupNodeTotal,
+  page: manualGroupNodePage,
+  loading: isLoadingManualGroupNodes,
+};
+const routeNodeOptionTarget = {
+  options: routeNodeOptions,
+  total: routeNodeTotal,
+  page: routeNodePage,
+  loading: isLoadingRouteNodes,
+};
+
+watch([chainNodeSearch, chainNodeGroupId], reloadChainOptions, { immediate: true });
+watch([editChainNodeSearch, editChainNodeGroupId], reloadEditChainOptions, { immediate: true });
+watch([manualGroupNodeSearch, manualGroupNodeGroupId], reloadManualGroupNodeOptions, {
+  immediate: true,
+});
+watch([routeNodeSearch, routeNodeGroupId], reloadRouteNodeOptions, { immediate: true });
+
+function reloadChainOptions(): void {
+  refreshOptionList(chainOptionTarget, {
+    keyword: chainNodeSearch.value,
+    groupId: chainNodeGroupId.value,
+    physicalOnly: true,
+    selectedIds: chainNodeForm.chainNodeIds,
+  }).catch(() => undefined);
+}
+
+function reloadEditChainOptions(): void {
+  refreshOptionList(editChainOptionTarget, {
+    keyword: editChainNodeSearch.value,
+    groupId: editChainNodeGroupId.value,
+    physicalOnly: true,
+    selectedIds: nodeEditForm.chainNodeIds,
+  }).catch(() => undefined);
+}
+
+function reloadManualGroupNodeOptions(): void {
+  refreshOptionList(manualGroupOptionTarget, {
+    keyword: manualGroupNodeSearch.value,
+    groupId: manualGroupNodeGroupId.value,
+    selectedIds: manualGroupForm.nodeIds,
+  }).catch(() => undefined);
+}
+
+function reloadRouteNodeOptions(): void {
+  refreshOptionList(routeNodeOptionTarget, {
+    keyword: routeNodeSearch.value,
+    groupId: routeNodeGroupId.value,
+    selectedIds: routeNodeForm.existingNodeId ? [routeNodeForm.existingNodeId] : [],
+  }).catch(() => undefined);
+}
+
+function loadMoreChainOptions(): void {
+  refreshOptionList(
+    chainOptionTarget,
+    {
+      keyword: chainNodeSearch.value,
+      groupId: chainNodeGroupId.value,
+      physicalOnly: true,
+      selectedIds: chainNodeForm.chainNodeIds,
+      page: chainNodePage.value + 1,
+    },
+    true
+  ).catch(() => undefined);
+}
+
+function loadMoreEditChainOptions(): void {
+  refreshOptionList(
+    editChainOptionTarget,
+    {
+      keyword: editChainNodeSearch.value,
+      groupId: editChainNodeGroupId.value,
+      physicalOnly: true,
+      selectedIds: nodeEditForm.chainNodeIds,
+      page: editChainNodePage.value + 1,
+    },
+    true
+  ).catch(() => undefined);
+}
+
+function loadMoreManualGroupNodeOptions(): void {
+  refreshOptionList(
+    manualGroupOptionTarget,
+    {
+      keyword: manualGroupNodeSearch.value,
+      groupId: manualGroupNodeGroupId.value,
+      selectedIds: manualGroupForm.nodeIds,
+      page: manualGroupNodePage.value + 1,
+    },
+    true
+  ).catch(() => undefined);
+}
+
+function loadMoreRouteNodeOptions(): void {
+  refreshOptionList(
+    routeNodeOptionTarget,
+    {
+      keyword: routeNodeSearch.value,
+      groupId: routeNodeGroupId.value,
+      selectedIds: routeNodeForm.existingNodeId ? [routeNodeForm.existingNodeId] : [],
+      page: routeNodePage.value + 1,
+    },
+    true
+  ).catch(() => undefined);
+}
+
 function groupSummary(group: ProxyGroup): string {
-  const nodeCount = group.nodeIds.length;
+  const nodeCount = group.nodeCount;
   const groupCount = group.groupIds.length;
   const builtins = group.builtinTags.length;
   return t('home.groupMeta.summary', { nodeCount, groupCount, builtins });
@@ -509,7 +807,7 @@ function subscriptionGroupName(groupId: string): string {
 
 function chainNodeNames(node: ProxyNode): string {
   return node.chainNodeIds
-    .map(id => nodeById.value.get(id)?.name)
+    .map(id => nodeById.value.get(id)?.name ?? nodeOptionById.value.get(id)?.name)
     .filter((name): name is string => Boolean(name))
     .join(' -> ');
 }
@@ -520,7 +818,7 @@ function chainNodeFormPreview(): string {
 
 function chainNodeNamesFromIds(nodeIds: string[]): string {
   return nodeIds
-    .map(id => nodeById.value.get(id)?.name)
+    .map(id => nodeById.value.get(id)?.name ?? nodeOptionById.value.get(id)?.name)
     .filter((name): name is string => Boolean(name))
     .join(' -> ');
 }
@@ -531,7 +829,7 @@ function selectedChainNodes(): ProxyNode[] {
 
 function selectedChainNodesFromIds(nodeIds: string[]): ProxyNode[] {
   return nodeIds
-    .map(id => nodeById.value.get(id))
+    .map(id => nodeFromCache(id))
     .filter((node): node is ProxyNode => Boolean(node));
 }
 
@@ -545,6 +843,7 @@ function toggleChainNodeSelection(nodeId: string): void {
     return;
   }
   chainNodeForm.chainNodeIds = [...chainNodeForm.chainNodeIds, nodeId];
+  ensureNodeOptions([nodeId]).catch(() => undefined);
 }
 
 function nodeEditChainPreview(): string {
@@ -565,6 +864,7 @@ function toggleNodeEditChainNodeSelection(nodeId: string): void {
     return;
   }
   nodeEditForm.chainNodeIds = [...nodeEditForm.chainNodeIds, nodeId];
+  ensureNodeOptions([nodeId]).catch(() => undefined);
 }
 
 function toggleNodeEditGroup(groupId: string): void {
@@ -579,11 +879,38 @@ function selectNodeEditDefaultGroup(): void {
   nodeEditForm.groupIds = [];
 }
 
+function toggleManualGroupNode(nodeId: string): void {
+  if (manualGroupForm.nodeIds.includes(nodeId)) {
+    manualGroupForm.nodeIds = manualGroupForm.nodeIds.filter(id => id !== nodeId);
+    return;
+  }
+  manualGroupForm.nodeIds = [...manualGroupForm.nodeIds, nodeId];
+  ensureNodeOptions([nodeId]).catch(() => undefined);
+}
+
+function selectedManualGroupNodes(): ProxyNode[] {
+  return selectedChainNodesFromIds(manualGroupForm.nodeIds);
+}
+
 function nodeEndpointLabel(node: ProxyNode): string {
   if (node.protocol === 'chain') {
     return chainNodeNames(node) || t('home.nodeMeta.chainEmpty');
   }
   return `${node.server}:${node.port ?? '-'}`;
+}
+
+function optionEndpointLabel(option: ProxyNodeOption): string {
+  if (option.protocol === 'chain') return t('home.protocol.chain');
+  const endpoint = option.server ? `${option.server}:${option.port ?? '-'}` : '';
+  return endpoint || t('common.noRemark');
+}
+
+function optionProtocolLabel(option: ProxyNodeOption): string {
+  return protocolLabels.value[option.protocol] ?? option.protocol.toUpperCase();
+}
+
+function optionNameLabel(option: ProxyNodeOption): string {
+  return option.name.trim() || optionEndpointLabel(option);
 }
 
 function uriHost(server: string): string {
@@ -677,6 +1004,7 @@ function resetNodeEditForm(): void {
 
 function openEditNodeDialog(node: ProxyNode): void {
   closeRouteActionMenu();
+  ensureNodeOptions(node.chainNodeIds).catch(() => undefined);
   Object.assign(nodeEditForm, {
     name: node.name,
     groupIds: nodeGroupIds(node),
@@ -798,12 +1126,20 @@ function openRouteDialog(mapping: PortMapping): void {
   closeRouteActionMenu();
   routeNodeForm.name = '';
   routeNodeForm.uri = '';
-  routeNodeForm.existingNodeId = nodes.value[0]?.id ?? '';
+  routeNodeForm.existingNodeId = routeNodeOptions.value[0]?.id ?? '';
   routeNodeForm.groupId = groups.value[0]?.id ?? '';
   routeNodeForm.mode = 'uri';
+  routeNodeSearch.value = '';
+  routeNodeGroupId.value = '';
+  reloadRouteNodeOptions();
   routeNodeNameEdited.value = false;
   routeNodeError.value = '';
   routeTargetMappingId.value = mapping.id;
+}
+
+function selectRouteNode(nodeId: string): void {
+  routeNodeForm.existingNodeId = nodeId;
+  ensureNodeOptions([nodeId]).catch(() => undefined);
 }
 
 watch(
@@ -1448,7 +1784,7 @@ function routeFailureLabel(node: ProxyNode): string {
               mappingCountLabel
             }}</span>
             <span v-else-if="currentTab === 'nodes'" class="workspace-count">{{
-              nodes.length
+              nodeTotal
             }}</span>
             <span v-else-if="currentTab === 'subscriptions'" class="workspace-count">{{
               subscriptions.length
@@ -1750,6 +2086,17 @@ function routeFailureLabel(node: ProxyNode): string {
       </section>
 
       <section v-else-if="currentTab === 'nodes'" class="panel simple-panel">
+        <div class="node-search-row">
+          <label class="node-search-field">
+            <span>{{ t('home.form.searchNodes') }}</span>
+            <input
+              v-model.trim="nodeSearch"
+              type="search"
+              autocomplete="off"
+              :placeholder="t('home.placeholders.nodeSearch')"
+            />
+          </label>
+        </div>
         <div class="node-filter-bar" :aria-label="t('home.aria.nodeGroupFilters')">
           <label class="node-empty-toggle">
             <input v-model="hideEmptyNodeGroups" type="checkbox" />
@@ -1793,71 +2140,94 @@ function routeFailureLabel(node: ProxyNode): string {
         <section v-else class="node-group-section active-node-group">
           <div class="node-group-heading">
             <strong>{{ selectedNodeGroupTitle }}</strong>
-            <span>{{
-              t('home.groupMeta.nodeCount', { count: selectedNodeGroupNodes.length })
-            }}</span>
+            <span>{{ t('home.groupMeta.nodeCount', { count: currentNodeTotal }) }}</span>
           </div>
-          <div v-if="selectedNodeGroupNodes.length" class="node-table">
-            <article v-for="node in selectedNodeGroupNodes" :key="node.id" class="node-row">
-              <div class="node-protocol" :class="{ chain: node.protocol === 'chain' }">
-                {{ protocolLabels[node.protocol] }}
+          <div v-if="selectedNodeGroupNodes.length" class="node-table virtual-node-table">
+            <div
+              v-bind="nodeListContainerProps"
+              class="node-virtual-scroll"
+            >
+              <div v-bind="nodeListWrapperProps">
+                <article
+                  v-for="row in virtualNodeRows"
+                  :key="row.data.id"
+                  class="node-row"
+                  :style="{ height: '116px' }"
+                >
+                  <div class="node-protocol" :class="{ chain: row.data.protocol === 'chain' }">
+                    {{ protocolLabels[row.data.protocol] }}
+                  </div>
+                  <div class="node-main">
+                    <strong>{{ row.data.name }}</strong>
+                    <span>{{ nodeEndpointLabel(row.data) }}</span>
+                  </div>
+                  <div class="node-row-actions">
+                    <ActionTooltip :label="nodeUriPopoverText(row.data)">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        :aria-label="t('common.exportNodeUri')"
+                        :disabled="!nodeExportUri(row.data)"
+                        @click="copyNodeUri(row.data)"
+                      >
+                        <Copy class="size-4" aria-hidden="true" />
+                      </Button>
+                    </ActionTooltip>
+                    <ActionTooltip :label="t('common.editNode')">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        :aria-label="t('common.editNode')"
+                        @click="openEditNodeDialog(row.data)"
+                      >
+                        <Edit3 class="size-4" aria-hidden="true" />
+                      </Button>
+                    </ActionTooltip>
+                    <ActionTooltip :label="t('common.deleteNode')">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        :aria-label="t('common.deleteNode')"
+                        @click="requestRemoveNode(row.data)"
+                      >
+                        <Trash2 class="size-4" aria-hidden="true" />
+                      </Button>
+                    </ActionTooltip>
+                  </div>
+                  <div class="node-meta">
+                    <small v-if="row.data.protocol === 'chain'">{{
+                      t('home.nodeMeta.chainCount', { count: row.data.chainNodeIds.length })
+                    }}</small>
+                    <small v-if="row.data.username">{{
+                      t('home.nodeMeta.username', { value: row.data.username })
+                    }}</small>
+                    <small v-if="row.data.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
+                    <small v-if="row.data.protocol !== 'chain' && !row.data.username && !row.data.password">{{
+                      t('common.noAccount')
+                    }}</small>
+                  </div>
+                </article>
               </div>
-              <div class="node-main">
-                <strong>{{ node.name }}</strong>
-                <span>{{ nodeEndpointLabel(node) }}</span>
-              </div>
-              <div class="node-row-actions">
-                <ActionTooltip :label="nodeUriPopoverText(node)">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    :aria-label="t('common.exportNodeUri')"
-                    :disabled="!nodeExportUri(node)"
-                    @click="copyNodeUri(node)"
-                  >
-                    <Copy class="size-4" aria-hidden="true" />
-                  </Button>
-                </ActionTooltip>
-                <ActionTooltip :label="t('common.editNode')">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    :aria-label="t('common.editNode')"
-                    @click="openEditNodeDialog(node)"
-                  >
-                    <Edit3 class="size-4" aria-hidden="true" />
-                  </Button>
-                </ActionTooltip>
-                <ActionTooltip :label="t('common.deleteNode')">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    :aria-label="t('common.deleteNode')"
-                    @click="requestRemoveNode(node)"
-                  >
-                    <Trash2 class="size-4" aria-hidden="true" />
-                  </Button>
-                </ActionTooltip>
-              </div>
-              <div class="node-meta">
-                <small v-if="node.protocol === 'chain'">{{
-                  t('home.nodeMeta.chainCount', { count: node.chainNodeIds.length })
-                }}</small>
-                <small v-if="node.username">{{
-                  t('home.nodeMeta.username', { value: node.username })
-                }}</small>
-                <small v-if="node.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
-                <small v-if="node.protocol !== 'chain' && !node.username && !node.password">{{
-                  t('common.noAccount')
-                }}</small>
-              </div>
-            </article>
+            </div>
+            <Button
+              v-if="selectedNodeGroupNodes.length < currentNodeTotal"
+              type="button"
+              variant="outline"
+              :disabled="isLoadingNodes"
+              @click="loadNextNodePage"
+            >
+              {{ isLoadingNodes ? t('home.messages.loadingNodes') : t('home.actions.loadMore') }}
+            </Button>
           </div>
           <p v-else class="empty-node-state">
-            {{ t('home.groupFilters.emptyNodes', { name: selectedNodeGroupTitle }) }}
+            {{
+              isLoadingNodes
+                ? t('home.messages.loadingNodes')
+                : t('home.groupFilters.emptyNodes', { name: selectedNodeGroupTitle })
+            }}
           </p>
         </section>
 
@@ -1894,9 +2264,26 @@ function routeFailureLabel(node: ProxyNode): string {
           <div class="chain-node-builder">
             <fieldset>
               <span>{{ t('home.form.chainNodes') }}</span>
+              <div class="node-option-toolbar">
+                <input
+                  v-model.trim="chainNodeSearch"
+                  type="search"
+                  autocomplete="off"
+                  :placeholder="t('home.placeholders.nodeSearch')"
+                />
+                <select v-model="chainNodeGroupId">
+                  <option
+                    v-for="group in groupFilterOptions()"
+                    :key="group.id"
+                    :value="group.id"
+                  >
+                    {{ group.label }}
+                  </option>
+                </select>
+              </div>
               <div class="chain-node-options">
                 <label
-                  v-for="node in physicalNodes"
+                  v-for="node in chainNodeOptions"
                   :key="node.id"
                   :class="{ selected: chainNodeForm.chainNodeIds.includes(node.id) }"
                 >
@@ -1905,8 +2292,21 @@ function routeFailureLabel(node: ProxyNode): string {
                     :checked="chainNodeForm.chainNodeIds.includes(node.id)"
                     @change="toggleChainNodeSelection(node.id)"
                   />
-                  {{ node.name }}
+                  <span class="node-option-card">
+                    <em>{{ optionProtocolLabel(node) }}</em>
+                    <strong>{{ optionNameLabel(node) }}</strong>
+                    <small>{{ optionEndpointLabel(node) }}</small>
+                  </span>
                 </label>
+                <Button
+                  v-if="chainNodeOptions.length < chainNodeTotal"
+                  type="button"
+                  variant="outline"
+                  :disabled="isLoadingChainNodes"
+                  @click="loadMoreChainOptions"
+                >
+                  {{ isLoadingChainNodes ? t('home.messages.loadingNodes') : t('home.actions.loadMore') }}
+                </Button>
               </div>
             </fieldset>
             <div class="chain-node-preview">
@@ -1968,11 +2368,67 @@ function routeFailureLabel(node: ProxyNode): string {
           <div class="field-grid two">
             <label>
               <span>{{ t('home.form.groupNodes') }}</span>
-              <select v-model="manualGroupForm.nodeIds" multiple>
-                <option v-for="node in nodes" :key="node.id" :value="node.id">
-                  {{ node.name }}
-                </option>
-              </select>
+              <div class="node-picker-box">
+                <div class="node-option-toolbar">
+                  <input
+                    v-model.trim="manualGroupNodeSearch"
+                    type="search"
+                    autocomplete="off"
+                    :placeholder="t('home.placeholders.nodeSearch')"
+                  />
+                  <select v-model="manualGroupNodeGroupId">
+                    <option
+                      v-for="group in groupFilterOptions()"
+                      :key="group.id"
+                      :value="group.id"
+                    >
+                      {{ group.label }}
+                    </option>
+                  </select>
+                </div>
+                <div class="chain-node-options compact">
+                  <label
+                    v-for="node in manualGroupNodeOptions"
+                    :key="node.id"
+                    :class="{ selected: manualGroupForm.nodeIds.includes(node.id) }"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="manualGroupForm.nodeIds.includes(node.id)"
+                      @change="toggleManualGroupNode(node.id)"
+                    />
+                    <span class="node-option-card">
+                      <em>{{ optionProtocolLabel(node) }}</em>
+                      <strong>{{ optionNameLabel(node) }}</strong>
+                      <small>{{ optionEndpointLabel(node) }}</small>
+                    </span>
+                  </label>
+                  <Button
+                    v-if="manualGroupNodeOptions.length < manualGroupNodeTotal"
+                    type="button"
+                    variant="outline"
+                    :disabled="isLoadingManualGroupNodes"
+                    @click="loadMoreManualGroupNodeOptions"
+                  >
+                    {{
+                      isLoadingManualGroupNodes
+                        ? t('home.messages.loadingNodes')
+                        : t('home.actions.loadMore')
+                    }}
+                  </Button>
+                </div>
+                <div v-if="manualGroupForm.nodeIds.length" class="chain-node-order">
+                  <button
+                    v-for="node in selectedManualGroupNodes()"
+                    :key="node.id"
+                    type="button"
+                    @click="toggleManualGroupNode(node.id)"
+                  >
+                    <span>{{ node.name }}</span>
+                    <X class="size-3" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
             </label>
             <label>
               <span>{{ t('home.form.groupGroups') }}</span>
@@ -2440,11 +2896,51 @@ function routeFailureLabel(node: ProxyNode): string {
 
           <label v-else-if="routeNodeForm.mode === 'node'">
             <span>{{ t('home.form.existingNode') }} <em class="required-mark">*</em></span>
-            <select v-model="routeNodeForm.existingNodeId" required>
-              <option v-for="node in nodes" :key="node.id" :value="node.id">
-                {{ node.name }}
-              </option>
-            </select>
+            <div class="node-picker-box">
+              <div class="node-option-toolbar">
+                <input
+                  v-model.trim="routeNodeSearch"
+                  type="search"
+                  autocomplete="off"
+                  :placeholder="t('home.placeholders.nodeSearch')"
+                />
+                <select v-model="routeNodeGroupId">
+                  <option
+                    v-for="group in groupFilterOptions()"
+                    :key="group.id"
+                    :value="group.id"
+                  >
+                    {{ group.label }}
+                  </option>
+                </select>
+              </div>
+              <div class="route-node-option-list">
+                <button
+                  v-for="node in routeNodeOptions"
+                  :key="node.id"
+                  type="button"
+                  :class="{ selected: routeNodeForm.existingNodeId === node.id }"
+                  @click="selectRouteNode(node.id)"
+                >
+                  <em>{{ optionProtocolLabel(node) }}</em>
+                  <span>{{ optionNameLabel(node) }}</span>
+                  <small>{{ optionEndpointLabel(node) }}</small>
+                </button>
+                <Button
+                  v-if="routeNodeOptions.length < routeNodeTotal"
+                  type="button"
+                  variant="outline"
+                  :disabled="isLoadingRouteNodes"
+                  @click="loadMoreRouteNodeOptions"
+                >
+                  {{
+                    isLoadingRouteNodes
+                      ? t('home.messages.loadingNodes')
+                      : t('home.actions.loadMore')
+                  }}
+                </Button>
+              </div>
+            </div>
           </label>
 
           <label v-else>
@@ -2525,9 +3021,26 @@ function routeFailureLabel(node: ProxyNode): string {
         <div v-if="editingNode.protocol === 'chain'" class="chain-node-builder">
           <fieldset>
             <span>{{ t('home.form.chainNodes') }}</span>
+            <div class="node-option-toolbar">
+              <input
+                v-model.trim="editChainNodeSearch"
+                type="search"
+                autocomplete="off"
+                :placeholder="t('home.placeholders.nodeSearch')"
+              />
+              <select v-model="editChainNodeGroupId">
+                <option
+                  v-for="group in groupFilterOptions()"
+                  :key="group.id"
+                  :value="group.id"
+                >
+                  {{ group.label }}
+                </option>
+              </select>
+            </div>
             <div class="chain-node-options">
               <label
-                v-for="node in physicalNodes"
+                v-for="node in editChainNodeOptions"
                 :key="node.id"
                 :class="{ selected: nodeEditForm.chainNodeIds.includes(node.id) }"
               >
@@ -2536,8 +3049,25 @@ function routeFailureLabel(node: ProxyNode): string {
                   :checked="nodeEditForm.chainNodeIds.includes(node.id)"
                   @change="toggleNodeEditChainNodeSelection(node.id)"
                 />
-                {{ node.name }}
+                <span class="node-option-card">
+                  <em>{{ optionProtocolLabel(node) }}</em>
+                  <strong>{{ optionNameLabel(node) }}</strong>
+                  <small>{{ optionEndpointLabel(node) }}</small>
+                </span>
               </label>
+              <Button
+                v-if="editChainNodeOptions.length < editChainNodeTotal"
+                type="button"
+                variant="outline"
+                :disabled="isLoadingEditChainNodes"
+                @click="loadMoreEditChainOptions"
+              >
+                {{
+                  isLoadingEditChainNodes
+                    ? t('home.messages.loadingNodes')
+                    : t('home.actions.loadMore')
+                }}
+              </Button>
             </div>
           </fieldset>
           <div class="chain-node-preview">

@@ -44,6 +44,9 @@ export const messages = {
       syncSubscription: '同步订阅',
     },
     home: {
+      actions: {
+        loadMore: '加载更多',
+      },
       aria: {
         activePorts: '端口运行状态',
         closeDialog: '关闭',
@@ -109,6 +112,7 @@ export const messages = {
         chainName: '串联名称',
         chainNodes: '串联节点',
         chainPreview: '链路顺序',
+        searchNodes: '搜索节点',
         username: '用户名',
       },
       groupMeta: {
@@ -152,6 +156,7 @@ export const messages = {
         chainNodesRequired: '请至少选择两个真实节点。',
         groupNameRequired: '请填写分组名称。',
         loadingBackend: '正在从后端加载代理配置…',
+        loadingNodes: '正在加载节点…',
         mappingNotFound: '端口映射不存在，请刷新后重试。',
         nodeAdded: '已新增 {name}。',
         nodeNotFound: '节点不存在，请刷新后重试。',
@@ -216,6 +221,7 @@ export const messages = {
       placeholders: {
         nodeName: '例如：香港节点',
         nodeUri: 'vless://...、hy2://... 或 ss://...',
+        nodeSearch: '按节点名称搜索',
         chainName: '例如：A 访问 B',
         tags: '多个标签用逗号分隔',
         shareLinks: 'vless://...\nhy2://...\nss://...\ntuic://...',
@@ -413,6 +419,9 @@ export const messages = {
       syncSubscription: 'Sync subscription',
     },
     home: {
+      actions: {
+        loadMore: 'Load more',
+      },
       aria: {
         activePorts: 'Port runtime status',
         closeDialog: 'Close',
@@ -481,6 +490,7 @@ export const messages = {
         chainName: 'Chain name',
         chainNodes: 'Chain nodes',
         chainPreview: 'Route order',
+        searchNodes: 'Search nodes',
         username: 'Username',
       },
       groupMeta: {
@@ -524,6 +534,7 @@ export const messages = {
         chainNodesRequired: 'Select at least two real nodes.',
         groupNameRequired: 'Enter a group name.',
         loadingBackend: 'Loading proxy config from backend...',
+        loadingNodes: 'Loading nodes...',
         mappingNotFound: 'Port mapping not found. Refresh and try again.',
         nodeAdded: 'Added {name}.',
         nodeNotFound: 'Node not found. Refresh and try again.',
@@ -588,6 +599,7 @@ export const messages = {
       placeholders: {
         nodeName: 'e.g. Hong Kong node',
         nodeUri: 'vless://..., hy2://..., or ss://...',
+        nodeSearch: 'Search by node name',
         chainName: 'e.g. A via B',
         tags: 'Separate tags with commas',
         shareLinks: 'vless://...\nhy2://...\nss://...\ntuic://...',

@@ -78,6 +78,15 @@ export interface ProxyNode {
   updatedAt: string;
 }
 
+export interface ProxyNodeOption {
+  id: string;
+  name: string;
+  protocol: ProxyProtocol;
+  server: string;
+  port: number | null;
+  groupIds: string[];
+}
+
 export interface ProxySubscription {
   id: string;
   name: string;
@@ -104,6 +113,7 @@ export interface ProxyGroup {
   includesAll: boolean;
   filter: string;
   remark: string;
+  nodeCount: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -58,6 +58,14 @@ func Register(api huma.API) {
 	}, nodeListHandler)
 
 	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
+		Path:        "/node-options",
+		Summary:     "节点选择项",
+		OperationID: "proxy-node-option-list",
+		Tags:        []string{proxyTag},
+	}, nodeOptionsHandler)
+
+	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPost,
 		Path:        "/nodes",
 		Summary:     "创建节点",
@@ -270,8 +278,16 @@ type stateOutput struct {
 	Body proxyService.StateSnapshotDTO `json:"body"`
 }
 
-func stateHandler(ctx context.Context, _ *struct{}) (*stateOutput, error) {
-	snapshot, err := proxyService.StateSnapshot(ctx, nil)
+type stateInput struct {
+	IncludeNodes        bool `query:"includeNodes" default:"true"`
+	IncludeGroupMembers bool `query:"includeGroupMembers" default:"true"`
+}
+
+func stateHandler(ctx context.Context, input *stateInput) (*stateOutput, error) {
+	snapshot, err := proxyService.StateSnapshot(ctx, nil, proxyService.StateSnapshotOptions{
+		IncludeNodes:        input.IncludeNodes,
+		IncludeGroupMembers: input.IncludeGroupMembers,
+	})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -306,24 +322,95 @@ func settingsImportHandler(ctx context.Context, input *settingsImportInput) (*se
 	return &settingsImportOutput{Body: *result}, nil
 }
 
+type nodeListInput struct {
+	Page         int      `query:"page" validate:"omitempty,min=1"`
+	Size         int      `query:"size" validate:"omitempty,min=1,max=200"`
+	Keyword      string   `query:"keyword" validate:"omitempty"`
+	NameOnly     bool     `query:"nameOnly"`
+	GroupID      string   `query:"groupId" validate:"omitempty"`
+	DefaultOnly  bool     `query:"defaultOnly"`
+	PhysicalOnly bool     `query:"physicalOnly"`
+	WithHealth   bool     `query:"withHealth" default:"true"`
+	IDs          []string `query:"ids" explode:"false"`
+}
+
 type nodeListOutput struct {
 	Body struct {
 		Items []*proxyService.ProxyNodeDTO `json:"items"`
+		Total int64                        `json:"total"`
+		Page  int                          `json:"page"`
+		Size  int                          `json:"size"`
 	} `json:"body"`
 }
 
-func nodeListHandler(ctx context.Context, _ *struct{}) (*nodeListOutput, error) {
-	nodes, err := proxyService.NodeList(ctx, nil)
+func nodeListHandler(ctx context.Context, input *nodeListInput) (*nodeListOutput, error) {
+	page := utils.GetPage(input.Page)
+	size := utils.GetPageSize(input.Size, 50)
+	if size > 200 {
+		size = 200
+	}
+	nodes, total, err := proxyService.NodeListPaged(ctx, nil, proxyService.NodeListRequest{
+		Keyword:      input.Keyword,
+		NameOnly:     input.NameOnly,
+		GroupID:      input.GroupID,
+		DefaultOnly:  input.DefaultOnly,
+		PhysicalOnly: input.PhysicalOnly,
+		IDs:          input.IDs,
+	}, page, size)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	healthByNodeID := proxyService.NodeHealthMap(ctx, nil, nodeIDsFromNodes(nodes))
+	var healthByNodeID map[string]*tables.ProxyNodeHealthTable
+	if input.WithHealth {
+		healthByNodeID = proxyService.NodeHealthMap(ctx, nil, nodeIDsFromNodes(nodes))
+	}
 	groups, err := proxyService.GroupList(ctx, nil)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	output := &nodeListOutput{}
 	output.Body.Items = proxyService.ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
+	output.Body.Total = total
+	output.Body.Page = page
+	output.Body.Size = size
+	return output, nil
+}
+
+type nodeOptionsOutput struct {
+	Body struct {
+		Items []*proxyService.ProxyNodeOptionDTO `json:"items"`
+		Total int64                              `json:"total"`
+		Page  int                                `json:"page"`
+		Size  int                                `json:"size"`
+	} `json:"body"`
+}
+
+func nodeOptionsHandler(ctx context.Context, input *nodeListInput) (*nodeOptionsOutput, error) {
+	page := utils.GetPage(input.Page)
+	size := utils.GetPageSize(input.Size, 50)
+	if size > 200 {
+		size = 200
+	}
+	nodes, total, err := proxyService.NodeListPaged(ctx, nil, proxyService.NodeListRequest{
+		Keyword:      input.Keyword,
+		NameOnly:     input.NameOnly,
+		GroupID:      input.GroupID,
+		DefaultOnly:  input.DefaultOnly,
+		PhysicalOnly: input.PhysicalOnly,
+		IDs:          input.IDs,
+	}, page, size)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	groups, err := proxyService.GroupList(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	output := &nodeOptionsOutput{}
+	output.Body.Items = proxyService.ToNodeOptionDTOs(nodes, groups)
+	output.Body.Total = total
+	output.Body.Page = page
+	output.Body.Size = size
 	return output, nil
 }
 
@@ -395,7 +482,8 @@ func nodeDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse,
 }
 
 type nodeImportInput struct {
-	Body proxyService.NodeImportRequest
+	IncludeItems bool `query:"includeItems" default:"true"`
+	Body         proxyService.NodeImportRequest
 }
 
 type nodeImportOutput struct {
@@ -420,6 +508,10 @@ func nodeImportHandler(ctx context.Context, input *nodeImportInput) (*nodeImport
 		if err := syncRuntimeMappingsForGroups(ctx, groupIDs); err != nil {
 			return nil, err
 		}
+	}
+	if !input.IncludeItems {
+		result.Items = nil
+		result.Groups = nil
 	}
 	return &nodeImportOutput{Body: *result}, nil
 }
@@ -592,8 +684,9 @@ func subscriptionDeleteHandler(ctx context.Context, input *idInput) (*h.MessageR
 }
 
 type subscriptionSyncInput struct {
-	ID   string `path:"id"`
-	Body proxyService.SubscriptionSyncRequest
+	ID           string `path:"id"`
+	IncludeItems bool   `query:"includeItems" default:"true"`
+	Body         proxyService.SubscriptionSyncRequest
 }
 
 type subscriptionSyncOutput struct {
@@ -615,6 +708,10 @@ func subscriptionSyncHandler(ctx context.Context, input *subscriptionSyncInput) 
 	}
 	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
 		return nil, err
+	}
+	if !input.IncludeItems {
+		result.Items = nil
+		result.Groups = nil
 	}
 	return &subscriptionSyncOutput{Body: *result}, nil
 }
