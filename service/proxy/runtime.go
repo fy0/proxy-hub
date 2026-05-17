@@ -58,19 +58,55 @@ type RuntimeInboundFailure struct {
 	Error     string `json:"error"`
 }
 
+type RuntimeExcludedNode struct {
+	MappingID string `json:"mappingId"`
+	NodeID    string `json:"nodeId"`
+	NodeName  string `json:"nodeName"`
+	Tag       string `json:"tag"`
+	Error     string `json:"error"`
+}
+
 type RuntimeStatus struct {
-	Running   bool                    `json:"running"`
-	State     string                  `json:"state"`
-	Error     string                  `json:"error,omitempty"`
-	Inbounds  []RuntimeInbound        `json:"inbounds"`
-	Failures  []RuntimeInboundFailure `json:"failures"`
-	UpdatedAt time.Time               `json:"updatedAt"`
+	Running       bool                    `json:"running"`
+	State         string                  `json:"state"`
+	Error         string                  `json:"error,omitempty"`
+	Inbounds      []RuntimeInbound        `json:"inbounds"`
+	Failures      []RuntimeInboundFailure `json:"failures"`
+	ExcludedNodes []RuntimeExcludedNode   `json:"excludedNodes"`
+	UpdatedAt     time.Time               `json:"updatedAt"`
 }
 
 type runtimeManager struct {
 	mu        sync.Mutex
 	instances map[string]*box.Box
 	status    RuntimeStatus
+}
+
+type nodeBuildError struct {
+	node *tables.ProxyNodeTable
+	err  error
+}
+
+func (err nodeBuildError) Error() string {
+	if err.err == nil {
+		return ""
+	}
+	if err.node == nil {
+		return err.err.Error()
+	}
+	return fmt.Sprintf("节点 %s 配置无效: %v", err.node.Name, err.err)
+}
+
+func (err nodeBuildError) Unwrap() error {
+	return err.err
+}
+
+func asNodeBuildError(err error) (nodeBuildError, bool) {
+	var buildErr nodeBuildError
+	if errors.As(err, &buildErr) && buildErr.node != nil {
+		return buildErr, true
+	}
+	return nodeBuildError{}, false
 }
 
 var singBoxRuntime = &runtimeManager{
@@ -90,6 +126,7 @@ func RuntimeStatusGet() RuntimeStatus {
 	status := singBoxRuntime.status
 	status.Inbounds = append([]RuntimeInbound{}, singBoxRuntime.status.Inbounds...)
 	status.Failures = append([]RuntimeInboundFailure{}, singBoxRuntime.status.Failures...)
+	status.ExcludedNodes = append([]RuntimeExcludedNode{}, singBoxRuntime.status.ExcludedNodes...)
 	return status
 }
 
@@ -119,30 +156,13 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 	instances := make(map[string]*box.Box, len(mappings))
 	inbounds := make([]RuntimeInbound, 0, len(mappings))
 	failures := make([]RuntimeInboundFailure, 0)
+	excludedNodes := make([]RuntimeExcludedNode, 0)
 
 	for _, mapping := range mappings {
-		options, mappingInbounds, err := buildSingBoxOptionsFromMappings(ctx, nil, []*tables.PortMappingTable{mapping})
-		if err != nil {
-			failures = append(failures, runtimeFailureFromMapping(mapping, err))
-			continue
-		}
-		if len(mappingInbounds) == 0 {
-			failures = append(failures, runtimeFailureFromMapping(mapping, errors.New("runtime inbound was not created")))
-			continue
-		}
-
-		inbound := mappingInbounds[0]
-		instance, err := box.New(box.Options{
-			Options: options,
-			Context: singBoxContext(context.Background()),
-		})
-		if err != nil {
-			failures = append(failures, runtimeFailureFromInbound(inbound, err))
-			continue
-		}
-		if err := instance.Start(); err != nil {
-			_ = instance.Close()
-			failures = append(failures, runtimeFailureFromInbound(inbound, err))
+		instance, inbound, mappingExcludedNodes, failure := createRuntimeMappingInstance(ctx, mapping)
+		excludedNodes = append(excludedNodes, mappingExcludedNodes...)
+		if failure != nil {
+			failures = append(failures, *failure)
 			continue
 		}
 
@@ -150,7 +170,10 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 		inbounds = append(inbounds, inbound)
 	}
 
-	return setRuntimeInstances(instances, runtimeStatusFromResults(len(mappings), inbounds, failures)), nil
+	return setRuntimeInstances(
+		instances,
+		runtimeStatusFromResults(len(mappings), inbounds, failures, excludedNodes),
+	), nil
 }
 
 func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, error) {
@@ -179,11 +202,11 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 		utils.Logger.Warn("关闭旧 sing-box 映射实例失败", zap.String("mappingId", mapping.ID), zap.Error(closeErr))
 	}
 
-	instance, inbound, failure := createRuntimeMappingInstance(ctx, mapping)
+	instance, inbound, excludedNodes, failure := createRuntimeMappingInstance(ctx, mapping)
 	if failure != nil {
-		return setRuntimeMappingFailure(mapping.ID, *failure), nil
+		return setRuntimeMappingFailure(mapping.ID, *failure, excludedNodes), nil
 	}
-	return setRuntimeMappingInstance(mapping.ID, instance, inbound), nil
+	return setRuntimeMappingInstance(mapping.ID, instance, inbound, excludedNodes), nil
 }
 
 func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatus, error) {
@@ -287,6 +310,16 @@ func buildSingBoxOptionsFromMappings(
 	tx model.DBTx,
 	mappings []*tables.PortMappingTable,
 ) (option.Options, []RuntimeInbound, error) {
+	options, inbounds, _, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, tx, mappings, nil)
+	return options, inbounds, err
+}
+
+func buildSingBoxOptionsFromMappingsWithExcludedNodes(
+	ctx context.Context,
+	tx model.DBTx,
+	mappings []*tables.PortMappingTable,
+	excludedNodeIDs map[string]struct{},
+) (option.Options, []RuntimeInbound, map[string]*tables.ProxyNodeTable, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -309,9 +342,13 @@ func buildSingBoxOptionsFromMappings(
 	}
 	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, tx)
 	if err != nil {
-		return option.Options{}, nil, err
+		return option.Options{}, nil, nil, err
+	}
+	for nodeID := range excludedNodeIDs {
+		blacklistedNodeIDs[nodeID] = struct{}{}
 	}
 	nodeCache := map[string]*tables.ProxyNodeTable{}
+	outboundNodeCache := map[string]*tables.ProxyNodeTable{}
 	groupCache := map[string]*tables.ProxyGroupTable{}
 	nodeOutboundCache := map[string]string{}
 	inbounds := make([]option.Inbound, 0, len(mappings))
@@ -321,7 +358,7 @@ func buildSingBoxOptionsFromMappings(
 	for _, mapping := range mappings {
 		nodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(mapping.NodeIDsJSON))
 		if err != nil {
-			return option.Options{}, nil, err
+			return option.Options{}, nil, nil, err
 		}
 
 		memberTags := make([]string, 0, len(nodes))
@@ -329,9 +366,9 @@ func buildSingBoxOptionsFromMappings(
 			if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 				continue
 			}
-			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, nodeOutboundCache, blacklistedNodeIDs)
+			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache, blacklistedNodeIDs)
 			if err != nil {
-				return option.Options{}, nil, fmt.Errorf("节点 %s 配置无效: %w", node.Name, err)
+				return option.Options{}, nil, outboundNodeCache, nodeBuildError{node: node, err: err}
 			}
 			memberTags = append(memberTags, tag)
 			outbounds = append(outbounds, nodeOutbounds...)
@@ -339,7 +376,7 @@ func buildSingBoxOptionsFromMappings(
 
 		groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
 		if err != nil {
-			return option.Options{}, nil, err
+			return option.Options{}, nil, nil, err
 		}
 		for _, proxyGroup := range groups {
 			groupTag, groupOutbounds, err := buildProxyGroupOutbounds(
@@ -348,13 +385,17 @@ func buildSingBoxOptionsFromMappings(
 				proxyGroup,
 				outboundTags,
 				nodeCache,
+				outboundNodeCache,
 				nodeOutboundCache,
 				groupCache,
 				blacklistedNodeIDs,
 				map[string]bool{},
 			)
 			if err != nil {
-				return option.Options{}, nil, err
+				if buildErr, ok := asNodeBuildError(err); ok {
+					return option.Options{}, nil, outboundNodeCache, buildErr
+				}
+				return option.Options{}, nil, outboundNodeCache, err
 			}
 			memberTags = append(memberTags, groupTag)
 			outbounds = append(outbounds, groupOutbounds...)
@@ -370,7 +411,7 @@ func buildSingBoxOptionsFromMappings(
 
 		inbound, err := buildMappingInbound(mapping)
 		if err != nil {
-			return option.Options{}, nil, err
+			return option.Options{}, nil, nil, err
 		}
 		inbounds = append(inbounds, inbound)
 		rules = append(rules, buildInboundRouteRule(inbound.Tag, routeTag))
@@ -395,7 +436,7 @@ func buildSingBoxOptionsFromMappings(
 			Final: constant.TypeDirect,
 		},
 	}
-	return options, statusInbounds, nil
+	return options, statusInbounds, outboundNodeCache, nil
 }
 
 func singBoxContext(ctx context.Context) context.Context {
@@ -513,6 +554,7 @@ func buildProxyGroupOutbounds(
 	proxyGroup *tables.ProxyGroupTable,
 	outboundTags map[string]struct{},
 	nodeCache map[string]*tables.ProxyNodeTable,
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
 	nodeOutboundCache map[string]string,
 	groupCache map[string]*tables.ProxyGroupTable,
 	blacklistedNodeIDs map[string]struct{},
@@ -551,9 +593,9 @@ func buildProxyGroupOutbounds(
 		if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 			continue
 		}
-		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, nodeOutboundCache, blacklistedNodeIDs)
+		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache, blacklistedNodeIDs)
 		if err != nil {
-			return "", nil, fmt.Errorf("节点 %s 配置无效: %w", node.Name, err)
+			return "", nil, nodeBuildError{node: node, err: err}
 		}
 		memberTags = append(memberTags, nodeTag)
 		outbounds = append(outbounds, nodeOutbounds...)
@@ -571,6 +613,7 @@ func buildProxyGroupOutbounds(
 			childGroup,
 			outboundTags,
 			nodeCache,
+			outboundNodeCache,
 			nodeOutboundCache,
 			groupCache,
 			blacklistedNodeIDs,
@@ -599,6 +642,7 @@ func buildNodeRuntimeOutbounds(
 	node *tables.ProxyNodeTable,
 	outboundTags map[string]struct{},
 	nodeCache map[string]*tables.ProxyNodeTable,
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
 	nodeOutboundCache map[string]string,
 	blacklistedNodeIDs map[string]struct{},
 ) (string, []option.Outbound, error) {
@@ -620,6 +664,7 @@ func buildNodeRuntimeOutbounds(
 		if err != nil {
 			return "", nil, err
 		}
+		outboundNodeCache[tag] = node
 		outboundTags[tag] = struct{}{}
 		return tag, []option.Outbound{outbound}, nil
 	}
@@ -658,6 +703,7 @@ func buildNodeRuntimeOutbounds(
 			}
 		}
 		outbounds = append(outbounds, outbound)
+		outboundNodeCache[chainTag] = chainNode
 		outboundTags[chainTag] = struct{}{}
 		detourTag = chainTag
 	}
@@ -673,6 +719,7 @@ func buildNodeRuntimeOutbounds(
 			}
 		}
 		outbounds = append(outbounds, finalOutbound)
+		outboundNodeCache[tag] = node
 		outboundTags[tag] = struct{}{}
 	}
 	return tag, outbounds, nil
@@ -1490,15 +1537,147 @@ func mappingRuntimeListen(mapping *tables.PortMappingTable) string {
 	return fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort)
 }
 
-func createRuntimeMappingInstance(ctx context.Context, mapping *tables.PortMappingTable) (*box.Box, RuntimeInbound, *RuntimeInboundFailure) {
-	options, mappingInbounds, err := buildSingBoxOptionsFromMappings(ctx, nil, []*tables.PortMappingTable{mapping})
+func nodeFromOutboundInitializeError(
+	err error,
+	outbounds []option.Outbound,
+	outboundNodes map[string]*tables.ProxyNodeTable,
+) *tables.ProxyNodeTable {
+	if err == nil || len(outbounds) == 0 || len(outboundNodes) == 0 {
+		return nil
+	}
+	index, ok := outboundInitializeErrorIndex(err.Error())
+	if !ok || index < 0 || index >= len(outbounds) {
+		return nil
+	}
+	return outboundNodes[outbounds[index].Tag]
+}
+
+func outboundInitializeErrorIndex(message string) (int, bool) {
+	const prefix = "initialize outbound["
+	start := strings.Index(message, prefix)
+	if start < 0 {
+		return 0, false
+	}
+	start += len(prefix)
+	end := strings.IndexByte(message[start:], ']')
+	if end < 0 {
+		return 0, false
+	}
+	index, err := strconv.Atoi(message[start : start+end])
 	if err != nil {
+		return 0, false
+	}
+	return index, true
+}
+
+func outboundTagForNode(outboundNodes map[string]*tables.ProxyNodeTable, node *tables.ProxyNodeTable) string {
+	if node == nil {
+		return ""
+	}
+	preferred := nodeOutboundTag(node.ID)
+	if outboundNodes[preferred] != nil {
+		return preferred
+	}
+	for tag, candidate := range outboundNodes {
+		if candidate != nil && candidate.ID == node.ID {
+			return tag
+		}
+	}
+	return preferred
+}
+
+func runtimeExcludedNodeFromNode(
+	mapping *tables.PortMappingTable,
+	node *tables.ProxyNodeTable,
+	tag string,
+	err error,
+) RuntimeExcludedNode {
+	excluded := RuntimeExcludedNode{
+		Tag:   tag,
+		Error: errorString(err),
+	}
+	if mapping != nil {
+		excluded.MappingID = mapping.ID
+	}
+	if node != nil {
+		excluded.NodeID = node.ID
+		excluded.NodeName = node.Name
+	}
+	return excluded
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func createRuntimeMappingInstance(
+	ctx context.Context,
+	mapping *tables.PortMappingTable,
+) (*box.Box, RuntimeInbound, []RuntimeExcludedNode, *RuntimeInboundFailure) {
+	excludedNodeIDs := map[string]struct{}{}
+	excludedNodes := make([]RuntimeExcludedNode, 0)
+
+	for {
+		instance, inbound, outboundNodes, failure, retryNode := createRuntimeMappingInstanceOnce(ctx, mapping, excludedNodeIDs)
+		if retryNode == nil {
+			return instance, inbound, excludedNodes, failure
+		}
+		if _, exists := excludedNodeIDs[retryNode.node.ID]; exists {
+			if failure == nil {
+				nextFailure := runtimeFailureFromMapping(mapping, retryNode.err)
+				failure = &nextFailure
+			}
+			return nil, RuntimeInbound{}, excludedNodes, failure
+		}
+
+		excluded := runtimeExcludedNodeFromNode(mapping, retryNode.node, outboundTagForNode(outboundNodes, retryNode.node), retryNode.err)
+		excludedNodes = append(excludedNodes, excluded)
+		excludedNodeIDs[retryNode.node.ID] = struct{}{}
+		if _, err := blacklistRuntimeExcludedNode(ctx, retryNode.node, retryNode.err); err != nil {
+			utils.Logger.Warn("自动排除节点写入健康状态失败",
+				zap.String("mappingId", mapping.ID),
+				zap.String("nodeId", retryNode.node.ID),
+				zap.Error(err),
+			)
+		}
+		utils.Logger.Warn("已自动排除运行时不可用节点",
+			zap.String("mappingId", mapping.ID),
+			zap.String("nodeId", retryNode.node.ID),
+			zap.String("nodeName", retryNode.node.Name),
+			zap.Error(retryNode.err),
+		)
+	}
+}
+
+type runtimeNodeFailure struct {
+	node *tables.ProxyNodeTable
+	err  error
+}
+
+func createRuntimeMappingInstanceOnce(
+	ctx context.Context,
+	mapping *tables.PortMappingTable,
+	excludedNodeIDs map[string]struct{},
+) (*box.Box, RuntimeInbound, map[string]*tables.ProxyNodeTable, *RuntimeInboundFailure, *runtimeNodeFailure) {
+	options, mappingInbounds, outboundNodes, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(
+		ctx,
+		nil,
+		[]*tables.PortMappingTable{mapping},
+		excludedNodeIDs,
+	)
+	if err != nil {
+		if buildErr, ok := asNodeBuildError(err); ok {
+			return nil, RuntimeInbound{}, outboundNodes, nil, &runtimeNodeFailure{node: buildErr.node, err: buildErr.err}
+		}
 		failure := runtimeFailureFromMapping(mapping, err)
-		return nil, RuntimeInbound{}, &failure
+		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
 	}
 	if len(mappingInbounds) == 0 {
 		failure := runtimeFailureFromMapping(mapping, errors.New("runtime inbound was not created"))
-		return nil, RuntimeInbound{}, &failure
+		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
 	}
 
 	inbound := mappingInbounds[0]
@@ -1507,21 +1686,25 @@ func createRuntimeMappingInstance(ctx context.Context, mapping *tables.PortMappi
 		Context: singBoxContext(context.Background()),
 	})
 	if err != nil {
+		if node := nodeFromOutboundInitializeError(err, options.Outbounds, outboundNodes); node != nil {
+			return nil, RuntimeInbound{}, outboundNodes, nil, &runtimeNodeFailure{node: node, err: err}
+		}
 		failure := runtimeFailureFromInbound(inbound, err)
-		return nil, RuntimeInbound{}, &failure
+		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
 	}
 	if err := instance.Start(); err != nil {
 		_ = instance.Close()
 		failure := runtimeFailureFromInbound(inbound, err)
-		return nil, RuntimeInbound{}, &failure
+		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
 	}
-	return instance, inbound, nil
+	return instance, inbound, outboundNodes, nil, nil
 }
 
 func runtimeStatusFromResults(
 	total int,
 	inbounds []RuntimeInbound,
 	failures []RuntimeInboundFailure,
+	excludedNodes []RuntimeExcludedNode,
 ) RuntimeStatus {
 	state := "stopped"
 	errorMessage := ""
@@ -1538,20 +1721,33 @@ func runtimeStatusFromResults(
 	}
 
 	return RuntimeStatus{
-		Running:   len(inbounds) > 0,
-		State:     state,
-		Error:     errorMessage,
-		Inbounds:  append([]RuntimeInbound(nil), inbounds...),
-		Failures:  append([]RuntimeInboundFailure(nil), failures...),
+		Running:  len(inbounds) > 0,
+		State:    state,
+		Error:    errorMessage,
+		Inbounds: append([]RuntimeInbound(nil), inbounds...),
+		Failures: append([]RuntimeInboundFailure(nil), failures...),
+		ExcludedNodes: append(
+			[]RuntimeExcludedNode(nil),
+			excludedNodes...,
+		),
 		UpdatedAt: time.Now(),
 	}
 }
 
-func runtimeStatusFromEntries(inbounds []RuntimeInbound, failures []RuntimeInboundFailure) RuntimeStatus {
-	return runtimeStatusFromResults(len(inbounds)+len(failures), inbounds, failures)
+func runtimeStatusFromEntries(
+	inbounds []RuntimeInbound,
+	failures []RuntimeInboundFailure,
+	excludedNodes []RuntimeExcludedNode,
+) RuntimeStatus {
+	return runtimeStatusFromResults(len(inbounds)+len(failures), inbounds, failures, excludedNodes)
 }
 
-func setRuntimeMappingInstance(mappingID string, instance *box.Box, inbound RuntimeInbound) RuntimeStatus {
+func setRuntimeMappingInstance(
+	mappingID string,
+	instance *box.Box,
+	inbound RuntimeInbound,
+	excludedNodes []RuntimeExcludedNode,
+) RuntimeStatus {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
@@ -1562,12 +1758,18 @@ func setRuntimeMappingInstance(mappingID string, instance *box.Box, inbound Runt
 	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
 	inbounds = append(inbounds, inbound)
 	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
-	status := runtimeStatusFromEntries(inbounds, failures)
+	allExcludedNodes := runtimeExcludedNodesWithoutMapping(singBoxRuntime.status.ExcludedNodes, mappingID)
+	allExcludedNodes = append(allExcludedNodes, excludedNodes...)
+	status := runtimeStatusFromEntries(inbounds, failures, allExcludedNodes)
 	singBoxRuntime.status = normalizeRuntimeStatus(status)
 	return singBoxRuntime.status
 }
 
-func setRuntimeMappingFailure(mappingID string, failure RuntimeInboundFailure) RuntimeStatus {
+func setRuntimeMappingFailure(
+	mappingID string,
+	failure RuntimeInboundFailure,
+	excludedNodes []RuntimeExcludedNode,
+) RuntimeStatus {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
@@ -1578,7 +1780,9 @@ func setRuntimeMappingFailure(mappingID string, failure RuntimeInboundFailure) R
 	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
 	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
 	failures = append(failures, failure)
-	status := runtimeStatusFromEntries(inbounds, failures)
+	allExcludedNodes := runtimeExcludedNodesWithoutMapping(singBoxRuntime.status.ExcludedNodes, mappingID)
+	allExcludedNodes = append(allExcludedNodes, excludedNodes...)
+	status := runtimeStatusFromEntries(inbounds, failures, allExcludedNodes)
 	singBoxRuntime.status = normalizeRuntimeStatus(status)
 	return singBoxRuntime.status
 }
@@ -1594,7 +1798,8 @@ func detachRuntimeMapping(mappingID string) *box.Box {
 	delete(singBoxRuntime.instances, mappingID)
 	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
 	failures := runtimeFailuresWithoutMapping(singBoxRuntime.status.Failures, mappingID)
-	singBoxRuntime.status = normalizeRuntimeStatus(runtimeStatusFromEntries(inbounds, failures))
+	excludedNodes := runtimeExcludedNodesWithoutMapping(singBoxRuntime.status.ExcludedNodes, mappingID)
+	singBoxRuntime.status = normalizeRuntimeStatus(runtimeStatusFromEntries(inbounds, failures, excludedNodes))
 	return instance
 }
 
@@ -1613,6 +1818,16 @@ func runtimeFailuresWithoutMapping(failures []RuntimeInboundFailure, mappingID s
 	for _, failure := range failures {
 		if failure.MappingID != mappingID {
 			result = append(result, failure)
+		}
+	}
+	return result
+}
+
+func runtimeExcludedNodesWithoutMapping(excludedNodes []RuntimeExcludedNode, mappingID string) []RuntimeExcludedNode {
+	result := make([]RuntimeExcludedNode, 0, len(excludedNodes))
+	for _, excludedNode := range excludedNodes {
+		if excludedNode.MappingID != mappingID {
+			result = append(result, excludedNode)
 		}
 	}
 	return result
@@ -1656,6 +1871,9 @@ func normalizeRuntimeStatus(status RuntimeStatus) RuntimeStatus {
 	}
 	if status.Failures == nil {
 		status.Failures = []RuntimeInboundFailure{}
+	}
+	if status.ExcludedNodes == nil {
+		status.ExcludedNodes = []RuntimeExcludedNode{}
 	}
 	if status.UpdatedAt.IsZero() {
 		status.UpdatedAt = time.Now()

@@ -144,3 +144,11 @@ export interface ProxyHubStateSnapshot {
   mappings: PortMapping[];
   lastSavedAt: string | null;
 }
+
+export interface RuntimeExcludedNode {
+  mappingId: string;
+  nodeId: string;
+  nodeName: string;
+  tag: string;
+  error: string;
+}

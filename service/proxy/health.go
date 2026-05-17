@@ -204,6 +204,30 @@ func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (
 	return upsertNodeHealth(ctx, nil, nodeID, updates)
 }
 
+func blacklistRuntimeExcludedNode(ctx context.Context, node *tables.ProxyNodeTable, runtimeErr error) (*tables.ProxyNodeHealthTable, error) {
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cfg := normalizeHealthConfig(currentHealthConfig())
+	now := time.Now()
+	until := now.Add(cfg.BlacklistDuration)
+	updates := map[string]any{
+		"node_id":           node.ID,
+		"available":         false,
+		"blacklisted":       true,
+		"blacklisted_until": &until,
+		"failure_count":     cfg.FailureThreshold,
+		"last_error":        errorString(runtimeErr),
+		"last_failure_at":   &now,
+		"updated_at":        now,
+	}
+	return upsertNodeHealth(ctx, nil, node.ID, updates)
+}
+
 func nodeHealthBlacklistedIDs(ctx context.Context, tx model.DBTx) (map[string]struct{}, error) {
 	if ctx == nil {
 		ctx = context.Background()

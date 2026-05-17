@@ -449,6 +449,117 @@ func TestRuntimeReloadIsolatesFailedMapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeReloadExcludesInvalidNodeAndStartsMapping(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	badNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		RawURI: "vless://48a25c54-8826-4657-330e-8db38ef76716@example.com:443?security=tls&flow=bad-flow#bad",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(bad) error = %v", err)
+	}
+	goodPort := uint16(65000)
+	goodNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "good socks",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &goodPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(good) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{badNode.ID, goodNode.ID},
+		ActiveNodeID:     &badNode.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	status, err := RuntimeReload(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	if !status.Running || status.State != "running" {
+		t.Fatalf("Runtime status = %+v, want running", status)
+	}
+	if len(status.Inbounds) != 1 || status.Inbounds[0].MappingID != mapping.ID {
+		t.Fatalf("Runtime inbounds = %+v, want mapping %q", status.Inbounds, mapping.ID)
+	}
+	if status.Inbounds[0].Outbound != nodeOutboundTag(goodNode.ID) {
+		t.Fatalf("Runtime outbound = %q, want good node tag", status.Inbounds[0].Outbound)
+	}
+	if len(status.Failures) != 0 {
+		t.Fatalf("Runtime failures = %+v, want none", status.Failures)
+	}
+	if len(status.ExcludedNodes) != 1 || status.ExcludedNodes[0].NodeID != badNode.ID {
+		t.Fatalf("Excluded nodes = %+v, want bad node %q", status.ExcludedNodes, badNode.ID)
+	}
+	health, err := getNodeHealth(ctx, nil, badNode.ID)
+	if err != nil {
+		t.Fatalf("getNodeHealth() error = %v", err)
+	}
+	if health == nil || !health.Blacklisted || health.Available {
+		t.Fatalf("Bad node health = %+v, want blacklisted unavailable", health)
+	}
+}
+
+func TestRuntimeReloadExcludesOnlyInvalidNodeToBlockRoute(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	badNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		RawURI: "vless://48a25c54-8826-4657-330e-8db38ef76716@example.com:443?security=tls&flow=bad-flow#bad",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{badNode.ID},
+		ActiveNodeID:     &badNode.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	status, err := RuntimeReload(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	if !status.Running || status.State != "running" {
+		t.Fatalf("Runtime status = %+v, want running block-only mapping", status)
+	}
+	if len(status.Inbounds) != 1 || status.Inbounds[0].MappingID != mapping.ID {
+		t.Fatalf("Runtime inbounds = %+v, want mapping %q", status.Inbounds, mapping.ID)
+	}
+	if status.Inbounds[0].Outbound != constant.TypeBlock {
+		t.Fatalf("Runtime outbound = %q, want block", status.Inbounds[0].Outbound)
+	}
+	if len(status.ExcludedNodes) != 1 || status.ExcludedNodes[0].NodeID != badNode.ID {
+		t.Fatalf("Excluded nodes = %+v, want bad node %q", status.ExcludedNodes, badNode.ID)
+	}
+	if len(status.Failures) != 0 {
+		t.Fatalf("Runtime failures = %+v, want none", status.Failures)
+	}
+}
+
 func TestRuntimeReloadReportsAllMappingsFailed(t *testing.T) {
 	initProxyInMemoryDB(t)
 	t.Cleanup(func() {

@@ -176,6 +176,7 @@ export const messages = {
         runtimeFailureUnknown: '未知原因',
         runtimeFailureUnknownPort: '未知端口',
         runtimeFailures: '{count} 个端口启动失败：{details}',
+        runtimeExcludedNodes: '已自动排除 {count} 个不可用节点。',
         runtimeRunning: '已连接后端，代理运行中（{count} 个入口）。',
         runtimeStopped: '已连接后端，代理运行时未启动。',
         savingBackend: '正在保存到后端…',
@@ -208,6 +209,8 @@ export const messages = {
         username: '用户名：{value}',
       },
       nodeHealth: {
+        blacklisted: '已排除',
+        blacklistedWithReason: '已排除：{reason}',
         failure: '失败数',
         latency: '延迟',
         success: '成功数',
@@ -554,6 +557,7 @@ export const messages = {
         runtimeFailureUnknown: 'Unknown reason',
         runtimeFailureUnknownPort: 'Unknown port',
         runtimeFailures: '{count} port(s) failed to start: {details}',
+        runtimeExcludedNodes: '{count} unusable node(s) excluded automatically.',
         runtimeRunning: 'Backend connected, proxy runtime is running ({count} inbounds).',
         runtimeStopped: 'Backend connected, proxy runtime is stopped.',
         savingBackend: 'Saving to backend...',
@@ -586,6 +590,8 @@ export const messages = {
         username: 'Username: {value}',
       },
       nodeHealth: {
+        blacklisted: 'Excluded',
+        blacklistedWithReason: 'Excluded: {reason}',
         failure: 'Failures',
         latency: 'Latency',
         success: 'Successes',
