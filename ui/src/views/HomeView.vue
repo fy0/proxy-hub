@@ -140,6 +140,7 @@ const {
   enabledMappings,
   nodeById,
   nodeOptionById,
+  nodeHealthById,
   groupById,
   runtime,
   isLoading,
@@ -430,7 +431,9 @@ function optionToProxyNode(option: ProxyNodeOption): ProxyNode {
 }
 
 function nodeFromCache(id: string): ProxyNode | null {
-  return nodeById.value.get(id) ?? optionToProxyNode(nodeOptionById.value.get(id) ?? nullOption(id));
+  const node = nodeById.value.get(id) ?? optionToProxyNode(nodeOptionById.value.get(id) ?? nullOption(id));
+  const health = nodeHealthById.value[id];
+  return health ? { ...node, health } : node;
 }
 
 function nullOption(id: string): ProxyNodeOption {

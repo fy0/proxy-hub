@@ -284,6 +284,63 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
 	}
 }
 
+func TestBuildHealthProbeNodeOutboundsSupportsChainNodes(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	firstPort := uint16(1081)
+	secondPort := uint16(1082)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &firstPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     &secondPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "A to B",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	tag, outbounds, err := buildHealthProbeNodeOutbounds(ctx, chain)
+	if err != nil {
+		t.Fatalf("buildHealthProbeNodeOutbounds() error = %v", err)
+	}
+	if tag != nodeOutboundTag(chain.ID) {
+		t.Fatalf("health probe outbound tag = %q, want %q", tag, nodeOutboundTag(chain.ID))
+	}
+	finalOutbound := findTestOutbound(outbounds, nodeOutboundTag(chain.ID))
+	if finalOutbound == nil {
+		t.Fatalf("chain outbound %q not found", nodeOutboundTag(chain.ID))
+	}
+	dialer, ok := finalOutbound.Options.(option.DialerOptionsWrapper)
+	if !ok {
+		t.Fatalf("chain outbound options type = %T, want dialer options", finalOutbound.Options)
+	}
+	wantDetour := nodeChainMemberOutboundTag(chain.ID, 0, first.ID)
+	if got := dialer.TakeDialerOptions().Detour; got != wantDetour {
+		t.Fatalf("health probe chain final detour = %q, want %q", got, wantDetour)
+	}
+	if findTestOutbound(outbounds, wantDetour) == nil {
+		t.Fatalf("first chain member outbound %q not found", wantDetour)
+	}
+}
+
 func TestBuildSingBoxOptionsIncludesAdditionalProtocolOutbounds(t *testing.T) {
 	initProxyInMemoryDB(t)
 

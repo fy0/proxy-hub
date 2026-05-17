@@ -5,6 +5,7 @@ import {
   deleteProxyNodesById,
   deleteProxySubscriptionsById,
   getProxyNodeOptions,
+  getProxyNodesHealth,
   getProxyNodes,
   getProxyRuntimeStatus,
   getProxyState,
@@ -141,6 +142,7 @@ const nodesPage = ref(1);
 const nodesPageSize = ref(50);
 const isLoadingNodes = ref(false);
 const nodeOptionsCache = ref<Record<string, ProxyNodeOption>>({});
+const nodeHealthById = ref<Record<string, ProxyNodeHealth>>({});
 const groups = ref<ProxyGroup[]>([]);
 const subscriptions = ref<ProxySubscription[]>([]);
 const mappings = ref<PortMapping[]>([]);
@@ -411,6 +413,17 @@ function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null 
   };
 }
 
+function cacheNodeHealth(items: Array<ProxyNodeHealth | null | undefined>): void {
+  const healthItems = items.filter((item): item is ProxyNodeHealth => Boolean(item?.nodeId));
+  if (healthItems.length === 0) return;
+
+  const next = { ...nodeHealthById.value };
+  for (const health of healthItems) {
+    next[health.nodeId] = health;
+  }
+  nodeHealthById.value = next;
+}
+
 function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
   return {
     targetType: dto.targetType,
@@ -534,6 +547,7 @@ function applySnapshot(snapshot: StateSnapshotDto): void {
   runtime.value = snapshot.runtime;
   lastSavedAt.value = snapshot.lastSavedAt;
   cacheNodeOptions(nodes.value.map(nodeToOption));
+  cacheNodeHealth(nodes.value.map(node => node.health));
 }
 
 function markSaved(timestamp = new Date().toISOString()): void {
@@ -720,6 +734,9 @@ function removeNodeFromLocalState(id: string): void {
   const nextOptions = { ...nodeOptionsCache.value };
   delete nextOptions[id];
   nodeOptionsCache.value = nextOptions;
+  const nextHealth = { ...nodeHealthById.value };
+  delete nextHealth[id];
+  nodeHealthById.value = nextHealth;
   groups.value = groups.value.map(group => ({
     ...group,
     nodeIds: group.nodeIds.filter(nodeId => nodeId !== id),
@@ -781,6 +798,7 @@ export async function refreshProxyHubState(): Promise<void> {
       throwOnError: true,
     });
     applySnapshot(data);
+    await refreshNodeHealth();
   } catch (error) {
     setBackendError(error);
     throw error;
@@ -826,11 +844,21 @@ async function loadNodes(input: NodeQueryInput = {}, append = false): Promise<vo
     nodesPage.value = data.page;
     nodesPageSize.value = data.size;
     cacheNodeOptions(items.map(nodeToOption));
+    cacheNodeHealth(items.map(node => node.health));
   } catch (error) {
     setBackendError(error);
     throw error;
   } finally {
     isLoadingNodes.value = false;
+  }
+}
+
+async function refreshNodeHealth(): Promise<void> {
+  try {
+    const { data } = await getProxyNodesHealth({ throwOnError: true });
+    cacheNodeHealth((data.items ?? []).map(toProxyNodeHealth));
+  } catch {
+    // Health is secondary; node and runtime state stay usable without it.
   }
 }
 
@@ -989,6 +1017,7 @@ async function testNode(id: string, probeUrl = ''): Promise<ProxyTestResult> {
     });
     const result = toProxyTestResult(data);
     if (result.health) {
+      cacheNodeHealth([result.health]);
       nodes.value = nodes.value.map(node =>
         node.id === id ? { ...node, health: result.health } : node
       );
@@ -1182,6 +1211,7 @@ export function useProxyHubState() {
     nodesPageSize,
     isLoadingNodes,
     nodeOptionsCache,
+    nodeHealthById,
     groups,
     subscriptions,
     mappings,
@@ -1197,6 +1227,7 @@ export function useProxyHubState() {
     groupById,
     subscriptionById,
     refreshState: refreshProxyHubState,
+    refreshNodeHealth,
     loadNodes,
     loadMoreNodes,
     fetchNodeOptions,

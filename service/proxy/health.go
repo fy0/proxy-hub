@@ -709,8 +709,7 @@ func mappingProbeProxyURL(mapping *tables.PortMappingTable) (*url.URL, error) {
 }
 
 func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*url.URL, *box.Box, error) {
-	outboundTag := "health-node-" + node.ID
-	outbound, err := buildNodeOutbound(node, outboundTag)
+	outboundTag, nodeOutbounds, err := buildHealthProbeNodeOutbounds(ctx, node)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -742,7 +741,7 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 				},
 			},
 		},
-		Outbounds: []option.Outbound{
+		Outbounds: append([]option.Outbound{
 			{
 				Type:    constant.TypeDirect,
 				Tag:     constant.TypeDirect,
@@ -753,8 +752,7 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 				Tag:     constant.TypeBlock,
 				Options: &option.StubOptions{},
 			},
-			outbound,
-		},
+		}, nodeOutbounds...),
 		Route: &option.RouteOptions{
 			Rules: []option.Rule{buildInboundRouteRule(inboundTag, outboundTag)},
 			Final: constant.TypeBlock,
@@ -777,6 +775,23 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 		return nil, nil, err
 	}
 	return proxyURL, instance, nil
+}
+
+func buildHealthProbeNodeOutbounds(ctx context.Context, node *tables.ProxyNodeTable) (string, []option.Outbound, error) {
+	outboundTags := map[string]struct{}{
+		constant.TypeDirect: {},
+		constant.TypeBlock:  {},
+	}
+	return buildNodeRuntimeOutbounds(
+		ctx,
+		nil,
+		node,
+		outboundTags,
+		map[string]*tables.ProxyNodeTable{},
+		map[string]*tables.ProxyNodeTable{},
+		map[string]string{},
+		map[string]struct{}{},
+	)
 }
 
 func reserveHealthProbePort() (uint16, error) {
