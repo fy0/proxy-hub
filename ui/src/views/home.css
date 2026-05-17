@@ -802,7 +802,7 @@
 
 .action-tooltip-content {
   z-index: 60;
-  max-width: min(180px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
   padding: 7px 10px;
   border-radius: 9px;
   background: rgb(15 23 42);
@@ -810,7 +810,7 @@
   font-size: 12px;
   line-height: 1.2;
   font-weight: 650;
-  white-space: normal;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   box-shadow: 0 10px 22px rgb(15 23 42 / 0.2);
   transform-origin: var(--reka-tooltip-content-transform-origin);
@@ -1547,14 +1547,77 @@ textarea:focus {
   grid-column: 2 / span 2;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   color: rgb(100 116 139);
   font-size: 12px;
 }
 
+.node-health-strip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: rgb(71 85 105);
+  font-family: 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.node-health-strip small {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: 7px;
+  background: rgb(248 250 252);
+  box-shadow: inset 0 0 0 1px rgb(15 23 42 / 0.06);
+}
+
+.node-health-strip .latency {
+  color: rgb(15 23 42);
+}
+
+.node-health-strip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.node-health-strip .success {
+  color: rgb(22 163 74);
+}
+
+.node-health-strip .failure {
+  color: rgb(220 38 38);
+}
+
+.node-health-strip.blacklisted small {
+  background: rgb(254 242 242);
+  box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.28);
+}
+
+.node-meta .action-tooltip-trigger {
+  min-width: 0;
+}
+
 .node-meta .blacklisted {
+  max-width: 100%;
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 7px;
+  background: rgb(254 242 242);
   color: rgb(185 28 28);
   font-weight: 750;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .manual-node-form,

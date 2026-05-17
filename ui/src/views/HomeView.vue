@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useClipboard, useVirtualList } from '@vueuse/core';
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
   Copy,
@@ -217,6 +217,7 @@ const duplicateRouteNodeDialog = ref<DuplicateRouteNodeDialog | null>(null);
 const testDialog = ref<TestDialogState | null>(null);
 const testUrl = ref('https://www.gstatic.com/generate_204');
 const isTesting = ref(false);
+const healthClock = ref(Date.now());
 
 const emptyMappingForm = () => ({
   listenAddress: '0.0.0.0',
@@ -547,6 +548,20 @@ const {
 });
 
 let nodeSearchTimer: number | null = null;
+let healthClockTimer: number | null = null;
+
+onMounted(() => {
+  healthClockTimer = window.setInterval(() => {
+    healthClock.value = Date.now();
+  }, 60_000);
+});
+
+onBeforeUnmount(() => {
+  if (healthClockTimer !== null) {
+    window.clearInterval(healthClockTimer);
+    healthClockTimer = null;
+  }
+});
 
 async function reloadCurrentNodes(): Promise<void> {
   if (activeNodeGroupFilter.value === 'summary') return;
@@ -1822,6 +1837,64 @@ function routeFailureLabel(node: ProxyNode): string {
   return String(node.health?.failureCount ?? 0);
 }
 
+function nodeHealthTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function nodeHealthDateTime(value: string): string {
+  return formatDateTime(value, {
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    second: '2-digit',
+    year: 'numeric',
+  });
+}
+
+function formatHealthDuration(ms: number): string {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  if (minutes < 60) return t('home.nodeHealth.durationMinutes', { count: minutes });
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) {
+    return remainingMinutes > 0
+      ? t('home.nodeHealth.durationHoursMinutes', {
+          hours,
+          minutes: remainingMinutes,
+        })
+      : t('home.nodeHealth.durationHours', { count: hours });
+  }
+
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0
+    ? t('home.nodeHealth.durationDaysHours', { days, hours: remainingHours })
+    : t('home.nodeHealth.durationDays', { count: days });
+}
+
+function nodeBlacklistRemainingMs(node: ProxyNode): number | null {
+  const until = nodeHealthTime(node.health?.blacklistedUntil);
+  if (until === null) return null;
+  return Math.max(0, until - healthClock.value);
+}
+
+function nodeBlacklistLabel(node: ProxyNode): string {
+  if (!node.health?.blacklisted) return '';
+
+  const remainingMs = nodeBlacklistRemainingMs(node);
+  if (remainingMs === null) return t('home.nodeHealth.blacklistedPendingProbe');
+  if (remainingMs === 0) return t('home.nodeHealth.blacklistedRecoveringSoon');
+
+  return t('home.nodeHealth.blacklistedRemaining', {
+    duration: formatHealthDuration(remainingMs),
+  });
+}
+
 function testStatusLabel(result: ProxyTestResult | null, error = ''): string {
   if (isTesting.value) return t('home.test.running');
   if (error) return t('home.test.failed');
@@ -1848,13 +1921,42 @@ function testNodeError(result: ProxyTestResult | null): string {
 }
 
 function nodeHealthTitle(node: ProxyNode): string {
-  const error = node.health?.lastError?.trim();
-  if (!node.health?.blacklisted && !error) return '';
-  if (node.health?.blacklisted && error) {
-    return t('home.nodeHealth.blacklistedWithReason', { reason: error });
+  if (!node.health) return '';
+
+  const details = [
+    t('home.nodeHealth.summary', {
+      latency: routeLatencyLabel(node),
+      success: routeSuccessLabel(node),
+      failure: routeFailureLabel(node),
+    }),
+  ];
+
+  if (node.health.blacklisted) {
+    details.unshift(nodeBlacklistLabel(node));
+
+    if (node.health.blacklistedUntil) {
+      details.push(
+        t('home.nodeHealth.blacklistedUntilTime', {
+          time: nodeHealthDateTime(node.health.blacklistedUntil),
+        })
+      );
+    }
   }
-  if (node.health?.blacklisted) return t('home.nodeHealth.blacklisted');
-  return error ?? '';
+
+  const error = node.health?.lastError?.trim();
+  if (error) {
+    details.push(t('home.nodeHealth.lastError', { reason: error }));
+  }
+
+  if (node.health.lastCheckedAt) {
+    details.push(
+      t('home.nodeHealth.checkedAt', {
+        time: nodeHealthDateTime(node.health.lastCheckedAt),
+      })
+    );
+  }
+
+  return details.join('\n');
 }
 </script>
 
@@ -2323,7 +2425,6 @@ function nodeHealthTitle(node: ProxyNode): string {
                   class="node-row"
                   :class="{ blacklisted: row.data.health?.blacklisted }"
                   :style="{ height: '116px' }"
-                  :title="nodeHealthTitle(row.data)"
                 >
                   <div class="node-protocol" :class="{ chain: row.data.protocol === 'chain' }">
                     {{ protocolLabels[row.data.protocol] }}
@@ -2386,13 +2487,42 @@ function nodeHealthTitle(node: ProxyNode): string {
                     <small v-if="row.data.username">{{
                       t('home.nodeMeta.username', { value: row.data.username })
                     }}</small>
-                    <small v-if="row.data.password">{{ t('home.nodeMeta.passwordConfigured') }}</small>
-                    <small v-if="row.data.protocol !== 'chain' && !row.data.username && !row.data.password">{{
-                      t('common.noAccount')
+                    <small v-if="row.data.password">{{
+                      t('home.nodeMeta.passwordConfigured')
                     }}</small>
-                    <small v-if="row.data.health?.blacklisted" class="blacklisted">{{
-                      t('home.nodeHealth.blacklisted')
-                    }}</small>
+                    <small
+                      v-if="
+                        row.data.protocol !== 'chain' && !row.data.username && !row.data.password
+                      "
+                      >{{ t('common.noAccount') }}</small
+                    >
+                    <span
+                      class="node-health-strip"
+                      :class="{ blacklisted: row.data.health?.blacklisted }"
+                    >
+                      <small class="latency" :title="t('home.nodeHealth.latency')">
+                        {{ routeLatencyLabel(row.data) }}
+                      </small>
+                      <small class="success" :title="t('home.nodeHealth.success')">
+                        <i aria-hidden="true"></i>
+                        {{ routeSuccessLabel(row.data) }}
+                      </small>
+                      <small class="failure" :title="t('home.nodeHealth.failure')">
+                        <i aria-hidden="true"></i>
+                        {{ routeFailureLabel(row.data) }}
+                      </small>
+                    </span>
+                    <ActionTooltip
+                      v-if="row.data.health?.blacklisted"
+                      :label="nodeHealthTitle(row.data)"
+                      side="bottom"
+                      align="start"
+                      wrap
+                    >
+                      <small class="blacklisted" tabindex="0">{{
+                        nodeBlacklistLabel(row.data)
+                      }}</small>
+                    </ActionTooltip>
                   </div>
                 </article>
               </div>
