@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
 	"proxy-hub/utils"
@@ -890,7 +891,7 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 	}
 	instance, err := box.New(box.Options{
 		Options: options,
-		Context: singBoxContext(ctx),
+		Context: singboxcore.BoxContext(ctx),
 	})
 	if err != nil {
 		return nil, nil, err

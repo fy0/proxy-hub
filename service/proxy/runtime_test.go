@@ -552,8 +552,8 @@ func TestRuntimeReloadExcludesInvalidNodeAndStartsMapping(t *testing.T) {
 	if len(status.Inbounds) != 1 || status.Inbounds[0].MappingID != mapping.ID {
 		t.Fatalf("Runtime inbounds = %+v, want mapping %q", status.Inbounds, mapping.ID)
 	}
-	if status.Inbounds[0].Outbound != nodeOutboundTag(goodNode.ID) {
-		t.Fatalf("Runtime outbound = %q, want good node tag", status.Inbounds[0].Outbound)
+	if status.Inbounds[0].Outbound != mappingOutboundTag(mapping.ID) {
+		t.Fatalf("Runtime outbound = %q, want mapping dynamic group tag", status.Inbounds[0].Outbound)
 	}
 	if len(status.Failures) != 0 {
 		t.Fatalf("Runtime failures = %+v, want none", status.Failures)
@@ -606,8 +606,8 @@ func TestRuntimeReloadExcludesOnlyInvalidNodeToBlockRoute(t *testing.T) {
 	if len(status.Inbounds) != 1 || status.Inbounds[0].MappingID != mapping.ID {
 		t.Fatalf("Runtime inbounds = %+v, want mapping %q", status.Inbounds, mapping.ID)
 	}
-	if status.Inbounds[0].Outbound != constant.TypeBlock {
-		t.Fatalf("Runtime outbound = %q, want block", status.Inbounds[0].Outbound)
+	if status.Inbounds[0].Outbound != mappingOutboundTag(mapping.ID) {
+		t.Fatalf("Runtime outbound = %q, want mapping dynamic group tag", status.Inbounds[0].Outbound)
 	}
 	if len(status.ExcludedNodes) != 1 || status.ExcludedNodes[0].NodeID != badNode.ID {
 		t.Fatalf("Excluded nodes = %+v, want bad node %q", status.ExcludedNodes, badNode.ID)
@@ -700,6 +700,271 @@ func TestRuntimeSyncMappingDoesNotTouchUnrelatedFailures(t *testing.T) {
 	}
 	if len(status.Failures) != 1 || status.Failures[0].MappingID != failedMapping.ID {
 		t.Fatalf("failures after running sync = %+v, want preserved failed mapping", status.Failures)
+	}
+}
+
+func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	portA := uint16(65001)
+	nodeA, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portA,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node-a) error = %v", err)
+	}
+	portB := uint16(65002)
+	nodeB, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node-b",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portB,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node-b) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{nodeA.ID},
+		ActiveNodeID:     &nodeA.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	before := runtimeInstanceForMapping(mapping.ID)
+	if before == nil {
+		t.Fatalf("runtime instance was not created")
+	}
+
+	if _, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+		NodeIDs:          []string{nodeA.ID, nodeB.ID},
+		ActiveNodeID:     &nodeB.ID,
+	}); err != nil {
+		t.Fatalf("MappingUpdate() error = %v", err)
+	}
+	status, err := RuntimeSyncMapping(ctx, mapping.ID)
+	if err != nil {
+		t.Fatalf("RuntimeSyncMapping() error = %v", err)
+	}
+	after := runtimeInstanceForMapping(mapping.ID)
+	if before != after {
+		t.Fatalf("runtime instance was replaced during node-only update")
+	}
+	if len(status.Inbounds) != 1 || status.Inbounds[0].Outbound != mappingOutboundTag(mapping.ID) {
+		t.Fatalf("status inbounds = %+v, want stable mapping dynamic group", status.Inbounds)
+	}
+	snapshot := after.core.Snapshot()
+	var selected string
+	var members []string
+	for _, group := range snapshot.Groups {
+		if group.Tag != mappingOutboundTag(mapping.ID) {
+			continue
+		}
+		selected = group.Selected
+		for _, node := range group.Nodes {
+			members = append(members, node.ID)
+		}
+	}
+	if selected != nodeB.ID {
+		t.Fatalf("dynamic group selected = %q, want %q", selected, nodeB.ID)
+	}
+	if !containsString(members, nodeA.ID) || !containsString(members, nodeB.ID) {
+		t.Fatalf("dynamic group members = %v, want node-a and node-b", members)
+	}
+}
+
+func TestRuntimeMappingCanRouteToExistingGroup(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	port := uint16(65003)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "existing group",
+		Strategy: GroupStrategySelector,
+		NodeIDs:  []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	status, err := RuntimeReload(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("Runtime status = %+v, want running", status)
+	}
+	instance := runtimeInstanceForMapping(mapping.ID)
+	if instance == nil {
+		t.Fatalf("runtime instance was not created")
+	}
+	snapshot := instance.core.Snapshot()
+	var mappingGroupMembers []string
+	var childGroupMembers []string
+	for _, groupState := range snapshot.Groups {
+		switch groupState.Tag {
+		case mappingOutboundTag(mapping.ID):
+			for _, nodeState := range groupState.Nodes {
+				mappingGroupMembers = append(mappingGroupMembers, nodeState.ID)
+			}
+		case proxyGroupOutboundTag(group.ID):
+			for _, nodeState := range groupState.Nodes {
+				childGroupMembers = append(childGroupMembers, nodeState.ID)
+			}
+		}
+	}
+	if !containsString(mappingGroupMembers, group.ID) {
+		t.Fatalf("mapping dynamic group members = %v, want existing group %q", mappingGroupMembers, group.ID)
+	}
+	if !containsString(childGroupMembers, node.ID) {
+		t.Fatalf("child dynamic group members = %v, want node %q", childGroupMembers, node.ID)
+	}
+}
+
+func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	port := uint16(65004)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "existing group",
+		Strategy: GroupStrategySelector,
+		NodeIDs:  []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	before := runtimeInstanceForMapping(mapping.ID)
+	if before == nil {
+		t.Fatalf("runtime instance was not created")
+	}
+
+	if _, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+	}); err != nil {
+		t.Fatalf("MappingUpdate(remove group) error = %v", err)
+	}
+	if _, err := RuntimeSyncMapping(ctx, mapping.ID); err != nil {
+		t.Fatalf("RuntimeSyncMapping(remove group) error = %v", err)
+	}
+	if runtimeInstanceForMapping(mapping.ID) != before {
+		t.Fatalf("runtime instance was replaced while removing group member")
+	}
+
+	if _, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	}); err != nil {
+		t.Fatalf("MappingUpdate(re-add group) error = %v", err)
+	}
+	if _, err := RuntimeSyncMapping(ctx, mapping.ID); err != nil {
+		t.Fatalf("RuntimeSyncMapping(re-add group) error = %v", err)
+	}
+	after := runtimeInstanceForMapping(mapping.ID)
+	if after != before {
+		t.Fatalf("runtime instance was replaced while re-adding existing group")
+	}
+
+	snapshot := after.core.Snapshot()
+	var mappingGroupMembers []string
+	var childGroupMembers []string
+	for _, groupState := range snapshot.Groups {
+		switch groupState.Tag {
+		case mappingOutboundTag(mapping.ID):
+			for _, nodeState := range groupState.Nodes {
+				mappingGroupMembers = append(mappingGroupMembers, nodeState.ID)
+			}
+		case proxyGroupOutboundTag(group.ID):
+			for _, nodeState := range groupState.Nodes {
+				childGroupMembers = append(childGroupMembers, nodeState.ID)
+			}
+		}
+	}
+	if !containsString(mappingGroupMembers, group.ID) {
+		t.Fatalf("mapping dynamic group members after re-add = %v, want group %q", mappingGroupMembers, group.ID)
+	}
+	if !containsString(childGroupMembers, node.ID) {
+		t.Fatalf("child dynamic group members after re-add = %v, want node %q", childGroupMembers, node.ID)
 	}
 }
 

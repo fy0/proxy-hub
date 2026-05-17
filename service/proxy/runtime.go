@@ -6,39 +6,20 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	box "github.com/sagernet/sing-box"
-	"github.com/sagernet/sing-box/adapter/endpoint"
-	adapterInbound "github.com/sagernet/sing-box/adapter/inbound"
-	adapterOutbound "github.com/sagernet/sing-box/adapter/outbound"
-	adapterService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/constant"
-	"github.com/sagernet/sing-box/dns"
-	"github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/protocol/block"
-	"github.com/sagernet/sing-box/protocol/direct"
-	"github.com/sagernet/sing-box/protocol/group"
-	protocolHTTP "github.com/sagernet/sing-box/protocol/http"
-	"github.com/sagernet/sing-box/protocol/hysteria"
-	"github.com/sagernet/sing-box/protocol/hysteria2"
-	"github.com/sagernet/sing-box/protocol/mixed"
-	"github.com/sagernet/sing-box/protocol/shadowsocks"
-	"github.com/sagernet/sing-box/protocol/socks"
-	"github.com/sagernet/sing-box/protocol/ssh"
-	"github.com/sagernet/sing-box/protocol/trojan"
-	"github.com/sagernet/sing-box/protocol/tuic"
-	"github.com/sagernet/sing-box/protocol/vless"
-	"github.com/sagernet/sing-box/protocol/vmess"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/byteformats"
 	"github.com/sagernet/sing/common/json/badoption"
 	"go.uber.org/zap"
 
+	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
 	"proxy-hub/utils"
@@ -76,15 +57,58 @@ type RuntimeStatus struct {
 	UpdatedAt     time.Time               `json:"updatedAt"`
 }
 
+type runtimeInstance struct {
+	core       *singboxcore.Core
+	inbound    RuntimeInbound
+	inboundKey string
+}
+
 type runtimeManager struct {
 	mu        sync.Mutex
-	instances map[string]*box.Box
+	instances map[string]*runtimeInstance
 	status    RuntimeStatus
 }
 
 type nodeBuildError struct {
 	node *tables.ProxyNodeTable
 	err  error
+}
+
+type dynamicRuntimePlan struct {
+	options       option.Options
+	inbound       RuntimeInbound
+	inboundKey    string
+	groups        []dynamicGroupPlan
+	outbounds     map[string]option.Outbound
+	outboundNodes map[string]*tables.ProxyNodeTable
+}
+
+type dynamicGroupPlan struct {
+	tag      string
+	policy   singboxcore.Policy
+	members  []dynamicMemberPlan
+	selected string
+}
+
+type dynamicMemberPlan struct {
+	id        string
+	tag       string
+	outbound  option.Outbound
+	outbounds []option.Outbound
+	builtin   bool
+}
+
+func (m dynamicMemberPlan) outboundTags() []string {
+	tags := make([]string, 0, len(m.outbounds)+1)
+	for _, outbound := range m.outbounds {
+		if outbound.Tag != "" {
+			tags = append(tags, outbound.Tag)
+		}
+	}
+	if !containsString(tags, m.tag) {
+		tags = append(tags, m.tag)
+	}
+	return uniqueNonEmpty(tags)
 }
 
 func (err nodeBuildError) Error() string {
@@ -110,7 +134,7 @@ func asNodeBuildError(err error) (nodeBuildError, bool) {
 }
 
 var singBoxRuntime = &runtimeManager{
-	instances: map[string]*box.Box{},
+	instances: map[string]*runtimeInstance{},
 	status: RuntimeStatus{
 		State:     "stopped",
 		Inbounds:  []RuntimeInbound{},
@@ -153,7 +177,7 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 		utils.Logger.Warn("关闭旧 sing-box 实例失败", zap.Error(closeErr))
 	}
 
-	instances := make(map[string]*box.Box, len(mappings))
+	instances := make(map[string]*runtimeInstance, len(mappings))
 	inbounds := make([]RuntimeInbound, 0, len(mappings))
 	failures := make([]RuntimeInboundFailure, 0)
 	excludedNodes := make([]RuntimeExcludedNode, 0)
@@ -195,6 +219,10 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 	}
 	if !mapping.Enabled {
 		return RuntimeRemoveMapping(mapping.ID)
+	}
+
+	if updated, status, err := syncRuntimeMappingDynamic(ctx, mapping); updated {
+		return status, err
 	}
 
 	oldInstance := detachRuntimeMapping(mapping.ID)
@@ -282,6 +310,35 @@ func RuntimeStop() error {
 	})
 
 	return closeRuntimeInstances(instances)
+}
+
+func syncRuntimeMappingDynamic(ctx context.Context, mapping *tables.PortMappingTable) (bool, RuntimeStatus, error) {
+	if mapping == nil {
+		return false, RuntimeStatusGet(), nil
+	}
+	existing := runtimeInstanceForMapping(mapping.ID)
+	if existing == nil || existing.core == nil {
+		return false, RuntimeStatusGet(), nil
+	}
+	nextInbound, err := buildMappingInbound(mapping)
+	if err != nil {
+		return false, RuntimeStatusGet(), err
+	}
+	nextInboundStatus := RuntimeInbound{
+		MappingID: mapping.ID,
+		Tag:       nextInbound.Tag,
+		Listen:    mappingRuntimeListen(mapping),
+		Outbound:  mappingOutboundTag(mapping.ID),
+	}
+	if existing.inboundKey != runtimeInboundKey(nextInboundStatus, mapping) {
+		return false, RuntimeStatusGet(), nil
+	}
+
+	excludedNodes, failure := syncRuntimeInstanceMembership(ctx, mapping, existing)
+	if failure != nil {
+		return true, setRuntimeMappingFailure(mapping.ID, *failure, excludedNodes), nil
+	}
+	return true, setRuntimeMappingInstance(mapping.ID, existing, nextInboundStatus, excludedNodes), nil
 }
 
 func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []RuntimeInbound, error) {
@@ -440,39 +497,522 @@ func buildSingBoxOptionsFromMappingsWithExcludedNodes(
 	return options, statusInbounds, outboundNodeCache, nil
 }
 
-func singBoxContext(ctx context.Context) context.Context {
-	inboundRegistry := adapterInbound.NewRegistry()
-	socks.RegisterInbound(inboundRegistry)
-	protocolHTTP.RegisterInbound(inboundRegistry)
-	mixed.RegisterInbound(inboundRegistry)
+func buildDynamicRuntimePlanForMapping(
+	ctx context.Context,
+	tx model.DBTx,
+	mapping *tables.PortMappingTable,
+	excludedNodeIDs map[string]struct{},
+) (*dynamicRuntimePlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+	if mapping == nil {
+		return nil, ErrMappingNotFound
+	}
 
-	outboundRegistry := adapterOutbound.NewRegistry()
-	block.RegisterOutbound(outboundRegistry)
-	direct.RegisterOutbound(outboundRegistry)
-	group.RegisterSelector(outboundRegistry)
-	group.RegisterURLTest(outboundRegistry)
-	socks.RegisterOutbound(outboundRegistry)
-	protocolHTTP.RegisterOutbound(outboundRegistry)
-	shadowsocks.RegisterOutbound(outboundRegistry)
-	hysteria.RegisterOutbound(outboundRegistry)
-	hysteria2.RegisterOutbound(outboundRegistry)
-	vmess.RegisterOutbound(outboundRegistry)
-	trojan.RegisterOutbound(outboundRegistry)
-	tuic.RegisterOutbound(outboundRegistry)
-	ssh.RegisterOutbound(outboundRegistry)
-	vless.RegisterOutbound(outboundRegistry)
+	inbound, err := buildMappingInbound(mapping)
+	if err != nil {
+		return nil, err
+	}
+	statusInbound := RuntimeInbound{
+		MappingID: mapping.ID,
+		Tag:       inbound.Tag,
+		Listen:    mappingRuntimeListen(mapping),
+		Outbound:  mappingOutboundTag(mapping.ID),
+	}
 
-	dnsRegistry := dns.NewTransportRegistry()
-	local.RegisterTransport(dnsRegistry)
+	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for nodeID := range excludedNodeIDs {
+		blacklistedNodeIDs[nodeID] = struct{}{}
+	}
 
-	return box.Context(
-		ctx,
-		inboundRegistry,
-		outboundRegistry,
-		endpoint.NewRegistry(),
-		dnsRegistry,
-		adapterService.NewRegistry(),
+	builder := &dynamicPlanBuilder{
+		ctx:                ctx,
+		tx:                 tx,
+		outbounds:          map[string]option.Outbound{},
+		outboundNodes:      map[string]*tables.ProxyNodeTable{},
+		groupPlans:         map[string]*dynamicGroupPlan{},
+		blacklistedNodeIDs: blacklistedNodeIDs,
+	}
+
+	members := make([]dynamicMemberPlan, 0)
+	for _, builtin := range []string{} {
+		_ = builtin
+	}
+
+	nodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(mapping.NodeIDsJSON))
+	if err != nil {
+		return nil, err
+	}
+	for _, node := range nodes {
+		member, err := builder.memberForNode(node)
+		if err != nil {
+			return nil, nodeBuildError{node: node, err: err}
+		}
+		if member.tag != "" {
+			members = append(members, member)
+		}
+	}
+
+	groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
+	if err != nil {
+		return nil, err
+	}
+	for _, proxyGroup := range groups {
+		member, err := builder.memberForGroup(proxyGroup, map[string]bool{})
+		if err != nil {
+			return nil, err
+		}
+		if member.tag != "" {
+			members = append(members, member)
+		}
+	}
+
+	members = uniqueDynamicMembers(members)
+	if len(members) == 0 {
+		members = []dynamicMemberPlan{builtinMember(constant.TypeBlock)}
+	}
+	mappingGroup := dynamicGroupPlan{
+		tag:      mappingOutboundTag(mapping.ID),
+		policy:   policyForMapping(mapping),
+		members:  members,
+		selected: selectedMappingMember(mapping, members),
+	}
+	builder.groupPlans[mappingGroup.tag] = &mappingGroup
+
+	rules := []option.Rule{buildInboundRouteRule(inbound.Tag, mappingGroup.tag)}
+	outbounds := singboxcore.BaseOutbounds()
+	for _, outbound := range sortedOutbounds(builder.outbounds) {
+		outbounds = append(outbounds, outbound)
+	}
+
+	return &dynamicRuntimePlan{
+		options: option.Options{
+			Log: &option.LogOptions{
+				Level:        "warn",
+				Output:       singBoxLogOutputPath(),
+				Timestamp:    true,
+				DisableColor: true,
+			},
+			Inbounds:  []option.Inbound{inbound},
+			Outbounds: outbounds,
+			Route: &option.RouteOptions{
+				Rules: rules,
+				Final: constant.TypeDirect,
+			},
+		},
+		inbound:       statusInbound,
+		inboundKey:    runtimeInboundKey(statusInbound, mapping),
+		groups:        sortedGroupPlans(builder.groupPlans),
+		outbounds:     builder.outbounds,
+		outboundNodes: builder.outboundNodes,
+	}, nil
+}
+
+func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (*runtimeInstance, []RuntimeExcludedNode, *RuntimeInboundFailure) {
+	if plan == nil {
+		failure := RuntimeInboundFailure{Error: "runtime plan was not created"}
+		return nil, nil, &failure
+	}
+	core, err := singboxcore.NewCore(singboxcore.Config{
+		Context: ctx,
+		Options: plan.options,
+	})
+	if err != nil {
+		failure := runtimeFailureFromInbound(plan.inbound, err)
+		return nil, nil, &failure
+	}
+	for _, group := range plan.groups {
+		if _, err := core.UpsertGroup(group.tag, group.policy); err != nil {
+			_ = core.Close()
+			failure := runtimeFailureFromInbound(plan.inbound, err)
+			return nil, nil, &failure
+		}
+	}
+	instance := &runtimeInstance{core: core, inbound: plan.inbound, inboundKey: plan.inboundKey}
+	if excluded, failure := applyDynamicRuntimePlan(ctx, plan, instance); failure != nil {
+		_ = core.Close()
+		return nil, excluded, failure
+	}
+	if err := core.Start(); err != nil {
+		_ = core.Close()
+		failure := runtimeFailureFromInbound(plan.inbound, singboxcore.NormalizeStartError(err))
+		return nil, nil, &failure
+	}
+	return instance, nil, nil
+}
+
+func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMappingTable, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure) {
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
+	if err != nil {
+		if buildErr, ok := asNodeBuildError(err); ok {
+			return []RuntimeExcludedNode{runtimeExcludedNodeFromNode(mapping, buildErr.node, outboundTagForNode(nil, buildErr.node), buildErr.err)}, nil
+		}
+		failure := runtimeFailureFromMapping(mapping, err)
+		return nil, &failure
+	}
+	return applyDynamicRuntimePlan(ctx, plan, instance)
+}
+
+func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure) {
+	_ = ctx
+	if plan == nil || instance == nil || instance.core == nil {
+		failure := RuntimeInboundFailure{Error: "runtime instance was not created"}
+		return nil, &failure
+	}
+	excludedNodes := make([]RuntimeExcludedNode, 0)
+	for _, group := range plan.groups {
+		if _, err := instance.core.UpsertGroup(group.tag, group.policy); err != nil {
+			failure := runtimeFailureFromInbound(plan.inbound, err)
+			return excludedNodes, &failure
+		}
+		if err := syncDynamicGroupMembers(instance.core, group); err != nil {
+			failure := runtimeFailureFromInbound(plan.inbound, err)
+			return excludedNodes, &failure
+		}
+	}
+	instance.inbound = plan.inbound
+	instance.inboundKey = plan.inboundKey
+	return excludedNodes, nil
+}
+
+func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) error {
+	state := core.Snapshot()
+	existing := map[string]singboxcore.NodeSnapshot{}
+	for _, snapshot := range state.Groups {
+		if snapshot.Tag != group.tag {
+			continue
+		}
+		for _, node := range snapshot.Nodes {
+			existing[node.ID] = node
+		}
+		break
+	}
+
+	next := map[string]dynamicMemberPlan{}
+	for _, member := range group.members {
+		if member.id == "" {
+			member.id = member.tag
+		}
+		next[member.id] = member
+		if member.builtin {
+			continue
+		}
+		if _, ok := existing[member.id]; ok {
+			continue
+		}
+		for _, outbound := range member.outbounds {
+			if outbound.Tag == member.tag {
+				continue
+			}
+			if err := core.CreateOutbound(outbound); err != nil {
+				return err
+			}
+		}
+		if err := core.AddNodeOutbound(group.tag, singboxcore.NodeConfig{
+			ID:           member.id,
+			Tag:          member.tag,
+			Outbound:     member.outbound,
+			OutboundTags: member.outboundTags(),
+		}); err != nil {
+			return err
+		}
+	}
+	for nodeID, node := range existing {
+		if _, ok := next[nodeID]; ok {
+			continue
+		}
+		if node.Tag == constant.TypeDirect || node.Tag == constant.TypeBlock {
+			_ = core.DisableNode(group.tag, nodeID)
+			continue
+		}
+		if err := core.RemoveNode(group.tag, nodeID); err != nil && !errors.Is(err, singboxcore.ErrNodeNotFound) {
+			return err
+		}
+	}
+	for _, member := range group.members {
+		if member.builtin {
+			if _, ok := existing[member.id]; ok {
+				continue
+			}
+			if err := addBuiltinMember(core, group.tag, member); err != nil {
+				return err
+			}
+		}
+	}
+	if group.selected != "" {
+		if err := core.SelectNode(group.tag, group.selected); err != nil && !errors.Is(err, singboxcore.ErrNoAvailableNode) {
+			return err
+		}
+	}
+	return core.GC()
+}
+
+func addBuiltinMember(core *singboxcore.Core, groupTag string, member dynamicMemberPlan) error {
+	if member.id == "" {
+		member.id = member.tag
+	}
+	outbound := option.Outbound{}
+	switch member.tag {
+	case constant.TypeDirect:
+		outbound = option.Outbound{
+			Type:    constant.TypeDirect,
+			Tag:     constant.TypeDirect,
+			Options: &option.DirectOutboundOptions{},
+		}
+	case constant.TypeBlock:
+		outbound = option.Outbound{
+			Type:    constant.TypeBlock,
+			Tag:     constant.TypeBlock,
+			Options: &option.StubOptions{},
+		}
+	default:
+		return nil
+	}
+	return core.AddNodeOutbound(groupTag, singboxcore.NodeConfig{
+		ID:       member.id,
+		Tag:      member.tag,
+		Outbound: outbound,
+	})
+}
+
+type dynamicPlanBuilder struct {
+	ctx                context.Context
+	tx                 model.DBTx
+	outbounds          map[string]option.Outbound
+	outboundNodes      map[string]*tables.ProxyNodeTable
+	groupPlans         map[string]*dynamicGroupPlan
+	blacklistedNodeIDs map[string]struct{}
+}
+
+func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamicMemberPlan, error) {
+	if node == nil {
+		return dynamicMemberPlan{}, nil
+	}
+	if _, blacklisted := b.blacklistedNodeIDs[node.ID]; blacklisted {
+		return dynamicMemberPlan{}, nil
+	}
+	outboundTags := map[string]struct{}{
+		constant.TypeDirect: {},
+		constant.TypeBlock:  {},
+	}
+	for tag := range b.outbounds {
+		outboundTags[tag] = struct{}{}
+	}
+	tag, outbounds, err := buildNodeRuntimeOutbounds(
+		b.ctx,
+		b.tx,
+		node,
+		outboundTags,
+		map[string]*tables.ProxyNodeTable{},
+		b.outboundNodes,
+		map[string]string{},
+		b.blacklistedNodeIDs,
 	)
+	if err != nil {
+		return dynamicMemberPlan{}, err
+	}
+	for _, outbound := range outbounds {
+		b.outbounds[outbound.Tag] = outbound
+	}
+	outbound, ok := b.outbounds[tag]
+	if !ok {
+		return dynamicMemberPlan{}, ErrNoAvailableNode
+	}
+	return dynamicMemberPlan{id: node.ID, tag: tag, outbound: outbound, outbounds: outbounds}, nil
+}
+
+func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, visiting map[string]bool) (dynamicMemberPlan, error) {
+	if proxyGroup == nil {
+		return dynamicMemberPlan{}, nil
+	}
+	tag := proxyGroupOutboundTag(proxyGroup.ID)
+	if existing := b.groupPlans[tag]; existing != nil {
+		return dynamicMemberPlan{
+			id:  proxyGroup.ID,
+			tag: existing.tag,
+			outbound: option.Outbound{
+				Type: singboxcore.DynamicOutboundType,
+				Tag:  existing.tag,
+			},
+		}, nil
+	}
+	if visiting[proxyGroup.ID] {
+		return dynamicMemberPlan{}, fmt.Errorf("%w: cyclic group %s", ErrInvalidGroup, proxyGroup.Name)
+	}
+	visiting[proxyGroup.ID] = true
+	defer delete(visiting, proxyGroup.ID)
+
+	members := make([]dynamicMemberPlan, 0)
+	for _, builtin := range decodeStringSlice(proxyGroup.BuiltinTagsJSON) {
+		switch builtin {
+		case constantDirect:
+			members = append(members, builtinMember(constant.TypeDirect))
+		case constantReject, constantRejectDrop:
+			members = append(members, builtinMember(constant.TypeBlock))
+		}
+	}
+
+	nodes, err := findNodesByGroupOrIDs(b.ctx, b.tx, proxyGroup.ID, decodeStringSlice(proxyGroup.NodeIDsJSON))
+	if err != nil {
+		return dynamicMemberPlan{}, err
+	}
+	for _, node := range nodes {
+		member, err := b.memberForNode(node)
+		if err != nil {
+			return dynamicMemberPlan{}, nodeBuildError{node: node, err: err}
+		}
+		if member.tag != "" {
+			members = append(members, member)
+		}
+	}
+
+	childGroups, err := findGroupsByIDs(b.ctx, b.tx, decodeStringSlice(proxyGroup.GroupIDsJSON))
+	if err != nil {
+		return dynamicMemberPlan{}, err
+	}
+	for _, childGroup := range childGroups {
+		member, err := b.memberForGroup(childGroup, visiting)
+		if err != nil {
+			return dynamicMemberPlan{}, err
+		}
+		if member.tag != "" {
+			members = append(members, member)
+		}
+	}
+	members = uniqueDynamicMembers(members)
+	if len(members) == 0 {
+		members = []dynamicMemberPlan{builtinMember(constant.TypeBlock)}
+	}
+	b.groupPlans[tag] = &dynamicGroupPlan{
+		tag:      tag,
+		policy:   policyForGroup(proxyGroup),
+		members:  members,
+		selected: members[0].id,
+	}
+	return dynamicMemberPlan{
+		id:  proxyGroup.ID,
+		tag: tag,
+		outbound: option.Outbound{
+			Type: singboxcore.DynamicOutboundType,
+			Tag:  tag,
+		},
+	}, nil
+}
+
+func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
+	strategy := singboxcore.BalanceManual
+	switch normalizeStrategy(mapping.Strategy) {
+	case StrategyLoadBalance:
+		strategy = singboxcore.BalanceRoundRobin
+	case StrategyFailover:
+		strategy = singboxcore.BalanceManual
+	}
+	return singboxcore.Policy{
+		Strategy:            strategy,
+		FailureBlacklistTTL: normalizeHealthConfig(currentHealthConfig()).BlacklistDuration,
+		RemoveTTL:           2 * time.Minute,
+	}
+}
+
+func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
+	strategy := singboxcore.BalanceManual
+	if group != nil && normalizeGroupStrategy(group.Strategy) == GroupStrategyURLTest {
+		strategy = singboxcore.BalanceRoundRobin
+	}
+	return singboxcore.Policy{
+		Strategy:            strategy,
+		FailureBlacklistTTL: normalizeHealthConfig(currentHealthConfig()).BlacklistDuration,
+		RemoveTTL:           2 * time.Minute,
+	}
+}
+
+func selectedMappingMember(mapping *tables.PortMappingTable, members []dynamicMemberPlan) string {
+	candidates := []string{}
+	if mapping != nil {
+		if mapping.ActiveGroupID != "" {
+			candidates = append(candidates, mapping.ActiveGroupID, proxyGroupOutboundTag(mapping.ActiveGroupID))
+		}
+		if mapping.ActiveNodeID != "" {
+			candidates = append(candidates, mapping.ActiveNodeID, nodeOutboundTag(mapping.ActiveNodeID))
+		}
+	}
+	for _, candidate := range candidates {
+		for _, member := range members {
+			if member.id == candidate || member.tag == candidate {
+				return member.id
+			}
+		}
+	}
+	if len(members) == 0 {
+		return ""
+	}
+	return members[0].id
+}
+
+func builtinMember(tag string) dynamicMemberPlan {
+	return dynamicMemberPlan{
+		id:      tag,
+		tag:     tag,
+		builtin: true,
+		outbound: option.Outbound{
+			Type:    tag,
+			Tag:     tag,
+			Options: &option.StubOptions{},
+		},
+	}
+}
+
+func uniqueDynamicMembers(members []dynamicMemberPlan) []dynamicMemberPlan {
+	seen := map[string]struct{}{}
+	result := make([]dynamicMemberPlan, 0, len(members))
+	for _, member := range members {
+		key := strings.TrimSpace(member.id)
+		if key == "" {
+			key = strings.TrimSpace(member.tag)
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, member)
+	}
+	return result
+}
+
+func sortedOutbounds(outbounds map[string]option.Outbound) []option.Outbound {
+	tags := make([]string, 0, len(outbounds))
+	for tag := range outbounds {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	result := make([]option.Outbound, 0, len(tags))
+	for _, tag := range tags {
+		result = append(result, outbounds[tag])
+	}
+	return result
+}
+
+func sortedGroupPlans(groups map[string]*dynamicGroupPlan) []dynamicGroupPlan {
+	tags := make([]string, 0, len(groups))
+	for tag := range groups {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	result := make([]dynamicGroupPlan, 0, len(tags))
+	for _, tag := range tags {
+		if group := groups[tag]; group != nil {
+			result = append(result, *group)
+		}
+	}
+	return result
 }
 
 func buildMappingInbound(mapping *tables.PortMappingTable) (option.Inbound, error) {
@@ -1548,6 +2088,19 @@ func mappingRuntimeListen(mapping *tables.PortMappingTable) string {
 	return fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort)
 }
 
+func runtimeInboundKey(inbound RuntimeInbound, mapping *tables.PortMappingTable) string {
+	if mapping == nil {
+		return inbound.Tag + "|" + inbound.Listen
+	}
+	return strings.Join([]string{
+		inbound.Tag,
+		mappingRuntimeListen(mapping),
+		normalizeOutboundProtocol(mapping.OutboundProtocol),
+		strings.TrimSpace(mapping.Username),
+		strings.TrimSpace(mapping.Password),
+	}, "|")
+}
+
 func nodeFromOutboundInitializeError(
 	err error,
 	outbounds []option.Outbound,
@@ -1627,7 +2180,7 @@ func errorString(err error) string {
 func createRuntimeMappingInstance(
 	ctx context.Context,
 	mapping *tables.PortMappingTable,
-) (*box.Box, RuntimeInbound, []RuntimeExcludedNode, *RuntimeInboundFailure) {
+) (*runtimeInstance, RuntimeInbound, []RuntimeExcludedNode, *RuntimeInboundFailure) {
 	excludedNodeIDs := map[string]struct{}{}
 	excludedNodes := make([]RuntimeExcludedNode, 0)
 
@@ -1672,43 +2225,24 @@ func createRuntimeMappingInstanceOnce(
 	ctx context.Context,
 	mapping *tables.PortMappingTable,
 	excludedNodeIDs map[string]struct{},
-) (*box.Box, RuntimeInbound, map[string]*tables.ProxyNodeTable, *RuntimeInboundFailure, *runtimeNodeFailure) {
-	options, mappingInbounds, outboundNodes, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(
-		ctx,
-		nil,
-		[]*tables.PortMappingTable{mapping},
-		excludedNodeIDs,
-	)
+) (*runtimeInstance, RuntimeInbound, map[string]*tables.ProxyNodeTable, *RuntimeInboundFailure, *runtimeNodeFailure) {
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, excludedNodeIDs)
 	if err != nil {
 		if buildErr, ok := asNodeBuildError(err); ok {
-			return nil, RuntimeInbound{}, outboundNodes, nil, &runtimeNodeFailure{node: buildErr.node, err: buildErr.err}
+			return nil, RuntimeInbound{}, nil, nil, &runtimeNodeFailure{node: buildErr.node, err: buildErr.err}
 		}
 		failure := runtimeFailureFromMapping(mapping, err)
-		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
+		return nil, RuntimeInbound{}, nil, &failure, nil
 	}
-	if len(mappingInbounds) == 0 {
-		failure := runtimeFailureFromMapping(mapping, errors.New("runtime inbound was not created"))
-		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
-	}
-
-	inbound := mappingInbounds[0]
-	instance, err := box.New(box.Options{
-		Options: options,
-		Context: singBoxContext(context.Background()),
-	})
-	if err != nil {
-		if node := nodeFromOutboundInitializeError(err, options.Outbounds, outboundNodes); node != nil {
-			return nil, RuntimeInbound{}, outboundNodes, nil, &runtimeNodeFailure{node: node, err: err}
+	instance, excludedNodes, failure := newRuntimeInstanceFromPlan(ctx, plan)
+	if failure != nil {
+		if node := nodeFromOutboundInitializeError(errors.New(failure.Error), plan.options.Outbounds, plan.outboundNodes); node != nil {
+			return nil, RuntimeInbound{}, plan.outboundNodes, nil, &runtimeNodeFailure{node: node, err: errors.New(failure.Error)}
 		}
-		failure := runtimeFailureFromInbound(inbound, err)
-		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
+		_ = excludedNodes
+		return nil, RuntimeInbound{}, plan.outboundNodes, failure, nil
 	}
-	if err := instance.Start(); err != nil {
-		_ = instance.Close()
-		failure := runtimeFailureFromInbound(inbound, err)
-		return nil, RuntimeInbound{}, outboundNodes, &failure, nil
-	}
-	return instance, inbound, outboundNodes, nil, nil
+	return instance, plan.inbound, plan.outboundNodes, nil, nil
 }
 
 func runtimeStatusFromResults(
@@ -1755,7 +2289,7 @@ func runtimeStatusFromEntries(
 
 func setRuntimeMappingInstance(
 	mappingID string,
-	instance *box.Box,
+	instance *runtimeInstance,
 	inbound RuntimeInbound,
 	excludedNodes []RuntimeExcludedNode,
 ) RuntimeStatus {
@@ -1763,7 +2297,7 @@ func setRuntimeMappingInstance(
 	defer singBoxRuntime.mu.Unlock()
 
 	if singBoxRuntime.instances == nil {
-		singBoxRuntime.instances = map[string]*box.Box{}
+		singBoxRuntime.instances = map[string]*runtimeInstance{}
 	}
 	singBoxRuntime.instances[mappingID] = instance
 	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
@@ -1785,7 +2319,7 @@ func setRuntimeMappingFailure(
 	defer singBoxRuntime.mu.Unlock()
 
 	if singBoxRuntime.instances == nil {
-		singBoxRuntime.instances = map[string]*box.Box{}
+		singBoxRuntime.instances = map[string]*runtimeInstance{}
 	}
 	delete(singBoxRuntime.instances, mappingID)
 	inbounds := runtimeInboundsWithoutMapping(singBoxRuntime.status.Inbounds, mappingID)
@@ -1798,12 +2332,12 @@ func setRuntimeMappingFailure(
 	return singBoxRuntime.status
 }
 
-func detachRuntimeMapping(mappingID string) *box.Box {
+func detachRuntimeMapping(mappingID string) *runtimeInstance {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
 	if singBoxRuntime.instances == nil {
-		singBoxRuntime.instances = map[string]*box.Box{}
+		singBoxRuntime.instances = map[string]*runtimeInstance{}
 	}
 	instance := singBoxRuntime.instances[mappingID]
 	delete(singBoxRuntime.instances, mappingID)
@@ -1812,6 +2346,15 @@ func detachRuntimeMapping(mappingID string) *box.Box {
 	excludedNodes := runtimeExcludedNodesWithoutMapping(singBoxRuntime.status.ExcludedNodes, mappingID)
 	singBoxRuntime.status = normalizeRuntimeStatus(runtimeStatusFromEntries(inbounds, failures, excludedNodes))
 	return instance
+}
+
+func runtimeInstanceForMapping(mappingID string) *runtimeInstance {
+	singBoxRuntime.mu.Lock()
+	defer singBoxRuntime.mu.Unlock()
+	if singBoxRuntime.instances == nil {
+		return nil
+	}
+	return singBoxRuntime.instances[strings.TrimSpace(mappingID)]
 }
 
 func runtimeInboundsWithoutMapping(inbounds []RuntimeInbound, mappingID string) []RuntimeInbound {
@@ -1844,22 +2387,22 @@ func runtimeExcludedNodesWithoutMapping(excludedNodes []RuntimeExcludedNode, map
 	return result
 }
 
-func replaceRuntimeInstances(status RuntimeStatus) map[string]*box.Box {
+func replaceRuntimeInstances(status RuntimeStatus) map[string]*runtimeInstance {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
 	old := singBoxRuntime.instances
-	singBoxRuntime.instances = map[string]*box.Box{}
+	singBoxRuntime.instances = map[string]*runtimeInstance{}
 	singBoxRuntime.status = normalizeRuntimeStatus(status)
 	return old
 }
 
-func setRuntimeInstances(instances map[string]*box.Box, status RuntimeStatus) RuntimeStatus {
+func setRuntimeInstances(instances map[string]*runtimeInstance, status RuntimeStatus) RuntimeStatus {
 	singBoxRuntime.mu.Lock()
 	defer singBoxRuntime.mu.Unlock()
 
 	if instances == nil {
-		instances = map[string]*box.Box{}
+		instances = map[string]*runtimeInstance{}
 	}
 	status = normalizeRuntimeStatus(status)
 	singBoxRuntime.instances = instances
@@ -1904,7 +2447,7 @@ func setRuntimeError(err error) RuntimeStatus {
 	return setRuntimeStatus(status)
 }
 
-func closeRuntimeInstances(instances map[string]*box.Box) error {
+func closeRuntimeInstances(instances map[string]*runtimeInstance) error {
 	errs := make([]error, 0)
 	for id, instance := range instances {
 		if err := closeRuntimeInstance(id, instance); err != nil {
@@ -1914,11 +2457,11 @@ func closeRuntimeInstances(instances map[string]*box.Box) error {
 	return errors.Join(errs...)
 }
 
-func closeRuntimeInstance(id string, instance *box.Box) error {
+func closeRuntimeInstance(id string, instance *runtimeInstance) error {
 	if instance == nil {
 		return nil
 	}
-	if err := instance.Close(); err != nil {
+	if err := instance.core.Close(); err != nil {
 		return fmt.Errorf("%s: %w", id, err)
 	}
 	return nil
