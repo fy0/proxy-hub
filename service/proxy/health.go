@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -255,6 +257,12 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		ProbeURL:   probeURL,
 		CheckedAt:  checkedAt,
 	}
+	if node, tag, nodeErr := mappingTestNodeInfo(ctx, mapping); node != nil {
+		result.NodeID = node.ID
+		result.NodeName = node.Name
+		result.NodeTag = tag
+		result.NodeError = nodeErr
+	}
 	if !mapping.Enabled {
 		result.Error = "port mapping is disabled"
 		return result, nil
@@ -278,6 +286,7 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 	result.LatencyMs = latencyMs
 	if probeErr != nil {
 		result.Error = probeErr.Error()
+		result.NodeError = firstNonEmpty(result.NodeError, runtimeNodeErrorFromProbe(result.NodeTag, result.Error))
 		return result, nil
 	}
 	result.Available = true
@@ -652,7 +661,127 @@ func testResultFromHealth(targetType, targetID, targetName, probeURL string, che
 	if health.LastCheckedAt != nil {
 		result.CheckedAt = *health.LastCheckedAt
 	}
+	if targetType == "node" {
+		result.NodeID = targetID
+		result.NodeName = targetName
+		result.NodeTag = nodeOutboundTag(targetID)
+		result.NodeError = health.LastError
+	}
 	return result
+}
+
+func mappingTestNodeInfo(ctx context.Context, mapping *tables.PortMappingTable) (*tables.ProxyNodeTable, string, string) {
+	if mapping == nil {
+		return nil, "", ""
+	}
+	options, inbounds, outboundNodes, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, nil, []*tables.PortMappingTable{mapping}, nil)
+	if err != nil {
+		if buildErr, ok := asNodeBuildError(err); ok {
+			return buildErr.node, outboundTagForNode(outboundNodes, buildErr.node), buildErr.err.Error()
+		}
+		return nil, "", err.Error()
+	}
+	if len(inbounds) == 0 {
+		return nil, "", ""
+	}
+	tag := resolveRuntimeOutboundTag(inbounds[0].Outbound, options.Outbounds, outboundNodes)
+	node := outboundNodes[tag]
+	if node == nil {
+		return nil, tag, ""
+	}
+	health, healthErr := getNodeHealth(ctx, nil, node.ID)
+	if healthErr != nil {
+		return node, tag, ""
+	}
+	return node, tag, nodeHealthError(health)
+}
+
+func resolveRuntimeOutboundTag(routeTag string, outbounds []option.Outbound, outboundNodes map[string]*tables.ProxyNodeTable) string {
+	routeTag = strings.TrimSpace(routeTag)
+	if outboundNodes[routeTag] != nil {
+		return routeTag
+	}
+	if outbound := outboundByTag(outbounds, routeTag); outbound != nil && outbound.Type == constant.TypeSelector {
+		if selector, ok := outbound.Options.(*option.SelectorOutboundOptions); ok {
+			nextTag := strings.TrimSpace(selector.Default)
+			if nextTag == "" && len(selector.Outbounds) > 0 {
+				nextTag = selector.Outbounds[0]
+			}
+			if nextTag != "" && nextTag != routeTag {
+				return resolveRuntimeOutboundTag(nextTag, outbounds, outboundNodes)
+			}
+		}
+	}
+	return routeTag
+}
+
+func outboundByTag(outbounds []option.Outbound, tag string) *option.Outbound {
+	for index := range outbounds {
+		if outbounds[index].Tag == tag {
+			return &outbounds[index]
+		}
+	}
+	return nil
+}
+
+func nodeHealthError(health *tables.ProxyNodeHealthTable) string {
+	if health == nil {
+		return ""
+	}
+	return strings.TrimSpace(health.LastError)
+}
+
+func runtimeNodeErrorFromProbe(nodeTag string, fallback string) string {
+	nodeTag = strings.TrimSpace(nodeTag)
+	if nodeTag == "" {
+		return ""
+	}
+	if err := recentSingBoxLogErrorForTag(nodeTag, 3*time.Second); err != "" {
+		return err
+	}
+	return fallback
+}
+
+func recentSingBoxLogErrorForTag(tag string, maxAge time.Duration) string {
+	logPath := singBoxLogPath()
+	info, err := os.Stat(logPath)
+	if err != nil || info.IsDir() || time.Since(info.ModTime()) > maxAge {
+		return ""
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	marker := "[" + tag + "]"
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || !strings.Contains(line, marker) || !strings.Contains(line, "ERROR") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func singBoxLogPath() string {
+	if logPath := strings.TrimSpace(os.Getenv("PROXYHUB_SING_BOX_LOG")); logPath != "" {
+		return logPath
+	}
+	return "data/sing-box.log"
+}
+
+func singBoxLogOutputPath() string {
+	logPath := singBoxLogPath()
+	dir := strings.TrimSpace(filepath.Dir(logPath))
+	if dir == "" || dir == "." {
+		return logPath
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		utils.Logger.Warn("创建 sing-box 日志目录失败", zap.String("path", dir), zap.Error(err))
+		return ""
+	}
+	return logPath
 }
 
 func runtimeHasInboundForMapping(status RuntimeStatus, mappingID string) bool {
@@ -726,6 +855,7 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 	options := option.Options{
 		Log: &option.LogOptions{
 			Level:        "error",
+			Output:       singBoxLogOutputPath(),
 			Timestamp:    true,
 			DisableColor: true,
 		},

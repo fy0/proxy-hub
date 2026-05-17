@@ -162,6 +162,28 @@ func TestBuildNodeOutboundNormalizesVLESSVisionUDP443Flow(t *testing.T) {
 	}
 }
 
+func TestBuildNodeOutboundNormalizesVLESSVisionRepeatedUDP443Flow(t *testing.T) {
+	raw := "vless://48a25c54-8826-4657-330e-8db38ef76716@us-n1.qq.org:6515?encryption=none&flow=xtls-rprx-vision-udp443-udp443-udp443&security=reality&sni=www.learn.microsoft.com&fp=chrome&pbk=j0WAnZjnHwzpiPwpHaurvyfqe1yZdbNeRG0isinebQc&type=tcp#edge"
+
+	outbound, err := buildNodeOutboundFromURI(raw, "node-test")
+	if !withUTLS {
+		if err != ErrUTLSRequired {
+			t.Fatalf("buildNodeOutboundFromURI() error = %v, want ErrUTLSRequired", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("buildNodeOutboundFromURI() error = %v", err)
+	}
+	options, ok := outbound.Options.(*option.VLESSOutboundOptions)
+	if !ok {
+		t.Fatalf("Options type = %T, want *option.VLESSOutboundOptions", outbound.Options)
+	}
+	if options.Flow != "xtls-rprx-vision" {
+		t.Fatalf("Flow = %q, want xtls-rprx-vision", options.Flow)
+	}
+}
+
 func TestBuildNodeOutboundFromVLESSH2URI(t *testing.T) {
 	raw := "vless://uuid@example.com:443?type=h2&security=tls&sni=edge.example.com&host=cdn.example.com&path=%2Fh2#edge"
 

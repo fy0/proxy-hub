@@ -426,6 +426,7 @@ func buildSingBoxOptionsFromMappingsWithExcludedNodes(
 	options := option.Options{
 		Log: &option.LogOptions{
 			Level:        "warn",
+			Output:       singBoxLogOutputPath(),
 			Timestamp:    true,
 			DisableColor: true,
 		},
@@ -1268,8 +1269,18 @@ func requiresUTLS(query url.Values) bool {
 
 func normalizeVLESSFlow(flow string) string {
 	flow = strings.TrimSpace(flow)
-	if flow == "xtls-rprx-vision-udp443" {
-		return "xtls-rprx-vision"
+	const visionFlow = "xtls-rprx-vision"
+	const udp443Suffix = "-udp443"
+
+	suffix, found := strings.CutPrefix(flow, visionFlow)
+	if found {
+		for suffix != "" {
+			if !strings.HasPrefix(suffix, udp443Suffix) {
+				return flow
+			}
+			suffix = strings.TrimPrefix(suffix, udp443Suffix)
+		}
+		return visionFlow
 	}
 	return flow
 }

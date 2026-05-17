@@ -923,13 +923,16 @@ func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, re
 		query = query.Where("protocol <> ?", ProtocolChain)
 	}
 	if req.Keyword != "" {
-		pattern := "%" + strings.ToLower(req.Keyword) + "%"
+		keyword := strings.ToLower(req.Keyword)
+		nodeIDKeyword := strings.TrimPrefix(keyword, "node-")
+		pattern := "%" + keyword + "%"
+		nodeIDPattern := "%" + nodeIDKeyword + "%"
 		if req.NameOnly {
 			query = query.Where("lower(name) LIKE ?", pattern)
 		} else {
 			query = query.Where(
-				"lower(name) LIKE ? OR lower(protocol) LIKE ? OR lower(server) LIKE ? OR lower(username) LIKE ? OR lower(remark) LIKE ? OR lower(tags_json) LIKE ?",
-				pattern, pattern, pattern, pattern, pattern, pattern,
+				"lower(id) LIKE ? OR lower(id) LIKE ? OR lower(name) LIKE ? OR lower(protocol) LIKE ? OR lower(server) LIKE ? OR lower(username) LIKE ? OR lower(remark) LIKE ? OR lower(tags_json) LIKE ?",
+				pattern, nodeIDPattern, pattern, pattern, pattern, pattern, pattern, pattern,
 			)
 		}
 	}

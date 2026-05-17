@@ -265,6 +265,10 @@ type ProxyTestResultDTO struct {
 	Error      string              `json:"error,omitempty"`
 	CheckedAt  time.Time           `json:"checkedAt"`
 	Health     *ProxyNodeHealthDTO `json:"health,omitempty"`
+	NodeID     string              `json:"nodeId,omitempty"`
+	NodeName   string              `json:"nodeName,omitempty"`
+	NodeTag    string              `json:"nodeTag,omitempty"`
+	NodeError  string              `json:"nodeError,omitempty"`
 }
 
 type SubscriptionUpsertRequest struct {

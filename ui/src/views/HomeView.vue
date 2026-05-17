@@ -1838,6 +1838,15 @@ function testCheckedAtLabel(result: ProxyTestResult | null): string {
   return result?.checkedAt ? formatDateTime(result.checkedAt) : '-';
 }
 
+function testNodeLabel(result: ProxyTestResult | null): string {
+  if (!result?.nodeName && !result?.nodeId) return '-';
+  return [result.nodeName, result.nodeId].filter(Boolean).join(' · ');
+}
+
+function testNodeError(result: ProxyTestResult | null): string {
+  return result?.nodeError?.trim() || '';
+}
+
 function nodeHealthTitle(node: ProxyNode): string {
   const error = node.health?.lastError?.trim();
   if (!node.health?.blacklisted && !error) return '';
@@ -3480,10 +3489,21 @@ function nodeHealthTitle(node: ProxyNode): string {
               <dt>{{ t('home.test.result') }}</dt>
               <dd>{{ testStatusLabel(testDialog.result, testDialog.error) }}</dd>
             </div>
+            <div v-if="testDialog.result?.nodeId || testDialog.result?.nodeName">
+              <dt>{{ t('home.test.node') }}</dt>
+              <dd>{{ testNodeLabel(testDialog.result) }}</dd>
+            </div>
+            <div v-if="testDialog.result?.nodeTag">
+              <dt>{{ t('home.test.nodeTag') }}</dt>
+              <dd>{{ testDialog.result.nodeTag }}</dd>
+            </div>
           </dl>
 
           <p v-if="testDialog.error || testDialog.result?.error" class="test-error">
             {{ testDialog.error || testDialog.result?.error }}
+          </p>
+          <p v-if="testNodeError(testDialog.result)" class="test-error">
+            {{ testNodeError(testDialog.result) }}
           </p>
         </div>
       </section>

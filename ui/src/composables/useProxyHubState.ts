@@ -435,6 +435,10 @@ function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
     error: dto.error ?? '',
     checkedAt: dto.checkedAt,
     health: toProxyNodeHealth(dto.health),
+    nodeId: dto.nodeId ?? '',
+    nodeName: dto.nodeName ?? '',
+    nodeTag: dto.nodeTag ?? '',
+    nodeError: dto.nodeError ?? '',
   };
 }
 

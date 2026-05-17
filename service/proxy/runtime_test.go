@@ -703,6 +703,61 @@ func TestRuntimeSyncMappingDoesNotTouchUnrelatedFailures(t *testing.T) {
 	}
 }
 
+func TestMappingTestResultIncludesSelectedNodeInfo(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "selected",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "manual",
+		Strategy: GroupStrategySelector,
+		NodeIDs:  []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+
+	result, err := MappingTest(ctx, mapping.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("MappingTest() error = %v", err)
+	}
+	if result.NodeID != node.ID || result.NodeName != node.Name || result.NodeTag != nodeOutboundTag(node.ID) {
+		t.Fatalf("selected node info = id %q name %q tag %q, want node %q",
+			result.NodeID,
+			result.NodeName,
+			result.NodeTag,
+			node.ID,
+		)
+	}
+}
+
 func freeTCPPort(t *testing.T) uint16 {
 	t.Helper()
 

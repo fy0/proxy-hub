@@ -163,4 +163,8 @@ export interface ProxyTestResult {
   error: string;
   checkedAt: string;
   health: ProxyNodeHealth | null;
+  nodeId: string;
+  nodeName: string;
+  nodeTag: string;
+  nodeError: string;
 }

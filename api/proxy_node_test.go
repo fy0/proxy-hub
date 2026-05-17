@@ -106,6 +106,33 @@ func TestProxyNodeListSupportsPagingSearchAndFilters(t *testing.T) {
 	if body.Total != 1 || body.Page != 1 || body.Size != 1 || len(body.Items) != 1 || body.Items[0].ID != hk.ID {
 		t.Fatalf("list response = %+v, want one HK item", body)
 	}
+
+	idFragment := strings.TrimPrefix(hk.ID, "node-")
+	if len(idFragment) > 12 {
+		idFragment = idFragment[:12]
+	}
+	idResp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/nodes?page=1&size=10&keyword="+idFragment, nil))
+	if err != nil {
+		t.Fatalf("app.Test ID search failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = idResp.Body.Close()
+	})
+	if idResp.StatusCode != http.StatusOK {
+		t.Fatalf("ID search status = %d, want %d", idResp.StatusCode, http.StatusOK)
+	}
+	var idBody struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.NewDecoder(idResp.Body).Decode(&idBody); err != nil {
+		t.Fatalf("decode ID search response: %v", err)
+	}
+	if idBody.Total != 1 || len(idBody.Items) != 1 || idBody.Items[0].ID != hk.ID {
+		t.Fatalf("ID search response = %+v, want HK item", idBody)
+	}
 }
 
 func TestProxyStateCanOmitNodesAndGroupMembers(t *testing.T) {
