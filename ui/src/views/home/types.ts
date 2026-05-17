@@ -1,0 +1,194 @@
+import type { ComputedRef, Ref } from 'vue';
+import type {
+  ImportPreviewItem,
+  ImportPreviewResult,
+  OutboundProtocol,
+  PortMapping,
+  ProxyGroup,
+  ProxyGroupStrategy,
+  ProxyNode,
+  ProxyNodeOption,
+  ProxyProtocol,
+  ProxySubscription,
+  RouteStrategy,
+} from '@/types/proxyHub';
+
+export type TabKey = 'mappings' | 'nodes' | 'subscriptions' | 'import';
+export type NodeGroupFilterKey = 'all' | 'summary' | 'default' | `group:${string}`;
+export type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
+export type RouteActionTargetType = 'node' | 'group';
+export type RouteNodeMode = 'uri' | 'node' | 'group';
+
+type Readable<T> = Ref<T> | ComputedRef<T>;
+
+interface VirtualNodeRow {
+  data: ProxyNode;
+  index: number;
+}
+
+interface GroupFilterOption {
+  id: string;
+  label: string;
+}
+
+interface ManualNodeForm {
+  name: string;
+  protocol: ProxyProtocol;
+  server: string;
+  port: number;
+  username: string;
+  password: string;
+  tags: string;
+  groupId: string;
+  remark: string;
+}
+
+interface ChainNodeForm {
+  name: string;
+  chainNodeIds: string[];
+  groupId: string;
+  remark: string;
+}
+
+interface SubscriptionForm {
+  name: string;
+  url: string;
+  groupId: string;
+  remark: string;
+}
+
+interface ManualGroupForm {
+  name: string;
+  strategy: ProxyGroupStrategy;
+  nodeIds: string[];
+  groupIds: string[];
+  remark: string;
+}
+
+export interface NodeGroupFilterOption {
+  key: NodeGroupFilterKey;
+  label: string;
+  countLabel: string;
+}
+
+export interface NodeGroupSummaryItem {
+  key: NodeGroupFilterKey;
+  title: string;
+  typeLabel: string;
+  count: number;
+  detail: string;
+  strategyLabel: string;
+  filter: string;
+  isSubscription: boolean;
+}
+
+export interface HomeViewContext {
+  mappings: Readable<PortMapping[]>;
+  portRuntimeState: (mapping: PortMapping) => PortRuntimeState;
+  portEnabledLabel: (mapping: PortMapping) => string;
+  toggleMappingEnabled: (mapping: PortMapping) => Promise<void>;
+  mappingEndpoint: (mapping: PortMapping) => string;
+  outboundProtocolLabels: Readable<Record<OutboundProtocol, string>>;
+  strategyLabels: Readable<Record<RouteStrategy, string>>;
+  openEditMappingDialog: (mapping: PortMapping) => void;
+  copyPopoverText: (mappingId: string) => string;
+  copyEndpoint: (mapping: PortMapping) => Promise<void>;
+  openRouteDialog: (mapping: PortMapping) => void;
+  openMappingTestDialog: (mapping: PortMapping) => void;
+  requestRemoveMapping: (mapping: PortMapping) => void;
+  portFailureReason: (mapping: PortMapping) => string;
+  portStatusTitle: (mapping: PortMapping) => string;
+  portStatusLabel: (mapping: PortMapping) => string;
+  mappingNodes: (mapping: PortMapping) => ProxyNode[];
+  isRouteActionMenuOpen: (
+    mapping: PortMapping,
+    targetType: RouteActionTargetType,
+    targetId: string
+  ) => boolean;
+  toggleRouteActionMenu: (
+    mapping: PortMapping,
+    targetType: RouteActionTargetType,
+    targetId: string
+  ) => void;
+  openNodeTestDialog: (node: ProxyNode) => void;
+  requestRemoveRoute: (mapping: PortMapping, target: ProxyNode | ProxyGroup) => void;
+  protocolLabels: Readable<Record<ProxyProtocol, string>>;
+  nodeHealthTitle: (node: ProxyNode) => string;
+  routeLatencyLabel: (node: ProxyNode) => string;
+  routeSuccessLabel: (node: ProxyNode) => string;
+  routeFailureLabel: (node: ProxyNode) => string;
+  mappingGroups: (mapping: PortMapping) => ProxyGroup[];
+  openNewMappingDialog: () => void;
+
+  nodeSearch: Ref<string>;
+  hideEmptyNodeGroups: Ref<boolean>;
+  nodeGroupFilterOptions: Readable<NodeGroupFilterOption[]>;
+  activeNodeGroupFilter: Ref<NodeGroupFilterKey>;
+  selectNodeGroupFilter: (key: NodeGroupFilterKey) => void;
+  groupSummaryItems: Readable<NodeGroupSummaryItem[]>;
+  selectedNodeGroupTitle: Readable<string>;
+  currentNodeTotal: Readable<number>;
+  selectedNodeGroupNodes: Readable<ProxyNode[]>;
+  nodeListContainerProps: object;
+  nodeListWrapperProps: object;
+  virtualNodeRows: Readable<VirtualNodeRow[]>;
+  nodeEndpointLabel: (node: ProxyNode) => string;
+  nodeUriPopoverText: (node: ProxyNode) => string;
+  nodeExportUri: (node: ProxyNode) => string;
+  copyNodeUri: (node: ProxyNode) => Promise<void>;
+  openEditNodeDialog: (node: ProxyNode) => void;
+  requestRemoveNode: (node: ProxyNode) => void;
+  nodeBlacklistLabel: (node: ProxyNode) => string;
+  isLoadingNodes: Readable<boolean>;
+  loadNextNodePage: () => Promise<void>;
+  chainNodeForm: ChainNodeForm;
+  groups: Readable<ProxyGroup[]>;
+  chainNodeSearch: Ref<string>;
+  chainNodeGroupId: Ref<string>;
+  groupFilterOptions: (includeAll?: boolean) => GroupFilterOption[];
+  chainNodeOptions: Readable<ProxyNodeOption[]>;
+  toggleChainNodeSelection: (nodeId: string) => void;
+  optionProtocolLabel: (option: ProxyNodeOption) => string;
+  optionNameLabel: (option: ProxyNodeOption) => string;
+  optionEndpointLabel: (option: ProxyNodeOption) => string;
+  chainNodeTotal: Readable<number>;
+  isLoadingChainNodes: Readable<boolean>;
+  loadMoreChainOptions: () => void;
+  chainNodeFormPreview: () => string;
+  selectedChainNodes: () => ProxyNode[];
+  removeChainNodeSelection: (nodeId: string) => void;
+  handleChainNodeSubmit: () => Promise<void>;
+  importMessage: Ref<string>;
+  manualGroupForm: ManualGroupForm;
+  manualGroupNodeSearch: Ref<string>;
+  manualGroupNodeGroupId: Ref<string>;
+  manualGroupNodeOptions: Readable<ProxyNodeOption[]>;
+  toggleManualGroupNode: (nodeId: string) => void;
+  manualGroupNodeTotal: Readable<number>;
+  isLoadingManualGroupNodes: Readable<boolean>;
+  loadMoreManualGroupNodeOptions: () => void;
+  selectedManualGroupNodes: () => ProxyNode[];
+  manualGroups: Readable<ProxyGroup[]>;
+  handleManualGroupSubmit: () => Promise<void>;
+  groupSummary: (group: ProxyGroup) => string;
+  removeGroup: (id: string) => Promise<void>;
+
+  subscriptionForm: SubscriptionForm;
+  handleSubscriptionSubmit: () => Promise<void>;
+  subscriptionPreview: Ref<ImportPreviewResult | null>;
+  previewSummary: (preview: ImportPreviewResult) => string;
+  previewTypeLabel: (item: Pick<ImportPreviewItem, 'type'>) => string;
+  previewActionLabel: (item: Pick<ImportPreviewItem, 'action'>) => string;
+  subscriptions: Readable<ProxySubscription[]>;
+  syncExistingSubscription: (id: string) => Promise<void>;
+  removeSubscription: (id: string) => Promise<void>;
+  subscriptionGroupName: (groupId: string) => string;
+  formatDateTime: (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => string;
+
+  rawImport: Ref<string>;
+  rawImportGroupId: Ref<string>;
+  manualNodeForm: ManualNodeForm;
+  handleManualNodeSubmit: () => Promise<void>;
+  importPreview: Ref<ImportPreviewResult | null>;
+  handleImport: () => Promise<void>;
+}
