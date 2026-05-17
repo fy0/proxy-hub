@@ -45,6 +45,27 @@ type RuntimeExcludedNode struct {
 	Error     string `json:"error"`
 }
 
+type RuntimeNodeHealth struct {
+	MappingID         string    `json:"mappingId"`
+	GroupTag          string    `json:"groupTag"`
+	NodeID            string    `json:"nodeId"`
+	Tag               string    `json:"tag"`
+	Selected          bool      `json:"selected"`
+	GroupProbeRunning bool      `json:"groupProbeRunning"`
+	GroupLastProbeAt  time.Time `json:"groupLastProbeAt,omitempty"`
+	GroupNextProbeAt  time.Time `json:"groupNextProbeAt,omitempty"`
+	LatencyCandidate  bool      `json:"latencyCandidate"`
+	LatencyFallback   bool      `json:"latencyFallback"`
+	LatencySlowCount  int       `json:"latencySlowCount"`
+	LastLatencyMs     int64     `json:"lastLatencyMs"`
+	LastError         string    `json:"lastError,omitempty"`
+	LastCheckedAt     time.Time `json:"lastCheckedAt,omitempty"`
+	LastSuccessAt     time.Time `json:"lastSuccessAt,omitempty"`
+	ProbeStartedAt    time.Time `json:"probeStartedAt,omitempty"`
+	ProbeRunning      bool      `json:"probeRunning"`
+	ProbeFailureCount int       `json:"probeFailureCount"`
+}
+
 type RuntimeStatus struct {
 	Running       bool                    `json:"running"`
 	State         string                  `json:"state"`
@@ -52,6 +73,7 @@ type RuntimeStatus struct {
 	Inbounds      []RuntimeInbound        `json:"inbounds"`
 	Failures      []RuntimeInboundFailure `json:"failures"`
 	ExcludedNodes []RuntimeExcludedNode   `json:"excludedNodes"`
+	NodeHealth    []RuntimeNodeHealth     `json:"nodeHealth"`
 	UpdatedAt     time.Time               `json:"updatedAt"`
 }
 
@@ -70,6 +92,11 @@ type runtimeManager struct {
 type nodeBuildError struct {
 	node *tables.ProxyNodeTable
 	err  error
+}
+
+type dynamicMemberError struct {
+	member dynamicMemberPlan
+	err    error
 }
 
 type dynamicRuntimePlan struct {
@@ -131,6 +158,29 @@ func asNodeBuildError(err error) (nodeBuildError, bool) {
 	return nodeBuildError{}, false
 }
 
+func (err dynamicMemberError) Error() string {
+	if err.err == nil {
+		return ""
+	}
+	name := firstNonEmpty(err.member.id, err.member.tag)
+	if name == "" {
+		return err.err.Error()
+	}
+	return fmt.Sprintf("成员 %s 初始化失败: %v", name, err.err)
+}
+
+func (err dynamicMemberError) Unwrap() error {
+	return err.err
+}
+
+func asDynamicMemberError(err error) (dynamicMemberError, bool) {
+	var memberErr dynamicMemberError
+	if errors.As(err, &memberErr) && (memberErr.member.id != "" || memberErr.member.tag != "") {
+		return memberErr, true
+	}
+	return dynamicMemberError{}, false
+}
+
 var singBoxRuntime = &runtimeManager{
 	instances: map[string]*runtimeInstance{},
 	status: RuntimeStatus{
@@ -149,6 +199,8 @@ func RuntimeStatusGet() RuntimeStatus {
 	status.Inbounds = append([]RuntimeInbound{}, singBoxRuntime.status.Inbounds...)
 	status.Failures = append([]RuntimeInboundFailure{}, singBoxRuntime.status.Failures...)
 	status.ExcludedNodes = append([]RuntimeExcludedNode{}, singBoxRuntime.status.ExcludedNodes...)
+	status.NodeHealth = runtimeNodeHealthLocked()
+	status.UpdatedAt = time.Now()
 	return status
 }
 
@@ -611,10 +663,10 @@ func buildDynamicRuntimePlanForMapping(
 	}, nil
 }
 
-func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (*runtimeInstance, []RuntimeExcludedNode, *RuntimeInboundFailure) {
+func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (*runtimeInstance, []RuntimeExcludedNode, *RuntimeInboundFailure, *runtimeNodeFailure) {
 	if plan == nil {
 		failure := RuntimeInboundFailure{Error: "runtime plan was not created"}
-		return nil, nil, &failure
+		return nil, nil, &failure, nil
 	}
 	core, err := singboxcore.NewCore(singboxcore.Config{
 		Context: ctx,
@@ -622,60 +674,111 @@ func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (
 	})
 	if err != nil {
 		failure := runtimeFailureFromInbound(plan.inbound, err)
-		return nil, nil, &failure
+		return nil, nil, &failure, nil
 	}
 	for _, group := range plan.groups {
 		if _, err := core.UpsertGroup(group.tag, group.policy); err != nil {
 			_ = core.Close()
 			failure := runtimeFailureFromInbound(plan.inbound, err)
-			return nil, nil, &failure
+			return nil, nil, &failure, nil
 		}
 	}
 	instance := &runtimeInstance{core: core, inbound: plan.inbound, inboundKey: plan.inboundKey}
-	if excluded, failure := applyDynamicRuntimePlan(ctx, plan, instance); failure != nil {
+	excluded, err := applyDynamicRuntimePlan(ctx, plan, instance)
+	if err != nil {
 		_ = core.Close()
-		return nil, excluded, failure
+		if memberErr, ok := asDynamicMemberError(err); ok {
+			if node := nodeFromDynamicMember(plan, memberErr.member); node != nil {
+				return nil, excluded, nil, &runtimeNodeFailure{node: node, err: memberErr.err}
+			}
+		}
+		failure := runtimeFailureFromInbound(plan.inbound, err)
+		return nil, excluded, &failure, nil
 	}
 	if err := core.Start(); err != nil {
 		_ = core.Close()
 		failure := runtimeFailureFromInbound(plan.inbound, singboxcore.NormalizeStartError(err))
-		return nil, nil, &failure
+		return nil, nil, &failure, nil
 	}
-	return instance, nil, nil
+	return instance, nil, nil, nil
 }
 
 func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMappingTable, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure) {
-	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
-	if err != nil {
-		if buildErr, ok := asNodeBuildError(err); ok {
-			return []RuntimeExcludedNode{runtimeExcludedNodeFromNode(mapping, buildErr.node, outboundTagForNode(nil, buildErr.node), buildErr.err)}, nil
+	excludedNodeIDs := map[string]struct{}{}
+	excludedNodes := make([]RuntimeExcludedNode, 0)
+
+	for {
+		plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, excludedNodeIDs)
+		if err != nil {
+			if buildErr, ok := asNodeBuildError(err); ok {
+				retryNode := &runtimeNodeFailure{node: buildErr.node, err: buildErr.err}
+				nextExcludedNodes, retry := excludeRuntimeNode(ctx, mapping, excludedNodeIDs, excludedNodes, nil, retryNode)
+				excludedNodes = nextExcludedNodes
+				if retry {
+					continue
+				}
+				return excludedNodes, nil
+			}
+			failure := runtimeFailureFromMapping(mapping, err)
+			return excludedNodes, &failure
 		}
-		failure := runtimeFailureFromMapping(mapping, err)
-		return nil, &failure
+
+		nextExcludedNodes, failure, retryNode := applyDynamicRuntimePlanForMapping(ctx, plan, instance)
+		excludedNodes = append(excludedNodes, nextExcludedNodes...)
+		if retryNode == nil {
+			return excludedNodes, failure
+		}
+		var retry bool
+		excludedNodes, retry = excludeRuntimeNode(ctx, mapping, excludedNodeIDs, excludedNodes, plan.outboundNodes, retryNode)
+		if !retry {
+			if failure == nil {
+				nextFailure := runtimeFailureFromMapping(mapping, retryNode.err)
+				failure = &nextFailure
+			}
+			return excludedNodes, failure
+		}
 	}
-	return applyDynamicRuntimePlan(ctx, plan, instance)
 }
 
-func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure) {
+func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, instance *runtimeInstance) ([]RuntimeExcludedNode, error) {
 	_ = ctx
 	if plan == nil || instance == nil || instance.core == nil {
-		failure := RuntimeInboundFailure{Error: "runtime instance was not created"}
-		return nil, &failure
+		return nil, errors.New("runtime instance was not created")
 	}
 	excludedNodes := make([]RuntimeExcludedNode, 0)
 	for _, group := range plan.groups {
 		if _, err := instance.core.UpsertGroup(group.tag, group.policy); err != nil {
-			failure := runtimeFailureFromInbound(plan.inbound, err)
-			return excludedNodes, &failure
+			return excludedNodes, err
 		}
 		if err := syncDynamicGroupMembers(instance.core, group); err != nil {
-			failure := runtimeFailureFromInbound(plan.inbound, err)
-			return excludedNodes, &failure
+			return excludedNodes, err
 		}
 	}
 	instance.inbound = plan.inbound
 	instance.inboundKey = plan.inboundKey
 	return excludedNodes, nil
+}
+
+func applyDynamicRuntimePlanForMapping(
+	ctx context.Context,
+	plan *dynamicRuntimePlan,
+	instance *runtimeInstance,
+) ([]RuntimeExcludedNode, *RuntimeInboundFailure, *runtimeNodeFailure) {
+	excludedNodes, err := applyDynamicRuntimePlan(ctx, plan, instance)
+	if err == nil {
+		return excludedNodes, nil, nil
+	}
+	memberErr, ok := asDynamicMemberError(err)
+	if !ok {
+		failure := runtimeFailureFromInbound(plan.inbound, err)
+		return excludedNodes, &failure, nil
+	}
+	node := nodeFromDynamicMember(plan, memberErr.member)
+	if node == nil {
+		failure := runtimeFailureFromInbound(plan.inbound, err)
+		return excludedNodes, &failure, nil
+	}
+	return excludedNodes, nil, &runtimeNodeFailure{node: node, err: memberErr.err}
 }
 
 func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) error {
@@ -708,7 +811,7 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 				continue
 			}
 			if err := core.CreateOutbound(outbound); err != nil {
-				return err
+				return dynamicMemberError{member: member, err: err}
 			}
 		}
 		if err := core.AddNodeOutbound(group.tag, singboxcore.NodeConfig{
@@ -717,7 +820,7 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 			Outbound:     member.outbound,
 			OutboundTags: member.outboundTags(),
 		}); err != nil {
-			return err
+			return dynamicMemberError{member: member, err: err}
 		}
 	}
 	for nodeID, node := range existing {
@@ -738,7 +841,7 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 				continue
 			}
 			if err := addBuiltinMember(core, group.tag, member); err != nil {
-				return err
+				return dynamicMemberError{member: member, err: err}
 			}
 		}
 	}
@@ -919,14 +1022,55 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 
 func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 	strategy := singboxcore.BalanceManual
-	if group != nil && normalizeGroupStrategy(group.Strategy) == GroupStrategyURLTest {
+	switch {
+	case groupUsesLeastLatencyPolicy(group):
+		strategy = singboxcore.BalanceLeastLatency
+	case group != nil && normalizeGroupStrategy(group.Strategy) == GroupStrategyURLTest:
 		strategy = singboxcore.BalanceRoundRobin
 	}
+	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
 		Strategy:            strategy,
-		FailureBlacklistTTL: normalizeHealthConfig(currentHealthConfig()).BlacklistDuration,
+		FailureBlacklistTTL: healthConfig.BlacklistDuration,
 		RemoveTTL:           2 * time.Minute,
+		ProbeURL:            healthConfig.ProbeURL,
+		ProbeInterval:       healthConfig.Interval,
+		ProbeTimeout:        healthConfig.Timeout,
+		ProbeTestTimeout:    minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
+		ProbeConcurrency:    minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
+		MaxLatency:          healthConfig.Timeout,
+		SlowThreshold:       healthConfig.FailureThreshold,
+		FallbackStrategy:    singboxcore.BalanceRoundRobin,
 	}
+}
+
+func groupUsesLeastLatencyPolicy(group *tables.ProxyGroupTable) bool {
+	if group == nil {
+		return false
+	}
+	strategy := normalizeGroupStrategy(group.Strategy)
+	return strategy == GroupStrategyLeastLatency ||
+		(group.Type == GroupTypeSubscription && strategy == GroupStrategyURLTest)
+}
+
+func minPositive(value int, max int) int {
+	if value <= 0 {
+		return max
+	}
+	if max > 0 && value > max {
+		return max
+	}
+	return value
+}
+
+func minDuration(value time.Duration, max time.Duration) time.Duration {
+	if value <= 0 {
+		return max
+	}
+	if max > 0 && value > max {
+		return max
+	}
+	return value
 }
 
 func selectedMappingMember(mapping *tables.PortMappingTable, members []dynamicMemberPlan) string {
@@ -1668,6 +1812,21 @@ func nodeFromOutboundInitializeError(
 	return outboundNodes[outbounds[index].Tag]
 }
 
+func nodeFromDynamicMember(plan *dynamicRuntimePlan, member dynamicMemberPlan) *tables.ProxyNodeTable {
+	if plan == nil || len(plan.outboundNodes) == 0 {
+		return nil
+	}
+	if node := plan.outboundNodes[member.tag]; node != nil {
+		return node
+	}
+	for _, tag := range member.outboundTags() {
+		if node := plan.outboundNodes[tag]; node != nil {
+			return node
+		}
+	}
+	return nil
+}
+
 func outboundInitializeErrorIndex(message string) (int, bool) {
 	const prefix = "initialize outbound["
 	start := strings.Index(message, prefix)
@@ -1717,7 +1876,7 @@ func runtimeExcludedNodeFromNode(
 	}
 	if node != nil {
 		excluded.NodeID = node.ID
-		excluded.NodeName = node.Name
+		excluded.NodeName = firstNonEmpty(node.Name, node.ID)
 	}
 	return excluded
 }
@@ -1741,36 +1900,58 @@ func createRuntimeMappingInstance(
 		if retryNode == nil {
 			return instance, inbound, excludedNodes, failure
 		}
-		if _, exists := excludedNodeIDs[retryNode.node.ID]; exists {
+		var retry bool
+		excludedNodes, retry = excludeRuntimeNode(ctx, mapping, excludedNodeIDs, excludedNodes, outboundNodes, retryNode)
+		if !retry {
 			if failure == nil {
 				nextFailure := runtimeFailureFromMapping(mapping, retryNode.err)
 				failure = &nextFailure
 			}
 			return nil, RuntimeInbound{}, excludedNodes, failure
 		}
-
-		excluded := runtimeExcludedNodeFromNode(mapping, retryNode.node, outboundTagForNode(outboundNodes, retryNode.node), retryNode.err)
-		excludedNodes = append(excludedNodes, excluded)
-		excludedNodeIDs[retryNode.node.ID] = struct{}{}
-		if _, err := blacklistRuntimeExcludedNode(ctx, retryNode.node, retryNode.err); err != nil {
-			utils.Logger.Warn("自动排除节点写入健康状态失败",
-				zap.String("mappingId", mapping.ID),
-				zap.String("nodeId", retryNode.node.ID),
-				zap.Error(err),
-			)
-		}
-		utils.Logger.Warn("已自动排除运行时不可用节点",
-			zap.String("mappingId", mapping.ID),
-			zap.String("nodeId", retryNode.node.ID),
-			zap.String("nodeName", retryNode.node.Name),
-			zap.Error(retryNode.err),
-		)
 	}
 }
 
 type runtimeNodeFailure struct {
 	node *tables.ProxyNodeTable
 	err  error
+}
+
+func excludeRuntimeNode(
+	ctx context.Context,
+	mapping *tables.PortMappingTable,
+	excludedNodeIDs map[string]struct{},
+	excludedNodes []RuntimeExcludedNode,
+	outboundNodes map[string]*tables.ProxyNodeTable,
+	retryNode *runtimeNodeFailure,
+) ([]RuntimeExcludedNode, bool) {
+	if retryNode == nil || retryNode.node == nil {
+		return excludedNodes, false
+	}
+	if excludedNodeIDs == nil {
+		excludedNodeIDs = map[string]struct{}{}
+	}
+	if _, exists := excludedNodeIDs[retryNode.node.ID]; exists {
+		return excludedNodes, false
+	}
+
+	excluded := runtimeExcludedNodeFromNode(mapping, retryNode.node, outboundTagForNode(outboundNodes, retryNode.node), retryNode.err)
+	excludedNodes = append(excludedNodes, excluded)
+	excludedNodeIDs[retryNode.node.ID] = struct{}{}
+	if _, err := blacklistRuntimeExcludedNode(ctx, retryNode.node, retryNode.err); err != nil {
+		utils.Logger.Warn("自动排除节点写入健康状态失败",
+			zap.String("mappingId", mapping.ID),
+			zap.String("nodeId", retryNode.node.ID),
+			zap.Error(err),
+		)
+	}
+	utils.Logger.Warn("已自动排除运行时不可用节点",
+		zap.String("mappingId", mapping.ID),
+		zap.String("nodeId", retryNode.node.ID),
+		zap.String("nodeName", retryNode.node.Name),
+		zap.Error(retryNode.err),
+	)
+	return excludedNodes, true
 }
 
 func createRuntimeMappingInstanceOnce(
@@ -1786,7 +1967,10 @@ func createRuntimeMappingInstanceOnce(
 		failure := runtimeFailureFromMapping(mapping, err)
 		return nil, RuntimeInbound{}, nil, &failure, nil
 	}
-	instance, excludedNodes, failure := newRuntimeInstanceFromPlan(ctx, plan)
+	instance, excludedNodes, failure, retryNode := newRuntimeInstanceFromPlan(ctx, plan)
+	if retryNode != nil {
+		return nil, RuntimeInbound{}, plan.outboundNodes, nil, retryNode
+	}
 	if failure != nil {
 		if node := nodeFromOutboundInitializeError(errors.New(failure.Error), plan.options.Outbounds, plan.outboundNodes); node != nil {
 			return nil, RuntimeInbound{}, plan.outboundNodes, nil, &runtimeNodeFailure{node: node, err: errors.New(failure.Error)}
@@ -1909,6 +2093,53 @@ func runtimeInstanceForMapping(mappingID string) *runtimeInstance {
 	return singBoxRuntime.instances[strings.TrimSpace(mappingID)]
 }
 
+func runtimeNodeHealthLocked() []RuntimeNodeHealth {
+	items := make([]RuntimeNodeHealth, 0)
+	for mappingID, instance := range singBoxRuntime.instances {
+		if instance == nil || instance.core == nil {
+			continue
+		}
+		state := instance.core.Snapshot()
+		for _, group := range state.Groups {
+			if group.Policy.Strategy != singboxcore.BalanceLeastLatency {
+				continue
+			}
+			for _, node := range group.Nodes {
+				items = append(items, RuntimeNodeHealth{
+					MappingID:         mappingID,
+					GroupTag:          group.Tag,
+					NodeID:            node.ID,
+					Tag:               node.Tag,
+					Selected:          group.Selected == node.ID,
+					GroupProbeRunning: group.ProbeRunning,
+					GroupLastProbeAt:  group.LastProbeAt,
+					GroupNextProbeAt:  group.NextProbeAt,
+					LatencyCandidate:  node.LatencyCandidate,
+					LatencyFallback:   node.LatencyFallback,
+					LatencySlowCount:  node.LatencySlowCount,
+					LastLatencyMs:     node.LastLatencyMs,
+					LastError:         firstNonEmpty(node.LastProbeError, node.LastError),
+					LastCheckedAt:     node.LastCheckedAt,
+					LastSuccessAt:     node.LastSuccessAt,
+					ProbeStartedAt:    node.ProbeStartedAt,
+					ProbeRunning:      node.ProbeRunning,
+					ProbeFailureCount: node.ProbeFailureCount,
+				})
+			}
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].MappingID != items[j].MappingID {
+			return items[i].MappingID < items[j].MappingID
+		}
+		if items[i].GroupTag != items[j].GroupTag {
+			return items[i].GroupTag < items[j].GroupTag
+		}
+		return items[i].NodeID < items[j].NodeID
+	})
+	return items
+}
+
 func runtimeInboundsWithoutMapping(inbounds []RuntimeInbound, mappingID string) []RuntimeInbound {
 	result := make([]RuntimeInbound, 0, len(inbounds))
 	for _, inbound := range inbounds {
@@ -1980,6 +2211,9 @@ func normalizeRuntimeStatus(status RuntimeStatus) RuntimeStatus {
 	}
 	if status.ExcludedNodes == nil {
 		status.ExcludedNodes = []RuntimeExcludedNode{}
+	}
+	if status.NodeHealth == nil {
+		status.NodeHealth = []RuntimeNodeHealth{}
 	}
 	if status.UpdatedAt.IsZero() {
 		status.UpdatedAt = time.Now()

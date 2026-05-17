@@ -3,6 +3,8 @@ package singboxcore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -53,9 +55,10 @@ func NewCore(config Config) (*Core, error) {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	ctx = BoxContext(ctx)
 
 	instance, err := box.New(box.Options{
-		Context: BoxContext(ctx),
+		Context: ctx,
 		Options: config.Options,
 	})
 	if err != nil {
@@ -83,6 +86,9 @@ func (c *Core) Start() error {
 		return NormalizeStartError(err)
 	}
 	c.started = true
+	for _, group := range c.groups {
+		group.StartProbing()
+	}
 	return nil
 }
 
@@ -94,6 +100,9 @@ func (c *Core) Close() error {
 	defer c.mu.Unlock()
 	if c.cancel != nil {
 		c.cancel()
+	}
+	for _, group := range c.groups {
+		group.StopProbing()
 	}
 	c.started = false
 	if c.instance == nil {
@@ -123,12 +132,15 @@ func (c *Core) AddGroup(groupID string, policy Policy) error {
 	if _, exists := c.groups[groupID]; exists {
 		return ErrGroupExists
 	}
-	group := NewDynamicGroup(groupID, c.instance.Outbound(), policy)
+	group := NewDynamicGroup(groupID, c.instance.Outbound(), policy, c.ctx)
 	group.removeTags = c.removeOutboundTagsIfUnused
 	if err := c.createDynamicGroupOutbound(groupID, group); err != nil {
 		return err
 	}
 	c.groups[groupID] = group
+	if c.started {
+		group.StartProbing()
+	}
 	return nil
 }
 
@@ -214,6 +226,21 @@ func (c *Core) AddNodeOutbound(groupID string, node NodeConfig) error {
 }
 
 func (c *Core) CreateOutbound(outbound option.Outbound) error {
+	return c.createOutbound(outbound)
+}
+
+func (c *Core) createOutbound(outbound option.Outbound) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%w: %s outbound %q: %v\n%s",
+				ErrOutboundPanic,
+				outbound.Type,
+				outbound.Tag,
+				recovered,
+				string(debug.Stack()),
+			)
+		}
+	}()
 	if c == nil || c.instance == nil {
 		return ErrCoreNotStarted
 	}
@@ -264,6 +291,16 @@ func (c *Core) MarkNodeFailed(groupID, nodeID string, ttl time.Duration, reason 
 		return err
 	}
 	return group.MarkNodeFailed(nodeID, ttl, reason)
+}
+
+func (c *Core) ProbeLeastLatencyGroup(groupID string) error {
+	group, err := c.group(groupID)
+	if err != nil {
+		return err
+	}
+	group.RunLeastLatencyProbeRound()
+	group.SelectBestLeastLatencyCandidate()
+	return nil
 }
 
 func (c *Core) GC() error {

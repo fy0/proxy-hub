@@ -17,7 +17,9 @@ const {
   activeNodeGroupFilter,
   selectNodeGroupFilter,
   groupSummaryItems,
+  selectedGroup,
   selectedNodeGroupTitle,
+  selectedNodeGroupHealthSummary,
   currentNodeTotal,
   selectedNodeGroupNodes,
   nodeListContainerProps,
@@ -38,6 +40,8 @@ const {
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
+  openEditGroupById,
+  openEditGroupDialog,
   importMessage,
 } = props.context;
 </script>
@@ -73,32 +77,121 @@ const {
     </div>
 
     <div v-if="activeNodeGroupFilter === 'summary'" class="node-group-summary-grid">
-      <button
+      <article
         v-for="item in groupSummaryItems"
         :key="item.key"
-        type="button"
         class="node-group-summary-card"
-        @click="selectNodeGroupFilter(item.key)"
       >
-        <span class="node-summary-type" :class="{ subscription: item.isSubscription }">
-          {{ item.typeLabel }}
-        </span>
-        <strong>{{ item.title }}</strong>
-        <span class="node-summary-count">{{
-          t('home.groupMeta.nodeCount', { count: item.count })
-        }}</span>
-        <small>{{ item.detail }}</small>
-        <span class="node-summary-meta">
-          <em>{{ item.strategyLabel }}</em>
-          <em v-if="item.filter">{{ item.filter }}</em>
-        </span>
-      </button>
+        <button
+          type="button"
+          class="node-group-summary-main"
+          @click="selectNodeGroupFilter(item.key)"
+        >
+          <span class="node-summary-type" :class="{ subscription: item.isSubscription }">
+            {{ item.typeLabel }}
+          </span>
+          <strong>{{ item.title }}</strong>
+          <span class="node-summary-count">{{
+            t('home.groupMeta.nodeCount', { count: item.count })
+          }}</span>
+          <small>{{ item.detail }}</small>
+          <span class="node-summary-meta">
+            <em>{{ item.strategyLabel }}</em>
+            <em v-if="item.filter">{{ item.filter }}</em>
+          </span>
+        </button>
+        <ActionTooltip v-if="item.editable && item.groupId" :label="t('common.editGroup')">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            class="node-group-summary-edit"
+            :aria-label="t('common.editGroup')"
+            @click="openEditGroupById(item.groupId)"
+          >
+            <Edit3 class="size-4" aria-hidden="true" />
+          </Button>
+        </ActionTooltip>
+      </article>
     </div>
 
     <section v-else class="node-group-section active-node-group">
       <div class="node-group-heading">
-        <strong>{{ selectedNodeGroupTitle }}</strong>
-        <span>{{ t('home.groupMeta.nodeCount', { count: currentNodeTotal }) }}</span>
+        <div class="node-group-title">
+          <strong>{{ selectedNodeGroupTitle }}</strong>
+          <span>{{ t('home.groupMeta.nodeCount', { count: currentNodeTotal }) }}</span>
+        </div>
+        <div class="node-group-health-summary">
+          <span class="available">
+            {{ t('home.nodeGroupHealth.available', { count: selectedNodeGroupHealthSummary.available }) }}
+          </span>
+          <span class="fastest">
+            {{
+              t('home.nodeGroupHealth.fastest', {
+                latency: selectedNodeGroupHealthSummary.fastestLatencyMs
+                  ? `${selectedNodeGroupHealthSummary.fastestLatencyMs}ms`
+                  : '-',
+              })
+            }}
+          </span>
+          <span
+            class="probing"
+            :class="{
+              active:
+                selectedNodeGroupHealthSummary.probing > 0 ||
+                selectedNodeGroupHealthSummary.autoProbeRunning,
+            }"
+          >
+            {{ t('home.nodeGroupHealth.probing', { count: selectedNodeGroupHealthSummary.probing }) }}
+          </span>
+          <span
+            class="probe-state"
+            :class="{
+              active: selectedNodeGroupHealthSummary.autoProbeEnabled,
+              running: selectedNodeGroupHealthSummary.autoProbeRunning,
+            }"
+          >
+            {{
+              selectedNodeGroupHealthSummary.autoProbeRunning
+                ? t('home.nodeGroupHealth.autoProbeRunning')
+                : selectedNodeGroupHealthSummary.autoProbeEnabled
+                  ? t('home.nodeGroupHealth.autoProbeEnabled')
+                  : t('home.nodeGroupHealth.autoProbeDisabled')
+            }}
+          </span>
+          <span
+            v-if="selectedNodeGroupHealthSummary.autoProbeEnabled"
+            class="needs-probe"
+          >
+            {{
+              t('home.nodeGroupHealth.needsProbe', {
+                count: selectedNodeGroupHealthSummary.needsProbe,
+              })
+            }}
+          </span>
+          <span class="unavailable">
+            {{
+              t('home.nodeGroupHealth.unavailable', {
+                count: selectedNodeGroupHealthSummary.unavailable,
+              })
+            }}
+          </span>
+          <ActionTooltip
+            v-if="selectedGroup?.type === 'manual'"
+            :label="t('common.editGroup')"
+            align="end"
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              :aria-label="t('common.editGroup')"
+              @click="openEditGroupDialog(selectedGroup)"
+            >
+              <Edit3 class="size-4" aria-hidden="true" />
+            </Button>
+          </ActionTooltip>
+        </div>
       </div>
       <div v-if="selectedNodeGroupNodes.length" class="node-table virtual-node-table">
         <div v-bind="nodeListContainerProps" class="node-virtual-scroll">
@@ -178,7 +271,10 @@ const {
                 >
                 <span
                   class="node-health-strip"
-                  :class="{ blacklisted: row.data.health?.blacklisted }"
+                  :class="{
+                    blacklisted: row.data.health?.blacklisted,
+                    probing: row.data.health?.probeRunning,
+                  }"
                 >
                   <small class="latency" :title="t('home.nodeHealth.latency')">
                     {{ routeLatencyLabel(row.data) }}

@@ -1,6 +1,7 @@
 package singboxcore
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -115,6 +116,133 @@ func TestActiveConnectionCount(t *testing.T) {
 	_ = conn.Close()
 	if got := node.ActiveCount(); got != 0 {
 		t.Fatalf("active count after close = %d, want 0", got)
+	}
+}
+
+func TestLeastLatencyUsesOnlyQualifiedCandidates(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{Strategy: BalanceLeastLatency})
+	fast := NewNodeState("fast", "node-fast", option.Outbound{})
+	slow := NewNodeState("slow", "node-slow", option.Outbound{})
+	if err := group.AddNode(fast); err != nil {
+		t.Fatalf("AddNode(fast) error = %v", err)
+	}
+	if err := group.AddNode(slow); err != nil {
+		t.Fatalf("AddNode(slow) error = %v", err)
+	}
+
+	now := time.Now()
+	fast.recordLeastLatencyProbeSuccess(100*time.Millisecond, 3*time.Second, 3, now)
+	slow.recordLeastLatencyProbeSuccess(11*time.Second, 3*time.Second, 3, now)
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"fast"}) {
+		t.Fatalf("least latency candidates = %v, want fast only", got)
+	}
+}
+
+func TestLeastLatencyRequiresConsecutiveSlowProbes(t *testing.T) {
+	node := NewNodeState("node", "node", option.Outbound{})
+	now := time.Now()
+	node.recordLeastLatencyProbeSuccess(100*time.Millisecond, 3*time.Second, 3, now)
+
+	node.recordLeastLatencyProbeSuccess(4*time.Second, 3*time.Second, 3, now.Add(time.Second))
+	if !node.LeastLatencyCandidate() {
+		t.Fatalf("node removed from candidate pool after one slow probe")
+	}
+	node.recordLeastLatencyProbeSuccess(5*time.Second, 3*time.Second, 3, now.Add(2*time.Second))
+	if !node.LeastLatencyCandidate() {
+		t.Fatalf("node removed from candidate pool after two slow probes")
+	}
+	node.recordLeastLatencyProbeSuccess(6*time.Second, 3*time.Second, 3, now.Add(3*time.Second))
+	if node.LeastLatencyCandidate() {
+		t.Fatalf("node remained candidate after three consecutive slow probes")
+	}
+	if !node.LeastLatencyFallback() {
+		t.Fatalf("node did not become stale fallback after slow removal")
+	}
+}
+
+func TestLeastLatencyFallsBackToStaleSuccessfulNodes(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{Strategy: BalanceLeastLatency})
+	olderSlow := NewNodeState("older-slow", "node-older-slow", option.Outbound{})
+	recentFast := NewNodeState("recent-fast", "node-recent-fast", option.Outbound{})
+	if err := group.AddNode(olderSlow); err != nil {
+		t.Fatalf("AddNode(olderSlow) error = %v", err)
+	}
+	if err := group.AddNode(recentFast); err != nil {
+		t.Fatalf("AddNode(recentFast) error = %v", err)
+	}
+
+	now := time.Now()
+	olderSlow.recordLeastLatencyProbeSuccess(700*time.Millisecond, 3*time.Second, 3, now)
+	recentFast.recordLeastLatencyProbeSuccess(120*time.Millisecond, 3*time.Second, 3, now)
+	olderSlow.recordLeastLatencyProbeFailure("temporary failure", now.Add(time.Second))
+	recentFast.recordLeastLatencyProbeFailure("temporary failure", now.Add(time.Second))
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"recent-fast", "older-slow"}) {
+		t.Fatalf("least latency fallback candidates = %v, want recent-fast then older-slow", got)
+	}
+}
+
+func TestLeastLatencyToleranceKeepsCurrentSelection(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{
+		Strategy:         BalanceLeastLatency,
+		LatencyTolerance: 50 * time.Millisecond,
+	})
+	current := NewNodeState("current", "node-current", option.Outbound{})
+	best := NewNodeState("best", "node-best", option.Outbound{})
+	if err := group.AddNode(current); err != nil {
+		t.Fatalf("AddNode(current) error = %v", err)
+	}
+	if err := group.AddNode(best); err != nil {
+		t.Fatalf("AddNode(best) error = %v", err)
+	}
+	now := time.Now()
+	current.recordLeastLatencyProbeSuccess(130*time.Millisecond, 3*time.Second, 3, now)
+	best.recordLeastLatencyProbeSuccess(100*time.Millisecond, 3*time.Second, 3, now)
+	if err := group.SelectNode("current"); err != nil {
+		t.Fatalf("SelectNode(current) error = %v", err)
+	}
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"current", "best"}) {
+		t.Fatalf("least latency order = %v, want current retained within tolerance", got)
+	}
+}
+
+func TestLeastLatencyFallsBackBeforeProbeResults(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{
+		Strategy:         BalanceLeastLatency,
+		FallbackStrategy: BalanceRoundRobin,
+	})
+	for _, id := range []string{"a", "b", "c"} {
+		if err := group.AddNode(NewNodeState(id, "node-"+id, option.Outbound{})); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", id, err)
+		}
+	}
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"a", "b", "c"}) {
+		t.Fatalf("first fallback order = %v, want a,b,c", got)
+	}
+	if got := candidateIDs(group); !sameStrings(got, []string{"b", "c", "a"}) {
+		t.Fatalf("second fallback order = %v, want b,c,a", got)
+	}
+}
+
+func TestUpdatePolicyToLeastLatencyDoesNotDeadlock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	group := NewDynamicGroup("group-latency", nil, Policy{Strategy: BalanceManual}, ctx)
+	group.StartProbing()
+
+	done := make(chan struct{})
+	go func() {
+		group.UpdatePolicy(Policy{Strategy: BalanceLeastLatency})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("UpdatePolicy deadlocked while enabling least latency")
 	}
 }
 

@@ -18,6 +18,7 @@ var (
 	ErrUnsupportedURI      = errors.New("unsupported proxy uri")
 	ErrUnsupportedProtocol = errors.New("unsupported proxy protocol")
 	ErrInvalidPort         = errors.New("invalid port")
+	ErrOutboundPanic       = errors.New("sing-box outbound creation panicked")
 )
 
 type PortInUseError struct {

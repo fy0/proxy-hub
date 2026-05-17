@@ -18,7 +18,7 @@ export type RouteStrategy = 'failover' | 'load-balance' | 'manual';
 
 export type ProxyGroupType = 'manual' | 'subscription';
 
-export type ProxyGroupStrategy = 'selector' | 'url-test';
+export type ProxyGroupStrategy = 'selector' | 'url-test' | 'least-latency';
 
 export type ImportPreviewType = 'node' | 'group' | 'builtin' | 'failure';
 
@@ -54,6 +54,10 @@ export interface ProxyNodeHealth {
   lastCheckedAt: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
+  probeRunning: boolean;
+  probeStartedAt: string | null;
+  nextProbeAt: string | null;
+  source: 'saved' | 'runtime';
   updatedAt: string;
 }
 
@@ -151,6 +155,27 @@ export interface RuntimeExcludedNode {
   nodeName: string;
   tag: string;
   error: string;
+}
+
+export interface RuntimeNodeHealth {
+  mappingId: string;
+  groupTag: string;
+  nodeId: string;
+  tag: string;
+  selected: boolean;
+  groupProbeRunning: boolean;
+  groupLastProbeAt: string | null;
+  groupNextProbeAt: string | null;
+  latencyCandidate: boolean;
+  latencyFallback: boolean;
+  latencySlowCount: number;
+  lastLatencyMs: number;
+  lastError: string;
+  lastCheckedAt: string | null;
+  lastSuccessAt: string | null;
+  probeRunning: boolean;
+  probeStartedAt: string | null;
+  probeFailureCount: number;
 }
 
 export interface ProxyTestResult {

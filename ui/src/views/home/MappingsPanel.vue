@@ -39,6 +39,7 @@ const {
   toggleRouteActionMenu,
   openNodeTestDialog,
   requestRemoveRoute,
+  openEditGroupDialog,
   protocolLabels,
   nodeHealthTitle,
   routeLatencyLabel,
@@ -217,7 +218,10 @@ const {
             </span>
             <span
               class="route-health"
-              :class="{ blacklisted: node.health?.blacklisted }"
+              :class="{
+                blacklisted: node.health?.blacklisted,
+                probing: node.health?.probeRunning,
+              }"
               :title="nodeHealthTitle(node)"
             >
               <small class="latency" :title="t('home.nodeHealth.latency')">
@@ -257,6 +261,16 @@ const {
                 class="route-action-menu"
                 role="menu"
               >
+                <button
+                  v-if="group.type === 'manual'"
+                  type="button"
+                  class="route-action-menu-item"
+                  role="menuitem"
+                  @click.stop="openEditGroupDialog(group)"
+                >
+                  <Edit3 class="size-4" aria-hidden="true" />
+                  <span>{{ t('common.editGroup') }}</span>
+                </button>
                 <button
                   type="button"
                   class="route-action-menu-item danger"

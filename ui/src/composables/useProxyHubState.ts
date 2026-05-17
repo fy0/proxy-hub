@@ -58,6 +58,7 @@ import type {
   ProxyProtocol,
   ProxySubscription,
   ProxyTestResult,
+  RuntimeNodeHealth,
   RouteStrategy,
 } from '@/types/proxyHub';
 import { t } from '@/i18n';
@@ -148,6 +149,8 @@ const subscriptions = ref<ProxySubscription[]>([]);
 const mappings = ref<PortMapping[]>([]);
 const lastSavedAt = ref<string | null>(null);
 const runtime = ref<RuntimeStatus | null>(null);
+const runtimeNodeHealth = ref<RuntimeNodeHealth[]>([]);
+let runtimeRefreshTimer: number | null = null;
 const isLoading = ref(false);
 const activeMutations = ref(0);
 const errorMessage = ref('');
@@ -208,7 +211,8 @@ function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
 }
 
 function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
-  return value === 'url-test' ? 'url-test' : 'selector';
+  if (value === 'url-test' || value === 'least-latency') return value;
+  return 'selector';
 }
 
 function normalizePreviewType(value: string | null | undefined): ImportPreviewType {
@@ -411,8 +415,56 @@ function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null 
     lastCheckedAt: dto.lastCheckedAt,
     lastSuccessAt: dto.lastSuccessAt,
     lastFailureAt: dto.lastFailureAt,
+    probeRunning: false,
+    probeStartedAt: null,
+    nextProbeAt: null,
+    source: 'saved',
     updatedAt: dto.updatedAt,
   };
+}
+
+function nodeHealthTimestamp(health: ProxyNodeHealth | null | undefined): number {
+  if (!health) return 0;
+  const timestamps = [
+    health.updatedAt,
+    health.lastCheckedAt,
+    health.lastSuccessAt,
+    health.lastFailureAt,
+    health.probeStartedAt,
+  ]
+    .map(value => (value ? new Date(value).getTime() : 0))
+    .filter(value => Number.isFinite(value));
+  return timestamps.length > 0 ? Math.max(...timestamps) : 0;
+}
+
+function mergeCachedNodeHealth(
+  existing: ProxyNodeHealth | undefined,
+  incoming: ProxyNodeHealth
+): ProxyNodeHealth {
+  if (!existing) return incoming;
+  if (existing.source === 'runtime' && incoming.source === 'saved') {
+    const runtimeUpdatedAt = nodeHealthTimestamp(existing);
+    const savedUpdatedAt = nodeHealthTimestamp(incoming);
+    return {
+      ...incoming,
+      available: existing.available || incoming.available,
+      blacklisted: existing.blacklisted || incoming.blacklisted,
+      blacklistedUntil: existing.blacklistedUntil ?? incoming.blacklistedUntil,
+      failureCount: Math.max(existing.failureCount, incoming.failureCount),
+      successCount: Math.max(existing.successCount, incoming.successCount),
+      lastLatencyMs: existing.lastLatencyMs > 0 ? existing.lastLatencyMs : incoming.lastLatencyMs,
+      lastError: existing.lastError || incoming.lastError,
+      lastCheckedAt: existing.lastCheckedAt ?? incoming.lastCheckedAt,
+      lastSuccessAt: existing.lastSuccessAt ?? incoming.lastSuccessAt,
+      lastFailureAt: existing.lastFailureAt ?? incoming.lastFailureAt,
+      probeRunning: existing.probeRunning,
+      probeStartedAt: existing.probeStartedAt,
+      nextProbeAt: existing.nextProbeAt,
+      source: 'runtime',
+      updatedAt: runtimeUpdatedAt >= savedUpdatedAt ? existing.updatedAt : incoming.updatedAt,
+    };
+  }
+  return incoming;
 }
 
 function cacheNodeHealth(items: Array<ProxyNodeHealth | null | undefined>): void {
@@ -421,9 +473,80 @@ function cacheNodeHealth(items: Array<ProxyNodeHealth | null | undefined>): void
 
   const next = { ...nodeHealthById.value };
   for (const health of healthItems) {
-    next[health.nodeId] = health;
+    next[health.nodeId] = mergeCachedNodeHealth(next[health.nodeId], health);
   }
   nodeHealthById.value = next;
+}
+
+function toRuntimeNodeHealth(dto: unknown): RuntimeNodeHealth | null {
+  if (!dto || typeof dto !== 'object') return null;
+  const item = dto as Record<string, unknown>;
+  const nodeId = typeof item.nodeId === 'string' ? item.nodeId : '';
+  if (!nodeId) return null;
+
+  return {
+    mappingId: typeof item.mappingId === 'string' ? item.mappingId : '',
+    groupTag: typeof item.groupTag === 'string' ? item.groupTag : '',
+    nodeId,
+    tag: typeof item.tag === 'string' ? item.tag : '',
+    selected: item.selected === true,
+    groupProbeRunning: item.groupProbeRunning === true,
+    groupLastProbeAt: typeof item.groupLastProbeAt === 'string' ? item.groupLastProbeAt : null,
+    groupNextProbeAt: typeof item.groupNextProbeAt === 'string' ? item.groupNextProbeAt : null,
+    latencyCandidate: item.latencyCandidate === true,
+    latencyFallback: item.latencyFallback === true,
+    latencySlowCount: typeof item.latencySlowCount === 'number' ? item.latencySlowCount : 0,
+    lastLatencyMs: typeof item.lastLatencyMs === 'number' ? item.lastLatencyMs : 0,
+    lastError: typeof item.lastError === 'string' ? item.lastError : '',
+    lastCheckedAt: typeof item.lastCheckedAt === 'string' ? item.lastCheckedAt : null,
+    lastSuccessAt: typeof item.lastSuccessAt === 'string' ? item.lastSuccessAt : null,
+    probeRunning: item.probeRunning === true,
+    probeStartedAt: typeof item.probeStartedAt === 'string' ? item.probeStartedAt : null,
+    probeFailureCount: typeof item.probeFailureCount === 'number' ? item.probeFailureCount : 0,
+  };
+}
+
+function runtimeHealthToNodeHealth(item: RuntimeNodeHealth): ProxyNodeHealth | null {
+  const hasRuntimeHealth =
+    item.lastLatencyMs > 0 ||
+    Boolean(item.lastCheckedAt) ||
+    Boolean(item.lastError) ||
+    item.probeRunning ||
+    item.groupProbeRunning ||
+    Boolean(item.groupLastProbeAt) ||
+    Boolean(item.groupNextProbeAt) ||
+    item.latencyCandidate ||
+    item.latencyFallback;
+  if (!item.nodeId || !hasRuntimeHealth)
+    return null;
+  const now = new Date().toISOString();
+  return {
+    nodeId: item.nodeId,
+    available: item.latencyCandidate || item.latencyFallback || (item.lastLatencyMs > 0 && !item.lastError),
+    failureCount: item.probeFailureCount,
+    successCount: item.lastSuccessAt ? 1 : 0,
+    blacklisted: false,
+    blacklistedUntil: null,
+    lastLatencyMs: item.lastLatencyMs,
+    lastError: item.lastError,
+    lastCheckedAt: item.lastCheckedAt,
+    lastSuccessAt: item.lastSuccessAt,
+    lastFailureAt: item.lastError ? item.lastCheckedAt : null,
+    probeRunning: item.probeRunning,
+    probeStartedAt: item.probeStartedAt,
+    nextProbeAt: null,
+    source: 'runtime',
+    updatedAt:
+      item.lastCheckedAt ?? item.probeStartedAt ?? item.groupLastProbeAt ?? item.groupNextProbeAt ?? now,
+  };
+}
+
+function applyRuntimeNodeHealth(status: RuntimeStatus | null): void {
+  const items = (((status as { nodeHealth?: unknown[] } | null)?.nodeHealth ?? [])
+    .map(toRuntimeNodeHealth)
+    .filter((item): item is RuntimeNodeHealth => Boolean(item)));
+  runtimeNodeHealth.value = items;
+  cacheNodeHealth(items.map(runtimeHealthToNodeHealth));
 }
 
 function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
@@ -543,6 +666,7 @@ function cacheNodeOptions(options: ProxyNodeOption[]): void {
 }
 
 function applySnapshot(snapshot: StateSnapshotDto): void {
+  const snapshotRuntime = snapshot.runtime ?? null;
   nodes.value = (snapshot.nodes ?? []).map(toProxyNode);
   nodeTotal.value = snapshot.nodeTotal ?? nodes.value.length;
   currentNodeTotal.value = nodes.value.length;
@@ -550,7 +674,8 @@ function applySnapshot(snapshot: StateSnapshotDto): void {
   groups.value = (snapshot.groups ?? []).map(toProxyGroup);
   subscriptions.value = (snapshot.subscriptions ?? []).map(toProxySubscription);
   mappings.value = (snapshot.mappings ?? []).map(toPortMapping);
-  runtime.value = snapshot.runtime;
+  runtime.value = snapshotRuntime;
+  applyRuntimeNodeHealth(snapshotRuntime);
   lastSavedAt.value = snapshot.lastSavedAt;
   cacheNodeOptions(nodes.value.map(nodeToOption));
   cacheNodeHealth(nodes.value.map(node => node.health));
@@ -817,9 +942,27 @@ async function refreshRuntimeStatus(): Promise<void> {
   try {
     const { data } = await getProxyRuntimeStatus({ throwOnError: true });
     runtime.value = data;
+    applyRuntimeNodeHealth(data);
   } catch {
     // Runtime status is secondary; the main mutation result is already applied.
   }
+}
+
+function refreshRuntimeState(): Promise<void> {
+  return refreshRuntimeStatus();
+}
+
+function startRuntimeStatusPolling(intervalMs = 2_000): void {
+  if (typeof window === 'undefined' || runtimeRefreshTimer !== null) return;
+  runtimeRefreshTimer = window.setInterval(() => {
+    refreshRuntimeStatus().catch(() => undefined);
+  }, intervalMs);
+}
+
+function stopRuntimeStatusPolling(): void {
+  if (typeof window === 'undefined' || runtimeRefreshTimer === null) return;
+  window.clearInterval(runtimeRefreshTimer);
+  runtimeRefreshTimer = null;
 }
 
 async function loadNodes(input: NodeQueryInput = {}, append = false): Promise<void> {
@@ -1197,7 +1340,15 @@ async function testMapping(id: string, probeUrl = ''): Promise<ProxyTestResult> 
       body: { probeUrl: probeUrl.trim() || undefined },
       throwOnError: true,
     });
-    return toProxyTestResult(data);
+    const result = toProxyTestResult(data);
+    if (result.health) {
+      cacheNodeHealth([result.health]);
+      nodes.value = nodes.value.map(node =>
+        node.id === result.nodeId ? { ...node, health: result.health } : node
+      );
+    }
+    await refreshRuntimeStatus();
+    return result;
   });
 }
 
@@ -1241,6 +1392,7 @@ export function useProxyHubState() {
     mappings,
     lastSavedAt,
     runtime,
+    runtimeNodeHealth,
     isLoading,
     isSaving,
     errorMessage,
@@ -1251,6 +1403,9 @@ export function useProxyHubState() {
     groupById,
     subscriptionById,
     refreshState: refreshProxyHubState,
+    refreshRuntimeState,
+    startRuntimeStatusPolling,
+    stopRuntimeStatusPolling,
     refreshNodeHealth,
     loadNodes,
     loadMoreNodes,

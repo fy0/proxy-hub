@@ -45,6 +45,7 @@ import type {
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
+  ProxyGroupStrategy,
   ProxyNode,
   ProxyNodeOption,
   ProxyTestResult,
@@ -130,11 +131,15 @@ const {
   nodeHealthById,
   groupById,
   runtime,
+  runtimeNodeHealth,
   isLoading,
   isSaving,
   errorMessage,
   loginRequired,
   refreshState,
+  refreshRuntimeState,
+  startRuntimeStatusPolling,
+  stopRuntimeStatusPolling,
   addNode,
   addNodeFromUri,
   previewImportNodes,
@@ -143,6 +148,7 @@ const {
   removeNode,
   testNode,
   addGroup,
+  updateGroup,
   removeGroup,
   previewSubscription,
   addSubscription,
@@ -197,6 +203,7 @@ const copiedMappingId = ref<string | null>(null);
 const copiedNodeId = ref<string | null>(null);
 const editingMappingId = ref<string | null>(null);
 const editingNodeId = ref<string | null>(null);
+const editingGroupId = ref<string | null>(null);
 const addNodeDialogMode = ref<AddNodeDialogMode | null>(null);
 const isGroupDialogOpen = ref(false);
 const routeTargetMappingId = ref<string | null>(null);
@@ -276,7 +283,7 @@ const subscriptionPreviewSignature = ref('');
 
 const manualGroupForm = reactive({
   name: '',
-  strategy: 'selector' as 'selector' | 'url-test',
+  strategy: 'selector' as ProxyGroupStrategy,
   nodeIds: [] as string[],
   groupIds: [] as string[],
   remark: '',
@@ -516,7 +523,66 @@ const selectedNodeGroupTitle = computed(() => {
 });
 
 const selectedNodeGroupNodes = computed(() => {
-  return nodes.value;
+  return nodes.value.map(node => {
+    const health = nodeHealthById.value[node.id];
+    return health ? { ...node, health } : node;
+  });
+});
+
+const groupRuntimeHealth = computed(() => {
+  const group = selectedGroup.value;
+  if (!group) return [];
+  const groupTag = `group-${group.id}`;
+  return runtimeNodeHealth.value.filter(
+    item => item.nodeId === group.id || item.tag === groupTag || item.groupTag === groupTag
+  );
+});
+
+const selectedNodeGroupHealthSummary = computed(() => {
+  let available = 0;
+  let probing = 0;
+  let needsProbe = 0;
+  let unavailable = 0;
+  let fastestLatencyMs = 0;
+  let autoProbeEnabled = false;
+  let autoProbeRunning = false;
+
+  for (const health of groupRuntimeHealth.value) {
+    autoProbeEnabled = true;
+    if (health.groupProbeRunning) autoProbeRunning = true;
+  }
+
+  for (const node of selectedNodeGroupNodes.value) {
+    const health = node.health;
+    if (!health) {
+      needsProbe += 1;
+      continue;
+    }
+    if (health.probeRunning) {
+      probing += 1;
+    }
+    if (!health.lastCheckedAt && !health.probeRunning) {
+      needsProbe += 1;
+    }
+    if (health.blacklisted || (health.lastError && !health.probeRunning)) {
+      unavailable += 1;
+    } else if (health.available || health.lastLatencyMs > 0) {
+      available += 1;
+    }
+    if (health.lastLatencyMs > 0 && (fastestLatencyMs === 0 || health.lastLatencyMs < fastestLatencyMs)) {
+      fastestLatencyMs = health.lastLatencyMs;
+    }
+  }
+
+  return {
+    available,
+    autoProbeEnabled,
+    autoProbeRunning,
+    fastestLatencyMs,
+    needsProbe,
+    probing,
+    unavailable,
+  };
 });
 
 const nodeListQuery = computed(() => ({
@@ -545,6 +611,8 @@ onMounted(() => {
   healthClockTimer = window.setInterval(() => {
     healthClock.value = Date.now();
   }, 60_000);
+  refreshRuntimeState().catch(() => undefined);
+  startRuntimeStatusPolling();
 });
 
 onBeforeUnmount(() => {
@@ -552,6 +620,7 @@ onBeforeUnmount(() => {
     window.clearInterval(healthClockTimer);
     healthClockTimer = null;
   }
+  stopRuntimeStatusPolling();
 });
 
 async function reloadCurrentNodes(): Promise<void> {
@@ -579,9 +648,11 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     strategyLabel: t('home.groupFilters.defaultStrategy'),
     filter: '',
     isSubscription: false,
+    editable: false,
   },
   ...visibleGroups.value.map(group => ({
     key: toGroupFilterKey(group.id),
+    groupId: group.id,
     title: group.name,
     typeLabel: t(`home.groupType.${group.type}`),
     count: group.nodeCount,
@@ -589,6 +660,7 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     strategyLabel: t(`home.groupStrategy.${group.strategy}`),
     filter: group.filter,
     isSubscription: group.type === 'subscription',
+    editable: group.type === 'manual',
   })),
 ]);
 
@@ -624,7 +696,7 @@ watch(
 );
 
 function groupNodes(group: ProxyGroup): ProxyNode[] {
-  return nodes.value.filter(
+  return selectedNodeGroupNodes.value.filter(
     node =>
       node.groupId === group.id ||
       node.groupIds.includes(group.id) ||
@@ -1125,16 +1197,47 @@ function resetManualGroupForm(): void {
   manualGroupNodeGroupId.value = '';
 }
 
+function editableNestedGroups(): ProxyGroup[] {
+  return manualGroups.value.filter(group => group.id !== editingGroupId.value);
+}
+
 function openNewGroupDialog(): void {
   closeRouteActionMenu();
   closeNodeEditDialog();
+  editingGroupId.value = null;
   resetManualGroupForm();
   isGroupDialogOpen.value = true;
   reloadManualGroupNodeOptions();
 }
 
+function openEditGroupDialog(group: ProxyGroup): void {
+  closeRouteActionMenu();
+  closeNodeEditDialog();
+  if (group.type !== 'manual') return;
+
+  editingGroupId.value = group.id;
+  Object.assign(manualGroupForm, {
+    name: group.name,
+    strategy: group.strategy,
+    nodeIds: [...group.nodeIds],
+    groupIds: group.groupIds.filter(groupId => groupId !== group.id),
+    remark: group.remark,
+  });
+  manualGroupNodeSearch.value = '';
+  manualGroupNodeGroupId.value = '';
+  isGroupDialogOpen.value = true;
+  ensureNodeOptions(group.nodeIds).catch(() => undefined);
+  reloadManualGroupNodeOptions();
+}
+
+function openEditGroupById(groupId: string): void {
+  const group = groupById.value.get(groupId);
+  if (group) openEditGroupDialog(group);
+}
+
 function closeGroupDialog(): void {
   isGroupDialogOpen.value = false;
+  editingGroupId.value = null;
   resetManualGroupForm();
 }
 
@@ -1819,15 +1922,21 @@ async function handleManualGroupSubmit(): Promise<void> {
   }
 
   try {
-    const group = await addGroup({
+    const wasEditing = editingGroupId.value !== null;
+    const input = {
       name: manualGroupForm.name,
       strategy: manualGroupForm.strategy,
       nodeIds: manualGroupForm.nodeIds,
-      groupIds: manualGroupForm.groupIds,
+      groupIds: manualGroupForm.groupIds.filter(groupId => groupId !== editingGroupId.value),
       remark: manualGroupForm.remark,
-    });
+    };
+    const group = editingGroupId.value
+      ? await updateGroup(editingGroupId.value, input)
+      : await addGroup(input);
     closeGroupDialog();
-    importMessage.value = t('home.messages.groupAdded', { name: group.name });
+    importMessage.value = wasEditing
+      ? t('home.messages.groupUpdated', { name: group.name })
+      : t('home.messages.groupAdded', { name: group.name });
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -1945,6 +2054,8 @@ function portFailureReason(mapping: PortMapping): string {
 }
 
 function routeLatencyLabel(node: ProxyNode): string {
+  if (node.health?.probeRunning) return t('home.nodeHealth.probing');
+  if (node.health?.lastError) return t('home.nodeHealth.failedShort');
   const latency = node.health?.lastLatencyMs ?? 0;
   return latency > 0 ? `${latency}ms` : '-ms';
 }
@@ -2051,6 +2162,17 @@ function nodeHealthTitle(node: ProxyNode): string {
     }),
   ];
 
+  if (node.health.probeRunning) {
+    details.unshift(t('home.nodeHealth.probing'));
+    if (node.health.probeStartedAt) {
+      details.push(
+        t('home.nodeHealth.probeStartedAt', {
+          time: nodeHealthDateTime(node.health.probeStartedAt),
+        })
+      );
+    }
+  }
+
   if (node.health.blacklisted) {
     details.unshift(nodeBlacklistLabel(node));
 
@@ -2114,7 +2236,9 @@ const homeContext = {
   activeNodeGroupFilter,
   selectNodeGroupFilter: selectNodeGroupFilterFromPanel,
   groupSummaryItems,
+  selectedGroup,
   selectedNodeGroupTitle,
+  selectedNodeGroupHealthSummary,
   currentNodeTotal,
   selectedNodeGroupNodes,
   nodeListContainerProps,
@@ -2145,6 +2269,8 @@ const homeContext = {
   loadMoreManualGroupNodeOptions,
   selectedManualGroupNodes,
   manualGroups,
+  openEditGroupById,
+  openEditGroupDialog,
   handleManualGroupSubmit,
   groupSummary,
   removeGroup,
@@ -2621,8 +2747,16 @@ const homeContext = {
       >
         <div class="modal-heading">
           <div>
-            <h2 id="group-create-dialog-title">{{ t('common.addGroup') }}</h2>
-            <p>{{ t('home.dialogs.addGroupLead') }}</p>
+            <h2 id="group-create-dialog-title">
+              {{ editingGroupId ? t('home.dialogs.editGroupTitle') : t('common.addGroup') }}
+            </h2>
+            <p>
+              {{
+                editingGroupId
+                  ? t('home.dialogs.editGroupLead')
+                  : t('home.dialogs.addGroupLead')
+              }}
+            </p>
           </div>
           <button
             type="button"
@@ -2645,6 +2779,7 @@ const homeContext = {
             <select v-model="manualGroupForm.strategy">
               <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
               <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
+              <option value="least-latency">{{ t('home.groupStrategy.least-latency') }}</option>
             </select>
           </label>
         </div>
@@ -2722,7 +2857,7 @@ const homeContext = {
         <label>
           <span>{{ t('home.form.groupGroups') }}</span>
           <select v-model="manualGroupForm.groupIds" multiple>
-            <option v-for="group in manualGroups" :key="group.id" :value="group.id">
+            <option v-for="group in editableNestedGroups()" :key="group.id" :value="group.id">
               {{ group.name }}
             </option>
           </select>

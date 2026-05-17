@@ -32,8 +32,9 @@ const (
 	GroupTypeManual       = "manual"
 	GroupTypeSubscription = "subscription"
 
-	GroupStrategySelector = "selector"
-	GroupStrategyURLTest  = "url-test"
+	GroupStrategySelector     = "selector"
+	GroupStrategyURLTest      = "url-test"
+	GroupStrategyLeastLatency = "least-latency"
 
 	SubscriptionSyncStatusSuccess = "success"
 	SubscriptionSyncStatusFailed  = "failed"

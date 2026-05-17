@@ -278,6 +278,15 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		result.Error = "port mapping runtime is not running"
 		return result, nil
 	}
+	if mappingHasLeastLatencyRoute(ctx, mapping) {
+		probeRuntimeLeastLatencyGroups(mapping.ID)
+		if node, tag, nodeErr := mappingTestNodeInfo(ctx, mapping); node != nil {
+			result.NodeID = node.ID
+			result.NodeName = node.Name
+			result.NodeTag = tag
+			result.NodeError = nodeErr
+		}
+	}
 
 	proxyURL, err := mappingProbeProxyURL(mapping)
 	if err != nil {
@@ -288,10 +297,55 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 	if probeErr != nil {
 		result.Error = probeErr.Error()
 		result.NodeError = firstNonEmpty(result.NodeError, runtimeNodeErrorFromProbe(result.NodeTag, result.Error))
+		result.Health = saveMappingTestNodeHealth(ctx, result)
 		return result, nil
 	}
 	result.Available = true
+	result.Health = saveMappingTestNodeHealth(ctx, result)
 	return result, nil
+}
+
+func saveMappingTestNodeHealth(ctx context.Context, result *ProxyTestResultDTO) *ProxyNodeHealthDTO {
+	if result == nil || result.NodeID == "" {
+		return nil
+	}
+	now := result.CheckedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	updates := map[string]any{
+		"node_id":         result.NodeID,
+		"available":       result.Available,
+		"failure_count":   0,
+		"success_count":   0,
+		"last_checked_at": &now,
+		"last_latency_ms": result.LatencyMs,
+		"updated_at":      now,
+	}
+	if result.Available {
+		updates["failure_count"] = 0
+		updates["success_count"] = gorm.Expr("success_count + ?", 1)
+		updates["blacklisted"] = false
+		updates["blacklisted_until"] = nil
+		updates["last_error"] = ""
+		updates["last_success_at"] = &now
+	} else {
+		errorMessage := firstNonEmpty(result.NodeError, result.Error)
+		updates["available"] = false
+		updates["failure_count"] = gorm.Expr("failure_count + ?", 1)
+		updates["last_error"] = errorMessage
+		updates["last_failure_at"] = &now
+	}
+	health, err := upsertNodeHealth(ctx, nil, result.NodeID, updates)
+	if err != nil {
+		utils.Logger.Warn("本地端口测速写入节点健康状态失败",
+			zap.String("mappingId", result.TargetID),
+			zap.String("nodeId", result.NodeID),
+			zap.Error(err),
+		)
+		return nil
+	}
+	return ToNodeHealthDTO(health)
 }
 
 func blacklistRuntimeExcludedNode(ctx context.Context, node *tables.ProxyNodeTable, runtimeErr error) (*tables.ProxyNodeHealthTable, error) {
@@ -695,6 +749,62 @@ func mappingTestNodeInfo(ctx context.Context, mapping *tables.PortMappingTable) 
 		return node, tag, ""
 	}
 	return node, tag, nodeHealthError(health)
+}
+
+func mappingHasLeastLatencyRoute(ctx context.Context, mapping *tables.PortMappingTable) bool {
+	if mapping == nil {
+		return false
+	}
+	groups, err := findGroupsByIDs(ctx, nil, decodeStringSlice(mapping.GroupIDsJSON))
+	if err != nil {
+		return false
+	}
+	visited := map[string]bool{}
+	for _, group := range groups {
+		if groupHasLeastLatencyStrategy(ctx, group, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupHasLeastLatencyStrategy(ctx context.Context, group *tables.ProxyGroupTable, visited map[string]bool) bool {
+	if group == nil {
+		return false
+	}
+	if groupUsesLeastLatencyPolicy(group) {
+		return true
+	}
+	if visited[group.ID] {
+		return false
+	}
+	visited[group.ID] = true
+	childGroups, err := findGroupsByIDs(ctx, nil, decodeStringSlice(group.GroupIDsJSON))
+	if err != nil {
+		return false
+	}
+	for _, childGroup := range childGroups {
+		if groupHasLeastLatencyStrategy(ctx, childGroup, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+func probeRuntimeLeastLatencyGroups(mappingID string) {
+	instance := runtimeInstanceForMapping(mappingID)
+	if instance == nil || instance.core == nil {
+		return
+	}
+	state := instance.core.Snapshot()
+	for _, group := range state.Groups {
+		if group.Policy.Strategy != singboxcore.BalanceLeastLatency {
+			continue
+		}
+		if err := instance.core.ProbeLeastLatencyGroup(group.Tag); err != nil {
+			utils.Logger.Warn("least-latency 手动测速探测失败", zap.String("mappingId", mappingID), zap.String("groupTag", group.Tag), zap.Error(err))
+		}
+	}
 }
 
 func resolveRuntimeOutboundTag(routeTag string, outbounds []option.Outbound, outboundNodes map[string]*tables.ProxyNodeTable) string {

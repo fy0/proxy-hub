@@ -42,6 +42,16 @@ type NodeState struct {
 	tombstonedAt     time.Time
 	removeAfter      time.Time
 	lastError        string
+
+	leastLatencyCandidate      bool
+	leastLatencySlowCount      int
+	leastLatencyFailureCount   int
+	leastLatencyLastSuccessAt  time.Time
+	leastLatencyLastCheckedAt  time.Time
+	leastLatencyProbeStartedAt time.Time
+	leastLatencyProbeRunning   bool
+	leastLatencyStaleFallback  bool
+	leastLatencyLastProbeError string
 }
 
 func NewNodeState(id, tag string, outbound option.Outbound) *NodeState {
@@ -67,6 +77,24 @@ func (n *NodeState) LastLatency() int64 {
 		return 0
 	}
 	return n.lastLatency.Load()
+}
+
+func (n *NodeState) LeastLatencyCandidate() bool {
+	if n == nil {
+		return false
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.leastLatencyCandidate
+}
+
+func (n *NodeState) LeastLatencyFallback() bool {
+	if n == nil {
+		return false
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return !n.leastLatencyCandidate && !n.leastLatencyLastSuccessAt.IsZero()
 }
 
 func (n *NodeState) SetLatency(latency time.Duration) {
@@ -110,19 +138,28 @@ func (n *NodeState) Snapshot(now time.Time) NodeSnapshot {
 	defer n.mu.RUnlock()
 	blacklisted := n.health == HealthBlacklisted && (n.blacklistedUntil.IsZero() || n.blacklistedUntil.After(now))
 	return NodeSnapshot{
-		ID:               n.ID,
-		Tag:              n.Tag,
-		Enabled:          n.enabled,
-		Health:           n.health,
-		Blacklisted:      blacklisted,
-		BlacklistedUntil: n.blacklistedUntil,
-		BlacklistReason:  n.blacklistReason,
-		Tombstoned:       n.tombstoned,
-		TombstonedAt:     n.tombstonedAt,
-		RemoveAfter:      n.removeAfter,
-		ActiveCount:      n.activeCount.Load(),
-		LastLatencyMs:    n.lastLatency.Load(),
-		LastError:        n.lastError,
+		ID:                n.ID,
+		Tag:               n.Tag,
+		Enabled:           n.enabled,
+		Health:            n.health,
+		Blacklisted:       blacklisted,
+		BlacklistedUntil:  n.blacklistedUntil,
+		BlacklistReason:   n.blacklistReason,
+		Tombstoned:        n.tombstoned,
+		TombstonedAt:      n.tombstonedAt,
+		RemoveAfter:       n.removeAfter,
+		ActiveCount:       n.activeCount.Load(),
+		LastLatencyMs:     n.lastLatency.Load(),
+		LastError:         n.lastError,
+		LastCheckedAt:     n.leastLatencyLastCheckedAt,
+		LastSuccessAt:     n.leastLatencyLastSuccessAt,
+		ProbeStartedAt:    n.leastLatencyProbeStartedAt,
+		ProbeRunning:      n.leastLatencyProbeRunning,
+		ProbeFailureCount: n.leastLatencyFailureCount,
+		LastProbeError:    n.leastLatencyLastProbeError,
+		LatencyCandidate:  n.leastLatencyCandidate,
+		LatencyFallback:   n.leastLatencyStaleFallback,
+		LatencySlowCount:  n.leastLatencySlowCount,
 	}
 }
 
@@ -154,6 +191,8 @@ func (n *NodeState) markFailed(ttl time.Duration, reason string, now time.Time) 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.lastError = reason
+	n.leastLatencyCandidate = false
+	n.leastLatencyStaleFallback = !n.leastLatencyLastSuccessAt.IsZero()
 	if ttl > 0 {
 		n.health = HealthBlacklisted
 		n.blacklistedUntil = now.Add(ttl)
@@ -174,6 +213,68 @@ func (n *NodeState) markTombstone(ttl time.Duration, now time.Time) {
 	}
 }
 
+func (n *NodeState) recordLeastLatencyProbeSuccess(latency time.Duration, maxLatency time.Duration, slowThreshold int, now time.Time) {
+	if n == nil {
+		return
+	}
+	if latency < 0 {
+		latency = 0
+	}
+	if slowThreshold <= 0 {
+		slowThreshold = 1
+	}
+	n.lastLatency.Store(latency.Milliseconds())
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.leastLatencyLastCheckedAt = now
+	n.leastLatencyProbeRunning = false
+	n.leastLatencyProbeStartedAt = time.Time{}
+	n.leastLatencyLastProbeError = ""
+	n.leastLatencyFailureCount = 0
+	n.health = HealthAlive
+	n.blacklistedUntil = time.Time{}
+	n.blacklistReason = ""
+	n.lastError = ""
+	n.leastLatencyLastSuccessAt = now
+	if maxLatency > 0 && latency > maxLatency {
+		n.leastLatencySlowCount++
+		if n.leastLatencySlowCount >= slowThreshold {
+			n.leastLatencyCandidate = false
+			n.leastLatencyStaleFallback = true
+		}
+		return
+	}
+	n.leastLatencySlowCount = 0
+	n.leastLatencyCandidate = true
+	n.leastLatencyStaleFallback = false
+}
+
+func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.leastLatencyLastCheckedAt = now
+	n.leastLatencyProbeRunning = false
+	n.leastLatencyProbeStartedAt = time.Time{}
+	n.leastLatencyLastProbeError = reason
+	n.leastLatencyFailureCount++
+	n.leastLatencyCandidate = false
+	n.leastLatencyStaleFallback = !n.leastLatencyLastSuccessAt.IsZero()
+	n.lastError = reason
+}
+
+func (n *NodeState) markLeastLatencyProbeRunning(now time.Time) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.leastLatencyProbeRunning = true
+	n.leastLatencyProbeStartedAt = now
+}
+
 func (n *NodeState) removeReady(now time.Time) bool {
 	if n == nil {
 		return false
@@ -192,17 +293,26 @@ func (n *NodeState) removeReady(now time.Time) bool {
 }
 
 type NodeSnapshot struct {
-	ID               string      `json:"id"`
-	Tag              string      `json:"tag"`
-	Enabled          bool        `json:"enabled"`
-	Health           HealthState `json:"health"`
-	Blacklisted      bool        `json:"blacklisted"`
-	BlacklistedUntil time.Time   `json:"blacklistedUntil,omitempty"`
-	BlacklistReason  string      `json:"blacklistReason,omitempty"`
-	Tombstoned       bool        `json:"tombstoned"`
-	TombstonedAt     time.Time   `json:"tombstonedAt,omitempty"`
-	RemoveAfter      time.Time   `json:"removeAfter,omitempty"`
-	ActiveCount      int64       `json:"activeCount"`
-	LastLatencyMs    int64       `json:"lastLatencyMs"`
-	LastError        string      `json:"lastError,omitempty"`
+	ID                string      `json:"id"`
+	Tag               string      `json:"tag"`
+	Enabled           bool        `json:"enabled"`
+	Health            HealthState `json:"health"`
+	Blacklisted       bool        `json:"blacklisted"`
+	BlacklistedUntil  time.Time   `json:"blacklistedUntil,omitempty"`
+	BlacklistReason   string      `json:"blacklistReason,omitempty"`
+	Tombstoned        bool        `json:"tombstoned"`
+	TombstonedAt      time.Time   `json:"tombstonedAt,omitempty"`
+	RemoveAfter       time.Time   `json:"removeAfter,omitempty"`
+	ActiveCount       int64       `json:"activeCount"`
+	LastLatencyMs     int64       `json:"lastLatencyMs"`
+	LastError         string      `json:"lastError,omitempty"`
+	LastCheckedAt     time.Time   `json:"lastCheckedAt,omitempty"`
+	LastSuccessAt     time.Time   `json:"lastSuccessAt,omitempty"`
+	ProbeStartedAt    time.Time   `json:"probeStartedAt,omitempty"`
+	ProbeRunning      bool        `json:"probeRunning"`
+	ProbeFailureCount int         `json:"probeFailureCount"`
+	LastProbeError    string      `json:"lastProbeError,omitempty"`
+	LatencyCandidate  bool        `json:"latencyCandidate"`
+	LatencyFallback   bool        `json:"latencyFallback"`
+	LatencySlowCount  int         `json:"latencySlowCount"`
 }

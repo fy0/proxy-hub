@@ -54,6 +54,7 @@ export interface NodeGroupFilterOption {
 
 export interface NodeGroupSummaryItem {
   key: NodeGroupFilterKey;
+  groupId?: string;
   title: string;
   typeLabel: string;
   count: number;
@@ -61,6 +62,7 @@ export interface NodeGroupSummaryItem {
   strategyLabel: string;
   filter: string;
   isSubscription: boolean;
+  editable: boolean;
 }
 
 export interface HomeViewContext {
@@ -107,7 +109,17 @@ export interface HomeViewContext {
   activeNodeGroupFilter: Ref<NodeGroupFilterKey>;
   selectNodeGroupFilter: (key: NodeGroupFilterKey) => void;
   groupSummaryItems: Readable<NodeGroupSummaryItem[]>;
+  selectedGroup: Readable<ProxyGroup | null>;
   selectedNodeGroupTitle: Readable<string>;
+  selectedNodeGroupHealthSummary: Readable<{
+    available: number;
+    autoProbeEnabled: boolean;
+    autoProbeRunning: boolean;
+    fastestLatencyMs: number;
+    needsProbe: number;
+    probing: number;
+    unavailable: number;
+  }>;
   currentNodeTotal: Readable<number>;
   selectedNodeGroupNodes: Readable<ProxyNode[]>;
   nodeListContainerProps: object;
@@ -138,6 +150,8 @@ export interface HomeViewContext {
   loadMoreManualGroupNodeOptions: () => void;
   selectedManualGroupNodes: () => ProxyNode[];
   manualGroups: Readable<ProxyGroup[]>;
+  openEditGroupById: (groupId: string) => void;
+  openEditGroupDialog: (group: ProxyGroup) => void;
   handleManualGroupSubmit: () => Promise<void>;
   groupSummary: (group: ProxyGroup) => string;
   removeGroup: (id: string) => Promise<void>;

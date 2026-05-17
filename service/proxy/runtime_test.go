@@ -6,7 +6,9 @@ import (
 	"net"
 	"testing"
 
+	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
+	"proxy-hub/model/tables"
 
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
@@ -212,6 +214,45 @@ func TestBuildSingBoxOptionsDoesNotEmitURLTestOutbounds(t *testing.T) {
 	mappingOutbound := findTestOutbound(options.Outbounds, mappingOutboundTag(mapping.ID))
 	if mappingOutbound == nil || mappingOutbound.Type != constant.TypeSelector {
 		t.Fatalf("mapping outbound = %+v, want selector", mappingOutbound)
+	}
+}
+
+func TestLeastLatencyGroupUsesLeastLatencyPolicy(t *testing.T) {
+	group := &tables.ProxyGroupTable{Strategy: GroupStrategyLeastLatency}
+	policy := policyForGroup(group)
+	if policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceLeastLatency)
+	}
+	if policy.ProbeURL == "" {
+		t.Fatalf("policy probe URL is empty")
+	}
+	if policy.ProbeConcurrency <= 0 {
+		t.Fatalf("policy probe concurrency = %d, want positive", policy.ProbeConcurrency)
+	}
+	if policy.ProbeTimeout <= 0 {
+		t.Fatalf("policy probe timeout = %v, want positive", policy.ProbeTimeout)
+	}
+}
+
+func TestSubscriptionURLTestGroupUsesLeastLatencyPolicy(t *testing.T) {
+	group := &tables.ProxyGroupTable{
+		Type:     GroupTypeSubscription,
+		Strategy: GroupStrategyURLTest,
+	}
+	policy := policyForGroup(group)
+	if policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("subscription url-test policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceLeastLatency)
+	}
+}
+
+func TestManualURLTestGroupKeepsRoundRobinPolicy(t *testing.T) {
+	group := &tables.ProxyGroupTable{
+		Type:     GroupTypeManual,
+		Strategy: GroupStrategyURLTest,
+	}
+	policy := policyForGroup(group)
+	if policy.Strategy != singboxcore.BalanceRoundRobin {
+		t.Fatalf("manual url-test policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRoundRobin)
 	}
 }
 
@@ -790,6 +831,99 @@ func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testin
 	}
 	if !containsString(members, nodeA.ID) || !containsString(members, nodeB.ID) {
 		t.Fatalf("dynamic group members = %v, want node-a and node-b", members)
+	}
+}
+
+func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	goodPort := uint16(65006)
+	goodNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "good",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &goodPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(good) error = %v", err)
+	}
+	badNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		RawURI: "vless://48a25c54-8826-4657-330e-8db38ef76716@example.com:443?security=tls&flow=bad-flow#bad",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(bad) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "mixed group",
+		Strategy: GroupStrategySelector,
+		NodeIDs:  []string{badNode.ID, goodNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	before := runtimeInstanceForMapping(mapping.ID)
+	if before == nil {
+		t.Fatalf("runtime instance was not created")
+	}
+
+	if _, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	}); err != nil {
+		t.Fatalf("MappingUpdate(add group) error = %v", err)
+	}
+	status, err := RuntimeSyncMapping(ctx, mapping.ID)
+	if err != nil {
+		t.Fatalf("RuntimeSyncMapping() error = %v", err)
+	}
+	after := runtimeInstanceForMapping(mapping.ID)
+	if after != before {
+		t.Fatalf("runtime instance was replaced while adding group")
+	}
+	if !status.Running || len(status.Failures) != 0 {
+		t.Fatalf("Runtime status = %+v, want running without failures", status)
+	}
+	if len(status.ExcludedNodes) != 1 || status.ExcludedNodes[0].NodeID != badNode.ID {
+		t.Fatalf("Excluded nodes = %+v, want bad node %q", status.ExcludedNodes, badNode.ID)
+	}
+
+	snapshot := after.core.Snapshot()
+	var childGroupMembers []string
+	for _, groupState := range snapshot.Groups {
+		if groupState.Tag != proxyGroupOutboundTag(group.ID) {
+			continue
+		}
+		for _, nodeState := range groupState.Nodes {
+			childGroupMembers = append(childGroupMembers, nodeState.ID)
+		}
+	}
+	if containsString(childGroupMembers, badNode.ID) {
+		t.Fatalf("child dynamic group members = %v, want bad node excluded", childGroupMembers)
+	}
+	if !containsString(childGroupMembers, goodNode.ID) {
+		t.Fatalf("child dynamic group members = %v, want good node %q", childGroupMembers, goodNode.ID)
 	}
 }
 

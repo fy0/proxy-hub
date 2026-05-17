@@ -12,6 +12,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
+	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/log"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -19,10 +20,28 @@ import (
 
 const DynamicOutboundType = "proxyhub-dynamic-group"
 
+const (
+	DefaultLeastLatencyProbeURL         = "https://www.gstatic.com/generate_204"
+	DefaultLeastLatencyProbeInterval    = 3 * time.Minute
+	DefaultLeastLatencyProbeConcurrency = 5
+	DefaultLeastLatencyMaxLatency       = 3 * time.Second
+	DefaultLeastLatencySlowThreshold    = 3
+	DefaultLeastLatencyTolerance        = 50 * time.Millisecond
+)
+
 type Policy struct {
 	Strategy            BalanceStrategy
 	FailureBlacklistTTL time.Duration
 	RemoveTTL           time.Duration
+	ProbeURL            string
+	ProbeInterval       time.Duration
+	ProbeTimeout        time.Duration
+	ProbeTestTimeout    time.Duration
+	ProbeConcurrency    int
+	MaxLatency          time.Duration
+	SlowThreshold       int
+	LatencyTolerance    time.Duration
+	FallbackStrategy    BalanceStrategy
 }
 
 func (p Policy) normalized() Policy {
@@ -35,6 +54,36 @@ func (p Policy) normalized() Policy {
 	if p.RemoveTTL <= 0 {
 		p.RemoveTTL = 2 * time.Minute
 	}
+	if strings.TrimSpace(p.ProbeURL) == "" {
+		p.ProbeURL = DefaultLeastLatencyProbeURL
+	}
+	if p.ProbeInterval <= 0 {
+		p.ProbeInterval = DefaultLeastLatencyProbeInterval
+	}
+	if p.ProbeTimeout <= 0 {
+		p.ProbeTimeout = DefaultLeastLatencyMaxLatency
+	}
+	if p.ProbeTestTimeout <= 0 {
+		p.ProbeTestTimeout = p.ProbeTimeout
+	}
+	if p.ProbeConcurrency <= 0 {
+		p.ProbeConcurrency = DefaultLeastLatencyProbeConcurrency
+	}
+	if p.MaxLatency <= 0 {
+		p.MaxLatency = DefaultLeastLatencyMaxLatency
+	}
+	if p.SlowThreshold <= 0 {
+		p.SlowThreshold = DefaultLeastLatencySlowThreshold
+	}
+	if p.LatencyTolerance < 0 {
+		p.LatencyTolerance = 0
+	}
+	if p.LatencyTolerance == 0 {
+		p.LatencyTolerance = DefaultLeastLatencyTolerance
+	}
+	if p.FallbackStrategy == "" {
+		p.FallbackStrategy = BalanceRoundRobin
+	}
 	return p
 }
 
@@ -45,9 +94,11 @@ type dynamicGroupOptions struct {
 type DynamicGroup struct {
 	outbound.Adapter
 
+	ctx      context.Context
 	manager  adapter.OutboundManager
 	policy   Policy
 	balancer Balancer
+	fallback Balancer
 
 	mu       sync.RWMutex
 	nodes    map[string]*NodeState
@@ -55,16 +106,31 @@ type DynamicGroup struct {
 	selected string
 
 	removeTags func([]string) error
+
+	probeMu           sync.Mutex
+	probeWake         chan struct{}
+	probeRunning      bool
+	probeRoundRunning bool
+	runtimeStarted    bool
+	lastProbeAt       time.Time
+	nextProbeAt       time.Time
 }
 
-func NewDynamicGroup(tag string, manager adapter.OutboundManager, policy Policy) *DynamicGroup {
+func NewDynamicGroup(tag string, manager adapter.OutboundManager, policy Policy, contexts ...context.Context) *DynamicGroup {
 	policy = policy.normalized()
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
 	return &DynamicGroup{
-		Adapter:  outbound.NewAdapter(DynamicOutboundType, tag, []string{N.NetworkTCP, N.NetworkUDP}, nil),
-		manager:  manager,
-		policy:   policy,
-		balancer: NewBalancer(policy.Strategy),
-		nodes:    map[string]*NodeState{},
+		Adapter:   outbound.NewAdapter(DynamicOutboundType, tag, []string{N.NetworkTCP, N.NetworkUDP}, nil),
+		ctx:       ctx,
+		manager:   manager,
+		policy:    policy,
+		balancer:  NewBalancer(policy.Strategy),
+		fallback:  NewBalancer(policy.FallbackStrategy),
+		nodes:     map[string]*NodeState{},
+		probeWake: make(chan struct{}, 1),
 	}
 }
 
@@ -73,12 +139,14 @@ func (g *DynamicGroup) AddNode(node *NodeState) error {
 		return ErrNodeNotFound
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if existing := g.nodes[node.ID]; existing != nil {
 		existing.Option = node.Option
 		existing.Tag = node.Tag
 		existing.Tags = append([]string(nil), node.Tags...)
 		existing.enable()
+		g.mu.Unlock()
+		g.ensureLeastLatencyProbeLoop()
+		g.wakeLeastLatencyProbe()
 		return nil
 	}
 	g.nodes[node.ID] = node
@@ -86,6 +154,9 @@ func (g *DynamicGroup) AddNode(node *NodeState) error {
 	if g.selected == "" {
 		g.selected = node.ID
 	}
+	g.mu.Unlock()
+	g.ensureLeastLatencyProbeLoop()
+	g.wakeLeastLatencyProbe()
 	return nil
 }
 
@@ -95,9 +166,12 @@ func (g *DynamicGroup) UpdatePolicy(policy Policy) {
 	}
 	policy = policy.normalized()
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.policy = policy
 	g.balancer = NewBalancer(policy.Strategy)
+	g.fallback = NewBalancer(policy.FallbackStrategy)
+	g.mu.Unlock()
+	g.ensureLeastLatencyProbeLoop()
+	g.wakeLeastLatencyProbe()
 }
 
 func (g *DynamicGroup) DisableNode(nodeID string) error {
@@ -151,6 +225,27 @@ func (g *DynamicGroup) MarkNodeFailed(nodeID string, ttl time.Duration, reason s
 	node.markFailed(ttl, reason, time.Now())
 	g.ensureSelected()
 	return nil
+}
+
+func (g *DynamicGroup) StartProbing() {
+	if g == nil {
+		return
+	}
+	g.probeMu.Lock()
+	g.runtimeStarted = true
+	g.probeMu.Unlock()
+	g.ensureLeastLatencyProbeLoop()
+	g.wakeLeastLatencyProbe()
+}
+
+func (g *DynamicGroup) StopProbing() {
+	if g == nil {
+		return
+	}
+	g.probeMu.Lock()
+	g.runtimeStarted = false
+	g.probeMu.Unlock()
+	g.wakeLeastLatencyProbe()
 }
 
 func (g *DynamicGroup) policySnapshot() Policy {
@@ -234,6 +329,9 @@ func (g *DynamicGroup) DialContext(ctx context.Context, network string, destinat
 		}
 		node.SetLatency(time.Since(started))
 		node.markAlive()
+		if policy.Strategy == BalanceLeastLatency {
+			g.setSelected(node.ID)
+		}
 		node.incActive()
 		return &trackedConn{Conn: conn, node: node}, nil
 	}
@@ -265,6 +363,9 @@ func (g *DynamicGroup) ListenPacket(ctx context.Context, destination M.Socksaddr
 			continue
 		}
 		node.markAlive()
+		if policy.Strategy == BalanceLeastLatency {
+			g.setSelected(node.ID)
+		}
 		node.incActive()
 		return &trackedPacketConn{PacketConn: packetConn, node: node}, nil
 	}
@@ -280,19 +381,35 @@ func (g *DynamicGroup) Snapshot() GroupSnapshot {
 	}
 	now := time.Now()
 	g.mu.RLock()
-	defer g.mu.RUnlock()
+	tag := g.Tag()
+	policy := g.policy
+	selected := g.selected
+	g.mu.RUnlock()
 
+	g.probeMu.Lock()
+	probeRunning := g.probeRoundRunning
+	runtimeStarted := g.runtimeStarted
+	lastProbeAt := g.lastProbeAt
+	nextProbeAt := g.nextProbeAt
+	g.probeMu.Unlock()
+
+	g.mu.RLock()
 	nodes := make([]NodeSnapshot, 0, len(g.order))
 	for _, id := range g.order {
 		if node := g.nodes[id]; node != nil {
 			nodes = append(nodes, node.Snapshot(now))
 		}
 	}
+	g.mu.RUnlock()
 	return GroupSnapshot{
-		Tag:      g.Tag(),
-		Policy:   g.policy,
-		Selected: g.selected,
-		Nodes:    nodes,
+		Tag:            tag,
+		Policy:         policy,
+		Selected:       selected,
+		ProbeRunning:   probeRunning,
+		RuntimeStarted: runtimeStarted,
+		LastProbeAt:    lastProbeAt,
+		NextProbeAt:    nextProbeAt,
+		Nodes:          nodes,
 	}
 }
 
@@ -343,7 +460,86 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		}
 		return ordered
 	}
+	if strategy == BalanceLeastLatency {
+		policy := g.policySnapshot()
+		return g.orderLeastLatencyCandidates(nodes, selected, policy.LatencyTolerance, policy.FallbackStrategy)
+	}
 	return g.balancer.Order(nodes)
+}
+
+func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, selected *NodeState, tolerance time.Duration, fallbackStrategy BalanceStrategy) []*NodeState {
+	candidates := make([]*NodeState, 0, len(nodes))
+	for _, node := range nodes {
+		if node.LeastLatencyCandidate() {
+			candidates = append(candidates, node)
+		}
+	}
+	if len(candidates) == 0 {
+		for _, node := range nodes {
+			if node.LeastLatencyFallback() {
+				candidates = append(candidates, node)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		if fallbackStrategy == BalanceManual {
+			ordered := make([]*NodeState, 0, len(nodes))
+			if selected != nil && selected.Eligible(time.Now()) {
+				ordered = append(ordered, selected)
+			}
+			for _, node := range nodes {
+				if selected != nil && node.ID == selected.ID {
+					continue
+				}
+				ordered = append(ordered, node)
+			}
+			return ordered
+		}
+		if g.fallback != nil {
+			return g.fallback.Order(nodes)
+		}
+		return NewBalancer(fallbackStrategy).Order(nodes)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return latencySortValue(candidates[i]) < latencySortValue(candidates[j])
+	})
+	if selected == nil || !containsNode(candidates, selected.ID) {
+		return candidates
+	}
+	best := candidates[0]
+	selectedLatency := latencySortValue(selected)
+	bestLatency := latencySortValue(best)
+	if selected.ID != best.ID && selectedLatency > bestLatency+int64(tolerance.Milliseconds()) {
+		return candidates
+	}
+	ordered := make([]*NodeState, 0, len(candidates))
+	ordered = append(ordered, selected)
+	for _, node := range candidates {
+		if node.ID != selected.ID {
+			ordered = append(ordered, node)
+		}
+	}
+	return ordered
+}
+
+func latencySortValue(node *NodeState) int64 {
+	if node == nil {
+		return 1<<63 - 1
+	}
+	latency := node.LastLatency()
+	if latency <= 0 {
+		return 1<<63 - 1
+	}
+	return latency
+}
+
+func containsNode(nodes []*NodeState, nodeID string) bool {
+	for _, node := range nodes {
+		if node != nil && node.ID == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *DynamicGroup) referencedTags() map[string]struct{} {
@@ -390,6 +586,196 @@ func (g *DynamicGroup) ensureSelected() {
 	}
 }
 
+func (g *DynamicGroup) setSelected(nodeID string) {
+	if g == nil || strings.TrimSpace(nodeID) == "" {
+		return
+	}
+	g.mu.Lock()
+	if g.nodes[nodeID] != nil {
+		g.selected = nodeID
+	}
+	g.mu.Unlock()
+}
+
+func (g *DynamicGroup) RunLeastLatencyProbeRound() {
+	if g == nil {
+		return
+	}
+	policy := g.policySnapshot()
+	if policy.Strategy != BalanceLeastLatency {
+		return
+	}
+	if policy.ProbeTestTimeout > 0 {
+		policy.ProbeTimeout = policy.ProbeTestTimeout
+	}
+	g.runLeastLatencyProbeRound(policy)
+}
+
+func (g *DynamicGroup) SelectBestLeastLatencyCandidate() {
+	if g == nil {
+		return
+	}
+	policy := g.policySnapshot()
+	if policy.Strategy != BalanceLeastLatency {
+		return
+	}
+	candidates := g.candidates()
+	if len(candidates) == 0 {
+		return
+	}
+	g.setSelected(candidates[0].ID)
+}
+
+func (g *DynamicGroup) ensureLeastLatencyProbeLoop() {
+	if g == nil {
+		return
+	}
+	policy := g.policySnapshot()
+	g.probeMu.Lock()
+	defer g.probeMu.Unlock()
+	if !g.runtimeStarted || policy.Strategy != BalanceLeastLatency || g.probeRunning {
+		return
+	}
+	g.probeRunning = true
+	go g.leastLatencyProbeLoop()
+}
+
+func (g *DynamicGroup) wakeLeastLatencyProbe() {
+	if g == nil {
+		return
+	}
+	select {
+	case g.probeWake <- struct{}{}:
+	default:
+	}
+}
+
+func (g *DynamicGroup) leastLatencyProbeLoop() {
+	defer func() {
+		g.probeMu.Lock()
+		g.probeRunning = false
+		g.probeMu.Unlock()
+	}()
+	for {
+		policy := g.policySnapshot()
+		if !g.probeLoopActive(policy) {
+			return
+		}
+		g.drainProbeWake()
+		g.runLeastLatencyProbeRound(policy)
+		now := time.Now()
+		g.probeMu.Lock()
+		g.lastProbeAt = now
+		g.nextProbeAt = now.Add(policy.ProbeInterval)
+		g.probeMu.Unlock()
+		timer := time.NewTimer(policy.ProbeInterval)
+		select {
+		case <-g.ctx.Done():
+			timer.Stop()
+			return
+		case <-g.probeWake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+		}
+	}
+}
+
+func (g *DynamicGroup) drainProbeWake() {
+	for {
+		select {
+		case <-g.probeWake:
+		default:
+			return
+		}
+	}
+}
+
+func (g *DynamicGroup) probeLoopActive(policy Policy) bool {
+	g.probeMu.Lock()
+	defer g.probeMu.Unlock()
+	return g.runtimeStarted && policy.Strategy == BalanceLeastLatency
+}
+
+func (g *DynamicGroup) runLeastLatencyProbeRound(policy Policy) {
+	g.probeMu.Lock()
+	g.lastProbeAt = time.Now()
+	g.probeRoundRunning = true
+	g.probeMu.Unlock()
+	defer func() {
+		g.probeMu.Lock()
+		g.probeRoundRunning = false
+		g.probeMu.Unlock()
+	}()
+	nodes := g.probeCandidates()
+	if len(nodes) == 0 {
+		return
+	}
+	workers := policy.ProbeConcurrency
+	if workers > len(nodes) {
+		workers = len(nodes)
+	}
+	jobs := make(chan *NodeState)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for node := range jobs {
+				g.probeLeastLatencyNode(policy, node)
+			}
+		}()
+	}
+	for _, node := range nodes {
+		select {
+		case <-g.ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case jobs <- node:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+func (g *DynamicGroup) probeCandidates() []*NodeState {
+	now := time.Now()
+	g.mu.RLock()
+	nodes := make([]*NodeState, 0, len(g.order))
+	for _, id := range g.order {
+		node := g.nodes[id]
+		if node != nil && node.Eligible(now) {
+			nodes = append(nodes, node)
+		}
+	}
+	g.mu.RUnlock()
+	return nodes
+}
+
+func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
+	if g == nil || node == nil || g.manager == nil {
+		return
+	}
+	node.markLeastLatencyProbeRunning(time.Now())
+	outbound, ok := g.manager.Outbound(node.Tag)
+	if !ok {
+		node.recordLeastLatencyProbeFailure("outbound not found", time.Now())
+		return
+	}
+	timeout := policy.ProbeTimeout
+	ctx, cancel := context.WithTimeout(g.ctx, timeout)
+	defer cancel()
+	latency, err := urltest.URLTest(ctx, policy.ProbeURL, outbound)
+	now := time.Now()
+	if err != nil {
+		node.recordLeastLatencyProbeFailure(err.Error(), now)
+		return
+	}
+	node.recordLeastLatencyProbeSuccess(time.Duration(latency)*time.Millisecond, policy.MaxLatency, policy.SlowThreshold, now)
+}
+
 func removeString(values []string, target string) []string {
 	next := values[:0]
 	for _, value := range values {
@@ -429,10 +815,14 @@ func (c *trackedPacketConn) Close() error {
 }
 
 type GroupSnapshot struct {
-	Tag      string         `json:"tag"`
-	Policy   Policy         `json:"policy"`
-	Selected string         `json:"selected"`
-	Nodes    []NodeSnapshot `json:"nodes"`
+	Tag            string         `json:"tag"`
+	Policy         Policy         `json:"policy"`
+	Selected       string         `json:"selected"`
+	ProbeRunning   bool           `json:"probeRunning"`
+	RuntimeStarted bool           `json:"runtimeStarted"`
+	LastProbeAt    time.Time      `json:"lastProbeAt,omitempty"`
+	NextProbeAt    time.Time      `json:"nextProbeAt,omitempty"`
+	Nodes          []NodeSnapshot `json:"nodes"`
 }
 
 func registerDynamicOutbound(registry *outbound.Registry) {
