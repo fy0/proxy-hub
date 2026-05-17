@@ -657,7 +657,7 @@
   height: 26px;
   color: rgb(75 92 126);
   font-size: 16px;
-  line-height: 26px;
+  line-height: 1;
   font-style: normal;
   font-weight: 720;
 }
@@ -680,12 +680,12 @@
   justify-content: center;
   flex: 0 0 auto;
   max-width: 100%;
-  padding: 5px 9px;
+  padding: 0 9px;
   border-radius: 999px;
   background: rgb(239 246 255);
   color: rgb(37 99 235);
   font-size: 12px;
-  line-height: 26px;
+  line-height: 1;
   font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
