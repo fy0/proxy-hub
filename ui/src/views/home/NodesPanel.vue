@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, Edit3, Gauge, Plus, Trash2, X } from 'lucide-vue-next';
+import { Copy, Edit3, Gauge, Trash2 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import ActionTooltip from '@/components/ActionTooltip.vue';
 import { useI18n } from '@/i18n';
@@ -38,25 +38,7 @@ const {
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
-  groups,
-  groupFilterOptions,
-  optionProtocolLabel,
-  optionNameLabel,
-  optionEndpointLabel,
   importMessage,
-  manualGroupForm,
-  manualGroupNodeSearch,
-  manualGroupNodeGroupId,
-  manualGroupNodeOptions,
-  toggleManualGroupNode,
-  manualGroupNodeTotal,
-  isLoadingManualGroupNodes,
-  loadMoreManualGroupNodeOptions,
-  selectedManualGroupNodes,
-  manualGroups,
-  handleManualGroupSubmit,
-  groupSummary,
-  removeGroup,
 } = props.context;
 </script>
 
@@ -243,134 +225,5 @@ const {
     </section>
 
     <span class="inline-message">{{ importMessage }}</span>
-
-    <div class="panel-heading sub-heading">
-      <div>
-        <h2>{{ t('home.sections.groupsTitle') }}</h2>
-        <p>{{ t('home.sections.groupsLead') }}</p>
-      </div>
-    </div>
-
-    <form class="manual-node-form" @submit.prevent="handleManualGroupSubmit">
-      <div class="field-grid two">
-        <label>
-          <span>{{ t('home.form.groupName') }}</span>
-          <input v-model.trim="manualGroupForm.name" type="text" required />
-        </label>
-        <label>
-          <span>{{ t('home.form.groupStrategy') }}</span>
-          <select v-model="manualGroupForm.strategy">
-            <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
-            <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
-          </select>
-        </label>
-      </div>
-      <div class="field-grid two">
-        <label>
-          <span>{{ t('home.form.groupNodes') }}</span>
-          <div class="node-picker-box">
-            <div class="node-option-toolbar">
-              <input
-                v-model.trim="manualGroupNodeSearch"
-                type="search"
-                autocomplete="off"
-                :placeholder="t('home.placeholders.nodeSearch')"
-              />
-              <select v-model="manualGroupNodeGroupId">
-                <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                  {{ group.label }}
-                </option>
-              </select>
-            </div>
-            <div class="chain-node-options compact">
-              <label
-                v-for="node in manualGroupNodeOptions"
-                :key="node.id"
-                :class="{ selected: manualGroupForm.nodeIds.includes(node.id) }"
-              >
-                <input
-                  type="checkbox"
-                  :checked="manualGroupForm.nodeIds.includes(node.id)"
-                  @change="toggleManualGroupNode(node.id)"
-                />
-                <span class="node-option-card">
-                  <em>{{ optionProtocolLabel(node) }}</em>
-                  <strong>{{ optionNameLabel(node) }}</strong>
-                  <small>{{ optionEndpointLabel(node) }}</small>
-                </span>
-              </label>
-              <Button
-                v-if="manualGroupNodeOptions.length < manualGroupNodeTotal"
-                type="button"
-                variant="outline"
-                :disabled="isLoadingManualGroupNodes"
-                @click="loadMoreManualGroupNodeOptions"
-              >
-                {{
-                  isLoadingManualGroupNodes
-                    ? t('home.messages.loadingNodes')
-                    : t('home.actions.loadMore')
-                }}
-              </Button>
-            </div>
-            <div v-if="manualGroupForm.nodeIds.length" class="chain-node-order">
-              <button
-                v-for="node in selectedManualGroupNodes()"
-                :key="node.id"
-                type="button"
-                @click="toggleManualGroupNode(node.id)"
-              >
-                <span>{{ node.name }}</span>
-                <X class="size-3" aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-        </label>
-        <label>
-          <span>{{ t('home.form.groupGroups') }}</span>
-          <select v-model="manualGroupForm.groupIds" multiple>
-            <option v-for="group in manualGroups" :key="group.id" :value="group.id">
-              {{ group.name }}
-            </option>
-          </select>
-        </label>
-      </div>
-      <label>
-        <span>{{ t('home.form.remark') }}</span>
-        <input
-          v-model.trim="manualGroupForm.remark"
-          type="text"
-          :placeholder="t('common.optional')"
-        />
-      </label>
-      <Button type="submit">
-        <Plus class="size-4" aria-hidden="true" />
-        {{ t('common.addGroup') }}
-      </Button>
-    </form>
-
-    <div class="node-table">
-      <article v-for="group in groups" :key="group.id" class="node-row group-row">
-        <div class="node-protocol">{{ t(`home.groupType.${group.type}`) }}</div>
-        <div class="node-main">
-          <strong>{{ group.name }}</strong>
-          <span>{{ groupSummary(group) }}</span>
-        </div>
-        <Button
-          v-if="group.type === 'manual'"
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          :title="t('common.deleteGroup')"
-          @click="removeGroup(group.id).catch(() => undefined)"
-        >
-          <Trash2 class="size-4" aria-hidden="true" />
-        </Button>
-        <div class="node-meta">
-          <small>{{ t(`home.groupStrategy.${group.strategy}`) }}</small>
-          <small v-if="group.filter">{{ group.filter }}</small>
-        </div>
-      </article>
-    </div>
   </section>
 </template>

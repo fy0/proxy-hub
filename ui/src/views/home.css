@@ -426,6 +426,36 @@
   color: rgb(37 99 235);
 }
 
+.top-add-group-button[data-slot='button'] {
+  flex: 0 0 auto;
+  min-height: 50px;
+  padding: 0 20px;
+  border: 1px solid rgb(207 218 237);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.74);
+  color: rgb(37 99 235);
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.9),
+    0 10px 24px rgb(37 99 235 / 0.06);
+}
+
+.top-add-group-button[data-slot='button']:hover {
+  border-color: rgb(148 184 255);
+  background: rgb(248 250 255);
+  color: rgb(29 78 216);
+}
+
+.top-add-group-button[data-slot='button'] svg {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgb(239 246 255);
+  color: rgb(37 99 235);
+}
+
 .add-node-menu {
   min-width: 164px;
 }
@@ -2067,6 +2097,14 @@ textarea:focus {
   width: min(920px, calc(100vw - 32px));
 }
 
+.group-create-modal {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.import-node-modal {
+  width: min(680px, calc(100vw - 32px));
+}
+
 .node-edit-modal {
   width: min(520px, calc(100vw - 32px));
 }
@@ -2589,6 +2627,12 @@ textarea:focus {
 
   .top-add-node-menu-button[data-slot='button'] {
     min-height: 44px;
+  }
+
+  .top-add-group-button[data-slot='button'] {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
   }
 
   .port-grid,

@@ -13,7 +13,7 @@ import type {
   RouteStrategy,
 } from '@/types/proxyHub';
 
-export type TabKey = 'mappings' | 'nodes' | 'subscriptions' | 'import';
+export type TabKey = 'mappings' | 'nodes' | 'groups' | 'subscriptions';
 export type NodeGroupFilterKey = 'all' | 'summary' | 'default' | `group:${string}`;
 export type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
 export type RouteActionTargetType = 'node' | 'group';
@@ -29,18 +29,6 @@ interface VirtualNodeRow {
 interface GroupFilterOption {
   id: string;
   label: string;
-}
-
-interface ManualNodeForm {
-  name: string;
-  protocol: ProxyProtocol;
-  server: string;
-  port: number;
-  username: string;
-  password: string;
-  tags: string;
-  groupId: string;
-  remark: string;
 }
 
 interface SubscriptionForm {
@@ -168,8 +156,6 @@ export interface HomeViewContext {
 
   rawImport: Ref<string>;
   rawImportGroupId: Ref<string>;
-  manualNodeForm: ManualNodeForm;
-  handleManualNodeSubmit: () => Promise<void>;
   importPreview: Ref<ImportPreviewResult | null>;
   handleImport: () => Promise<void>;
 }

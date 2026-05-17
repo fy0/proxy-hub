@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Check,
   ChevronDown,
+  Download,
   Link2,
   Plus,
   RefreshCw,
@@ -22,7 +23,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import HomeTabs from './home/HomeTabs.vue';
-import ImportPanel from './home/ImportPanel.vue';
 import MappingsPanel from './home/MappingsPanel.vue';
 import NodesPanel from './home/NodesPanel.vue';
 import SubscriptionsPanel from './home/SubscriptionsPanel.vue';
@@ -74,7 +74,7 @@ interface TestDialogState {
   error: string;
 }
 
-type AddNodeDialogMode = 'uri' | 'chain';
+type AddNodeDialogMode = 'uri' | 'chain' | 'import';
 
 const { formatDateTime, t } = useI18n();
 const appStore = useAppStore();
@@ -198,6 +198,7 @@ const copiedNodeId = ref<string | null>(null);
 const editingMappingId = ref<string | null>(null);
 const editingNodeId = ref<string | null>(null);
 const addNodeDialogMode = ref<AddNodeDialogMode | null>(null);
+const isGroupDialogOpen = ref(false);
 const routeTargetMappingId = ref<string | null>(null);
 const openRouteActionKey = ref<string | null>(null);
 const confirmationDialog = ref<ConfirmationDialog | null>(null);
@@ -234,18 +235,6 @@ const routeSourceOptions = computed(() => [
   { value: 'group' as const, label: t('home.routeSource.group'), icon: Users },
 ]);
 const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
-
-const manualNodeForm = reactive({
-  name: '',
-  protocol: 'socks5' as ProxyProtocol,
-  server: '',
-  port: 1080,
-  username: '',
-  password: '',
-  tags: '',
-  groupId: '',
-  remark: '',
-});
 
 const nodeCreateForm = reactive({
   name: '',
@@ -391,16 +380,16 @@ const mappingCountLabel = computed(
 
 const workspaceTitle = computed(() => {
   if (currentTab.value === 'nodes') return t('home.sections.nodesTitle');
+  if (currentTab.value === 'groups') return t('home.sections.groupsTitle');
   if (currentTab.value === 'subscriptions') return t('home.sections.subscriptionsTitle');
-  if (currentTab.value === 'import') return t('home.sections.importTitle');
 
   return t('home.sections.mappingsTitle');
 });
 
 const workspaceLead = computed(() => {
   if (currentTab.value === 'nodes') return t('home.sections.nodesLead');
+  if (currentTab.value === 'groups') return t('home.sections.groupsLead');
   if (currentTab.value === 'subscriptions') return t('home.sections.subscriptionsLead');
-  if (currentTab.value === 'import') return t('home.sections.importLead');
 
   return t('home.sections.mappingsLead');
 });
@@ -1117,14 +1106,43 @@ function openAddNodeDialog(mode: AddNodeDialogMode): void {
     resetNodeCreateForm();
     return;
   }
+  if (mode === 'import') {
+    resetImportDialog();
+    importMessage.value = '';
+    return;
+  }
   resetChainNodeForm();
   reloadChainOptions();
+}
+
+function resetManualGroupForm(): void {
+  manualGroupForm.name = '';
+  manualGroupForm.strategy = 'selector';
+  manualGroupForm.nodeIds = [];
+  manualGroupForm.groupIds = [];
+  manualGroupForm.remark = '';
+  manualGroupNodeSearch.value = '';
+  manualGroupNodeGroupId.value = '';
+}
+
+function openNewGroupDialog(): void {
+  closeRouteActionMenu();
+  closeNodeEditDialog();
+  resetManualGroupForm();
+  isGroupDialogOpen.value = true;
+  reloadManualGroupNodeOptions();
+}
+
+function closeGroupDialog(): void {
+  isGroupDialogOpen.value = false;
+  resetManualGroupForm();
 }
 
 function closeAddNodeDialog(): void {
   addNodeDialogMode.value = null;
   resetNodeCreateForm();
   resetChainNodeForm();
+  resetImportDialog();
 }
 
 function handleNodeCreateNameInput(): void {
@@ -1635,6 +1653,12 @@ function resetImportPreview(): void {
   importPreviewSignature.value = '';
 }
 
+function resetImportDialog(): void {
+  rawImport.value = '';
+  rawImportGroupId.value = '';
+  resetImportPreview();
+}
+
 function resetSubscriptionPreview(): void {
   subscriptionPreview.value = null;
   subscriptionPreviewSignature.value = '';
@@ -1706,40 +1730,6 @@ async function handleImport(): Promise<void> {
       groups: result.groups.length,
       skipped: result.preview.skipped,
     });
-  } catch {
-    // The composable exposes the backend error in the notice bar.
-  }
-}
-
-async function handleManualNodeSubmit(): Promise<void> {
-  try {
-    const node = await addNode({
-      name: manualNodeForm.name,
-      protocol: manualNodeForm.protocol,
-      server: manualNodeForm.server,
-      port: manualNodeForm.port,
-      username: manualNodeForm.username,
-      password: manualNodeForm.password,
-      rawUri: '',
-      tags: manualNodeForm.tags
-        .split(',')
-        .map(tag => tag.trim())
-        .filter(Boolean),
-      chainNodeIds: [],
-      groupId: manualNodeForm.groupId,
-      groupIds: manualNodeForm.groupId ? [manualNodeForm.groupId] : [],
-      remark: manualNodeForm.remark,
-    });
-
-    manualNodeForm.name = '';
-    manualNodeForm.server = '';
-    manualNodeForm.port = 1080;
-    manualNodeForm.username = '';
-    manualNodeForm.password = '';
-    manualNodeForm.tags = '';
-    manualNodeForm.groupId = '';
-    manualNodeForm.remark = '';
-    importMessage.value = t('home.messages.nodeAdded', { name: node.name });
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -1836,11 +1826,7 @@ async function handleManualGroupSubmit(): Promise<void> {
       groupIds: manualGroupForm.groupIds,
       remark: manualGroupForm.remark,
     });
-    manualGroupForm.name = '';
-    manualGroupForm.strategy = 'selector';
-    manualGroupForm.nodeIds = [];
-    manualGroupForm.groupIds = [];
-    manualGroupForm.remark = '';
+    closeGroupDialog();
     importMessage.value = t('home.messages.groupAdded', { name: group.name });
   } catch {
     // The composable exposes the backend error in the notice bar.
@@ -1913,7 +1899,20 @@ async function handleReset(): Promise<void> {
 function openTab(tab: TabKey): void {
   closeRouteActionMenu();
   closeNodeEditDialog();
+  if (tab === 'nodes' && currentTab.value !== 'nodes') {
+    activeNodeGroupFilter.value = 'all';
+  }
+  if (tab === 'groups') {
+    activeNodeGroupFilter.value = 'summary';
+  }
   currentTab.value = tab;
+}
+
+function selectNodeGroupFilterFromPanel(key: NodeGroupFilterKey): void {
+  if (key !== 'summary') {
+    currentTab.value = 'nodes';
+  }
+  selectNodeGroupFilter(key);
 }
 
 function portEnabledLabel(mapping: PortMapping): string {
@@ -2113,7 +2112,7 @@ const homeContext = {
   hideEmptyNodeGroups,
   nodeGroupFilterOptions,
   activeNodeGroupFilter,
-  selectNodeGroupFilter,
+  selectNodeGroupFilter: selectNodeGroupFilterFromPanel,
   groupSummaryItems,
   selectedNodeGroupTitle,
   currentNodeTotal,
@@ -2162,8 +2161,6 @@ const homeContext = {
   formatDateTime,
   rawImport,
   rawImportGroupId,
-  manualNodeForm,
-  handleManualNodeSubmit,
   importPreview,
   handleImport,
 } satisfies HomeViewContext;
@@ -2228,6 +2225,9 @@ const homeContext = {
               mappingCountLabel
             }}</span>
             <span v-else-if="currentTab === 'nodes'" class="workspace-count">{{ nodeTotal }}</span>
+            <span v-else-if="currentTab === 'groups'" class="workspace-count">{{
+              visibleGroups.length + 1
+            }}</span>
             <span v-else-if="currentTab === 'subscriptions'" class="workspace-count">{{
               subscriptions.length
             }}</span>
@@ -2290,15 +2290,30 @@ const homeContext = {
                 <Route class="size-4" aria-hidden="true" />
                 <span>{{ t('home.nodeCreate.chainNode') }}</span>
               </DropdownMenuItem>
+              <DropdownMenuItem class="add-node-menu-item" @select="openAddNodeDialog('import')">
+                <Download class="size-4" aria-hidden="true" />
+                <span>{{ t('home.nodeCreate.batchImport') }}</span>
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <Button
+          v-else-if="currentTab === 'groups'"
+          type="button"
+          class="top-add-group-button"
+          @click="openNewGroupDialog"
+        >
+          <Plus class="size-4" aria-hidden="true" />
+          <span>{{ t('common.addGroup') }}</span>
+        </Button>
       </div>
 
       <MappingsPanel v-if="currentTab === 'mappings'" :context="homeContext" />
-      <NodesPanel v-else-if="currentTab === 'nodes'" :context="homeContext" />
+      <NodesPanel
+        v-else-if="currentTab === 'nodes' || currentTab === 'groups'"
+        :context="homeContext"
+      />
       <SubscriptionsPanel v-else-if="currentTab === 'subscriptions'" :context="homeContext" />
-      <ImportPanel v-else :context="homeContext" />
     </section>
 
     <div
@@ -2586,6 +2601,230 @@ const homeContext = {
           <Button type="submit">
             <Check class="size-4" aria-hidden="true" />
             {{ t('common.save') }}
+          </Button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      v-if="isGroupDialogOpen"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeGroupDialog"
+    >
+      <form
+        class="modal-card group-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="group-create-dialog-title"
+        @submit.prevent="handleManualGroupSubmit"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="group-create-dialog-title">{{ t('common.addGroup') }}</h2>
+            <p>{{ t('home.dialogs.addGroupLead') }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeGroupDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div class="field-grid two">
+          <label>
+            <span>{{ t('home.form.groupName') }}</span>
+            <input v-model.trim="manualGroupForm.name" type="text" required />
+          </label>
+          <label>
+            <span>{{ t('home.form.groupStrategy') }}</span>
+            <select v-model="manualGroupForm.strategy">
+              <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
+              <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="chain-node-builder">
+          <label>
+            <span>{{ t('home.form.groupNodes') }}</span>
+            <div class="node-picker-box">
+              <div class="node-option-toolbar">
+                <input
+                  v-model.trim="manualGroupNodeSearch"
+                  type="search"
+                  autocomplete="off"
+                  :placeholder="t('home.placeholders.nodeSearch')"
+                />
+                <select v-model="manualGroupNodeGroupId">
+                  <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
+                    {{ group.label }}
+                  </option>
+                </select>
+              </div>
+              <div class="chain-node-options compact">
+                <label
+                  v-for="node in manualGroupNodeOptions"
+                  :key="node.id"
+                  :class="{ selected: manualGroupForm.nodeIds.includes(node.id) }"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="manualGroupForm.nodeIds.includes(node.id)"
+                    @change="toggleManualGroupNode(node.id)"
+                  />
+                  <span class="node-option-card">
+                    <em>{{ optionProtocolLabel(node) }}</em>
+                    <strong>{{ optionNameLabel(node) }}</strong>
+                    <small>{{ optionEndpointLabel(node) }}</small>
+                  </span>
+                </label>
+                <Button
+                  v-if="manualGroupNodeOptions.length < manualGroupNodeTotal"
+                  type="button"
+                  variant="outline"
+                  :disabled="isLoadingManualGroupNodes"
+                  @click="loadMoreManualGroupNodeOptions"
+                >
+                  {{
+                    isLoadingManualGroupNodes
+                      ? t('home.messages.loadingNodes')
+                      : t('home.actions.loadMore')
+                  }}
+                </Button>
+              </div>
+            </div>
+          </label>
+          <div class="chain-node-preview">
+            <strong>{{ t('home.form.groupNodes') }}</strong>
+            <span v-if="manualGroupForm.nodeIds.length">{{
+              t('home.groupMeta.nodeCount', { count: manualGroupForm.nodeIds.length })
+            }}</span>
+            <span v-else>{{ t('home.groupMeta.noSelectedNodes') }}</span>
+            <div v-if="manualGroupForm.nodeIds.length" class="chain-node-order">
+              <button
+                v-for="node in selectedManualGroupNodes()"
+                :key="node.id"
+                type="button"
+                @click="toggleManualGroupNode(node.id)"
+              >
+                <span>{{ node.name }}</span>
+                <X class="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.groupGroups') }}</span>
+          <select v-model="manualGroupForm.groupIds" multiple>
+            <option v-for="group in manualGroups" :key="group.id" :value="group.id">
+              {{ group.name }}
+            </option>
+          </select>
+        </label>
+
+        <label>
+          <span>{{ t('home.form.remark') }}</span>
+          <input
+            v-model.trim="manualGroupForm.remark"
+            type="text"
+            :placeholder="t('common.optional')"
+          />
+        </label>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeGroupDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="submit">
+            <Check class="size-4" aria-hidden="true" />
+            {{ t('common.save') }}
+          </Button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      v-if="addNodeDialogMode === 'import'"
+      class="modal-backdrop"
+      role="presentation"
+      @click.self="closeAddNodeDialog"
+    >
+      <form
+        class="modal-card import-node-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-node-dialog-title"
+        @submit.prevent="handleImport"
+      >
+        <div class="modal-heading">
+          <div>
+            <h2 id="import-node-dialog-title">{{ t('home.dialogs.importNodeTitle') }}</h2>
+            <p>{{ t('home.dialogs.importNodeLead') }}</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="closeAddNodeDialog"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <label>
+          <span>{{ t('home.form.shareLink') }}</span>
+          <textarea
+            v-model="rawImport"
+            rows="6"
+            required
+            :placeholder="t('home.placeholders.shareLinks')"
+          ></textarea>
+        </label>
+        <label>
+          <span>{{ t('home.form.nodeGroup') }}</span>
+          <select v-model="rawImportGroupId">
+            <option value="">{{ t('home.groupMeta.ungrouped') }}</option>
+            <option v-for="group in groups" :key="group.id" :value="group.id">
+              {{ group.name }}
+            </option>
+          </select>
+        </label>
+
+        <div v-if="importPreview" class="import-preview-panel">
+          <div class="import-preview-heading">
+            <strong>{{ t('home.importPreview.title') }}</strong>
+            <span>{{ previewSummary(importPreview) }}</span>
+          </div>
+          <div class="import-preview-list">
+            <article
+              v-for="(item, index) in importPreview.items"
+              :key="`${item.type}-${item.name}-${index}`"
+              class="import-preview-item"
+              :class="{ muted: item.action === 'skip' || item.action === 'fail' }"
+            >
+              <span>{{ previewTypeLabel(item) }}</span>
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.detail || previewActionLabel(item) }}</small>
+            </article>
+          </div>
+        </div>
+
+        <span class="inline-message">{{ importMessage }}</span>
+
+        <div class="modal-actions">
+          <Button type="button" variant="outline" @click="closeAddNodeDialog">{{
+            t('common.cancel')
+          }}</Button>
+          <Button type="submit">
+            <Download class="size-4" aria-hidden="true" />
+            {{ importPreview ? t('home.importPreview.confirmImport') : t('common.importLinks') }}
           </Button>
         </div>
       </form>
