@@ -817,6 +817,18 @@
   animation: action-tooltip-in 140ms ease;
 }
 
+.action-tooltip-floating {
+  position: fixed;
+  pointer-events: none;
+}
+
+.action-tooltip-floating-arrow {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: rgb(15 23 42);
+}
+
 .action-tooltip-arrow {
   fill: rgb(15 23 42);
 }
