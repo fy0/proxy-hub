@@ -901,9 +901,12 @@ async function fetchNodeOptions(input: NodeOptionQueryInput = {}): Promise<{
 }
 
 async function ensureNodeOptions(ids: string[]): Promise<void> {
-  const missing = ids.filter(id => id && !nodeOptionsCache.value[id]);
+  const missing = Array.from(new Set(ids.filter(id => id && !nodeOptionsCache.value[id])));
   if (missing.length === 0) return;
-  await fetchNodeOptions({ ids: Array.from(new Set(missing)), size: Math.min(200, missing.length) });
+  for (let index = 0; index < missing.length; index += 200) {
+    const batch = missing.slice(index, index + 200);
+    await fetchNodeOptions({ ids: batch, size: batch.length });
+  }
 }
 
 function ensureInitialLoad(): void {

@@ -215,9 +215,19 @@ func TestProxyNodeOptionsReturnsLightweightItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeCreate() error = %v", err)
 	}
+	second, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "Backup",
+		Protocol: proxyService.ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1081),
+		RawURI:   "http://127.0.0.2:1081#Backup",
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
 
 	app := newProxyNodeAPITestApp(t)
-	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/node-options?ids="+node.ID, nil))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/proxy/node-options?ids="+node.ID+","+second.ID, nil))
 	if err != nil {
 		t.Fatalf("app.Test options failed: %v", err)
 	}
@@ -232,12 +242,20 @@ func TestProxyNodeOptionsReturnsLightweightItems(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	items, _ := raw["items"].([]any)
-	if len(items) != 1 {
-		t.Fatalf("items len = %d, want 1", len(items))
+	if len(items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(items))
 	}
-	item, _ := items[0].(map[string]any)
-	if item["id"] != node.ID || item["rawUri"] != nil || item["password"] != nil {
-		t.Fatalf("option item = %+v, want lightweight item for node", item)
+	seen := map[string]bool{}
+	for _, rawItem := range items {
+		item, _ := rawItem.(map[string]any)
+		id, _ := item["id"].(string)
+		seen[id] = true
+		if item["rawUri"] != nil || item["password"] != nil {
+			t.Fatalf("option item = %+v, want lightweight item for node", item)
+		}
+	}
+	if !seen[node.ID] || !seen[second.ID] {
+		t.Fatalf("option item ids = %+v, want %q and %q", seen, node.ID, second.ID)
 	}
 }
 

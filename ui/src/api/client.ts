@@ -1,4 +1,5 @@
 import { client } from './generated/client.gen';
+import { createQuerySerializer } from './generated/client/utils.gen';
 import { getApiBaseUrl } from './config';
 import { ApiError } from './error';
 import { clearAccessToken, getAccessToken, isAuthCredentialError } from './auth';
@@ -12,6 +13,12 @@ export function setupApiClient(): void {
   client.setConfig({
     baseUrl: getApiBaseUrl(),
     credentials: 'include',
+    querySerializer: createQuerySerializer({
+      array: {
+        explode: false,
+        style: 'form',
+      },
+    }),
   });
 
   client.interceptors.request.use((request) => {
