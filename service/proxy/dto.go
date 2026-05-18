@@ -289,7 +289,6 @@ type GroupUpsertRequest struct {
 	Name     string   `json:"name" validate:"required,max=100"`
 	Strategy string   `json:"strategy,omitempty"`
 	NodeIDs  []string `json:"nodeIds,omitempty"`
-	GroupIDs []string `json:"groupIds,omitempty"`
 	Remark   string   `json:"remark,omitempty" validate:"omitempty,max=500"`
 }
 

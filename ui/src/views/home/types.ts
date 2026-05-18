@@ -42,7 +42,6 @@ interface ManualGroupForm {
   name: string;
   strategy: ProxyGroupStrategy;
   nodeIds: string[];
-  groupIds: string[];
   remark: string;
 }
 
@@ -159,6 +158,7 @@ export interface HomeViewContext {
   manualGroups: Readable<ProxyGroup[]>;
   openEditGroupById: (groupId: string) => void;
   openEditGroupDialog: (group: ProxyGroup) => void;
+  requestRemoveGroup: (groupId: string) => void;
   handleManualGroupSubmit: () => Promise<void>;
   groupSummary: (group: ProxyGroup) => string;
   removeGroup: (id: string) => Promise<void>;

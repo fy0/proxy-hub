@@ -278,6 +278,36 @@ func TestGroupCreateAddsNodeMembership(t *testing.T) {
 	}
 }
 
+func TestGroupUpdateClearsNestedGroupReferences(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "first"})
+	if err != nil {
+		t.Fatalf("GroupCreate(first) error = %v", err)
+	}
+	second, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "second"})
+	if err != nil {
+		t.Fatalf("GroupCreate(second) error = %v", err)
+	}
+	if err := model.GetDB().WithContext(ctx).Model(first).Updates(map[string]any{
+		"group_ids_json": encodeStringSlice([]string{second.ID}),
+	}).Error; err != nil {
+		t.Fatalf("seed nested group refs error = %v", err)
+	}
+
+	updated, err := GroupUpdate(ctx, nil, first.ID, GroupUpsertRequest{
+		Name:     "first",
+		Strategy: GroupStrategySelector,
+	})
+	if err != nil {
+		t.Fatalf("GroupUpdate() error = %v", err)
+	}
+	if got := decodeStringSlice(updated.GroupIDsJSON); len(got) != 0 {
+		t.Fatalf("updated group IDs = %v, want empty", got)
+	}
+}
+
 func TestNodeUpdateCanAssignMultipleGroups(t *testing.T) {
 	initProxyInMemoryDB(t)
 

@@ -493,18 +493,34 @@ func TestBuildSingBoxOptionsRejectsCyclicGroups(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
-	first, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "first"})
-	if err != nil {
-		t.Fatalf("GroupCreate(first) error = %v", err)
+	first := &tables.ProxyGroupTable{
+		Name:            "first",
+		Type:            GroupTypeSubscription,
+		Strategy:        GroupStrategySelector,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice(nil),
+		BuiltinTagsJSON: encodeStringSlice(nil),
 	}
-	second, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "second", GroupIDs: []string{first.ID}})
-	if err != nil {
-		t.Fatalf("GroupCreate(second) error = %v", err)
+	if err := model.GetDB().WithContext(ctx).Create(first).Error; err != nil {
+		t.Fatalf("Create(first) error = %v", err)
 	}
-	if _, err := GroupUpdate(ctx, nil, first.ID, GroupUpsertRequest{Name: "first", GroupIDs: []string{second.ID}}); err != nil {
-		t.Fatalf("GroupUpdate(first) error = %v", err)
+	second := &tables.ProxyGroupTable{
+		Name:            "second",
+		Type:            GroupTypeSubscription,
+		Strategy:        GroupStrategySelector,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice([]string{first.ID}),
+		BuiltinTagsJSON: encodeStringSlice(nil),
 	}
-	_, err = MappingCreate(ctx, nil, MappingUpsertRequest{
+	if err := model.GetDB().WithContext(ctx).Create(second).Error; err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+	if err := model.GetDB().WithContext(ctx).Model(first).Updates(map[string]any{
+		"group_ids_json": encodeStringSlice([]string{second.ID}),
+	}).Error; err != nil {
+		t.Fatalf("Update(first) error = %v", err)
+	}
+	_, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),

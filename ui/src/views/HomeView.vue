@@ -301,7 +301,6 @@ const manualGroupForm = reactive({
   name: '',
   strategy: 'selector' as ProxyGroupStrategy,
   nodeIds: [] as string[],
-  groupIds: [] as string[],
   remark: '',
 });
 
@@ -985,15 +984,12 @@ async function refreshOptionList(
       page: input.page ?? 1,
       size: 80,
     });
-    const selectedResult = input.selectedIds?.length
-      ? await fetchNodeOptions({
-          ids: input.selectedIds,
-          size: Math.min(200, input.selectedIds.length),
-        })
-      : null;
+    const selectedOptions = input.selectedIds?.length
+      ? await fetchSelectedNodeOptions(input.selectedIds)
+      : [];
     const merged = mergeNodeOptions(
       append ? target.options.value : [],
-      selectedResult?.items ?? [],
+      selectedOptions,
       result.items
     );
     target.options.value = merged;
@@ -1002,6 +998,17 @@ async function refreshOptionList(
   } finally {
     target.loading.value = false;
   }
+}
+
+async function fetchSelectedNodeOptions(ids: string[]): Promise<ProxyNodeOption[]> {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  const items: ProxyNodeOption[] = [];
+  for (let index = 0; index < uniqueIds.length; index += 200) {
+    const batch = uniqueIds.slice(index, index + 200);
+    const result = await fetchNodeOptions({ ids: batch, size: batch.length });
+    items.push(...result.items);
+  }
+  return items;
 }
 
 function mergeNodeOptions(...groupsToMerge: ProxyNodeOption[][]): ProxyNodeOption[] {
@@ -1162,6 +1169,9 @@ function loadMoreRouteNodeOptions(): void {
 
 function groupSummary(group: ProxyGroup): string {
   const nodeCount = group.nodeCount;
+  if (group.type === 'manual') {
+    return t('home.groupMeta.nodeCount', { count: nodeCount });
+  }
   const groupCount = group.groupIds.length;
   const builtins = group.builtinTags.length;
   return t('home.groupMeta.summary', { nodeCount, groupCount, builtins });
@@ -1277,7 +1287,16 @@ function toggleManualGroupNode(nodeId: string): void {
 }
 
 function selectedManualGroupNodes(): ProxyNode[] {
-  return selectedChainNodesFromIds(manualGroupForm.nodeIds);
+  return manualGroupForm.nodeIds
+    .map(id => {
+      const cachedNode = nodeById.value.get(id);
+      const cachedOption = nodeOptionById.value.get(id);
+      const fallback = cachedNode ?? (cachedOption ? optionToProxyNode(cachedOption) : null);
+      const health = nodeHealthById.value[id];
+      if (!fallback) return null;
+      return health ? { ...fallback, health } : fallback;
+    })
+    .filter((node): node is ProxyNode => Boolean(node));
 }
 
 function groupSelectionSummary(groupIds: string[]): string {
@@ -1440,14 +1459,9 @@ function resetManualGroupForm(): void {
   manualGroupForm.name = '';
   manualGroupForm.strategy = 'selector';
   manualGroupForm.nodeIds = [];
-  manualGroupForm.groupIds = [];
   manualGroupForm.remark = '';
   manualGroupNodeSearch.value = '';
   manualGroupNodeGroupId.value = '';
-}
-
-function editableNestedGroups(): ProxyGroup[] {
-  return manualGroups.value.filter(group => group.id !== editingGroupId.value);
 }
 
 function openNewGroupDialog(): void {
@@ -1467,7 +1481,6 @@ function openEditGroupDialog(group: ProxyGroup): void {
     name: group.name,
     strategy: group.strategy,
     nodeIds: [...group.nodeIds],
-    groupIds: group.groupIds.filter(groupId => groupId !== group.id),
     remark: group.remark,
   });
   manualGroupNodeSearch.value = '';
@@ -1886,6 +1899,18 @@ function requestRemoveNode(node: ProxyNode): void {
   };
 }
 
+function requestRemoveGroup(groupId: string): void {
+  const group = groupById.value.get(groupId);
+  if (!group || group.type !== 'manual') return;
+
+  confirmationDialog.value = {
+    title: t('home.confirm.deleteGroupTitle'),
+    message: t('home.confirm.deleteGroupMessage', { name: group.name }),
+    confirmLabel: t('common.deleteGroup'),
+    onConfirm: () => removeGroup(group.id),
+  };
+}
+
 function openMappingTestDialog(mapping: PortMapping): void {
   testDialog.value = {
     targetType: 'mapping',
@@ -2186,7 +2211,6 @@ async function handleManualGroupSubmit(): Promise<void> {
       name: manualGroupForm.name,
       strategy: manualGroupForm.strategy,
       nodeIds: manualGroupForm.nodeIds,
-      groupIds: manualGroupForm.groupIds.filter(groupId => groupId !== editingGroupId.value),
       remark: manualGroupForm.remark,
     };
     const group = editingGroupId.value
@@ -2541,6 +2565,7 @@ const homeContext = {
   manualGroups,
   openEditGroupById,
   openEditGroupDialog,
+  requestRemoveGroup,
   handleManualGroupSubmit,
   groupSummary,
   removeGroup,
@@ -3108,26 +3133,18 @@ const homeContext = {
             <span v-else>{{ t('home.groupMeta.noSelectedNodes') }}</span>
             <div v-if="manualGroupForm.nodeIds.length" class="chain-node-order">
               <button
-                v-for="node in selectedManualGroupNodes()"
+                v-for="(node, index) in selectedManualGroupNodes()"
                 :key="node.id"
                 type="button"
                 @click="toggleManualGroupNode(node.id)"
               >
+                <em>{{ index + 1 }}</em>
                 <span>{{ node.name }}</span>
                 <X class="size-3" aria-hidden="true" />
               </button>
             </div>
           </div>
         </div>
-
-        <label>
-          <span>{{ t('home.form.groupGroups') }}</span>
-          <select v-model="manualGroupForm.groupIds" multiple>
-            <option v-for="group in editableNestedGroups()" :key="group.id" :value="group.id">
-              {{ group.name }}
-            </option>
-          </select>
-        </label>
 
         <label>
           <span>{{ t('home.form.remark') }}</span>

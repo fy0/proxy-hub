@@ -100,7 +100,6 @@ interface GroupInput {
   name: string;
   strategy: ProxyGroupStrategy;
   nodeIds: string[];
-  groupIds: string[];
   remark: string;
 }
 
@@ -851,7 +850,6 @@ function groupToRequest(input: GroupInput): GroupUpsertRequestWritable {
     name: input.name.trim(),
     strategy: normalizeGroupStrategy(input.strategy),
     nodeIds: input.nodeIds,
-    groupIds: input.groupIds,
     remark: input.remark.trim(),
   };
 }

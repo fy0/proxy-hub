@@ -85,6 +85,8 @@ export const messages = {
         testNodeTitle: '测试节点',
       },
       confirm: {
+        deleteGroupMessage: '将删除分组「{name}」，并从端口线路和节点中移除。此操作不可撤销。',
+        deleteGroupTitle: '删除分组？',
         deleteNodeMessage: '将删除节点「{name}」，并从端口线路和节点组中移除。此操作不可撤销。',
         deleteNodeTitle: '删除节点？',
         deletePortMessage: '将删除端口 {port} 及其线路配置。此操作不可撤销。',
@@ -113,7 +115,6 @@ export const messages = {
         groupName: '分组名称',
         groupStrategy: '分组策略',
         groupNodes: '包含节点',
-        groupGroups: '包含分组',
         nodeGroup: '所属分组',
         tags: '标签',
         subscriptionName: '订阅名称',
@@ -538,6 +539,9 @@ export const messages = {
         testNodeTitle: 'Test node',
       },
       confirm: {
+        deleteGroupMessage:
+          'Group "{name}" will be deleted and removed from port routes and nodes. This cannot be undone.',
+        deleteGroupTitle: 'Delete group?',
         deleteNodeMessage:
           'Node "{name}" will be deleted and removed from port routes and node groups. This cannot be undone.',
         deleteNodeTitle: 'Delete node?',
@@ -569,7 +573,6 @@ export const messages = {
         groupName: 'Group name',
         groupStrategy: 'Group strategy',
         groupNodes: 'Group nodes',
-        groupGroups: 'Nested groups',
         nodeGroup: 'Node group',
         tags: 'Tags',
         subscriptionName: 'Subscription name',

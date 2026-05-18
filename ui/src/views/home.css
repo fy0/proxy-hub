@@ -1452,13 +1452,23 @@ textarea:focus {
   text-align: left;
 }
 
-.node-group-summary-edit {
+.node-group-summary-actions {
   position: absolute;
   top: 12px;
   right: 12px;
   z-index: 1;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.node-group-summary-action {
   background: rgb(248 250 252);
   color: rgb(51 65 85);
+}
+
+.node-group-summary-action.danger:hover {
+  background: rgb(254 242 242);
+  color: rgb(220 38 38);
 }
 
 .node-summary-type {

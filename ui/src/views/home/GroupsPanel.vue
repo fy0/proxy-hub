@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Edit3 } from 'lucide-vue-next';
+import { Edit3, Trash2 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import ActionTooltip from '@/components/ActionTooltip.vue';
 import { useI18n } from '@/i18n';
@@ -10,8 +10,13 @@ const props = defineProps<{
   context: HomeViewContext;
 }>();
 
-const { groupSummaryItems, selectNodeGroupFilter, openEditGroupById, importMessage } =
-  props.context;
+const {
+  groupSummaryItems,
+  selectNodeGroupFilter,
+  openEditGroupById,
+  requestRemoveGroup,
+  importMessage,
+} = props.context;
 </script>
 
 <template>
@@ -41,18 +46,32 @@ const { groupSummaryItems, selectNodeGroupFilter, openEditGroupById, importMessa
             <em v-if="item.filter">{{ item.filter }}</em>
           </span>
         </button>
-        <ActionTooltip v-if="item.editable && item.groupId" :label="t('common.editGroup')">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            class="node-group-summary-edit"
-            :aria-label="t('common.editGroup')"
-            @click="openEditGroupById(item.groupId)"
-          >
-            <Edit3 class="size-4" aria-hidden="true" />
-          </Button>
-        </ActionTooltip>
+        <div v-if="item.editable && item.groupId" class="node-group-summary-actions">
+          <ActionTooltip :label="t('common.editGroup')">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              class="node-group-summary-action"
+              :aria-label="t('common.editGroup')"
+              @click="openEditGroupById(item.groupId)"
+            >
+              <Edit3 class="size-4" aria-hidden="true" />
+            </Button>
+          </ActionTooltip>
+          <ActionTooltip :label="t('common.deleteGroup')">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              class="node-group-summary-action danger"
+              :aria-label="t('common.deleteGroup')"
+              @click="requestRemoveGroup(item.groupId)"
+            >
+              <Trash2 class="size-4" aria-hidden="true" />
+            </Button>
+          </ActionTooltip>
+        </div>
       </article>
     </div>
 

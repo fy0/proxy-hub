@@ -15,7 +15,7 @@ import (
 func GroupCreate(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*tables.ProxyGroupTable, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
 
-	normalized, err := normalizeGroupRequest(ctx, tx, "", req)
+	normalized, err := normalizeGroupRequest(ctx, tx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +24,7 @@ func GroupCreate(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*t
 		Type:            GroupTypeManual,
 		Strategy:        normalized.Strategy,
 		NodeIDsJSON:     encodeStringSlice(normalized.NodeIDs),
-		GroupIDsJSON:    encodeStringSlice(normalized.GroupIDs),
+		GroupIDsJSON:    encodeStringSlice(nil),
 		BuiltinTagsJSON: encodeStringSlice(nil),
 		Remark:          normalized.Remark,
 	}
@@ -52,7 +52,7 @@ func GroupUpdate(ctx context.Context, tx model.DBTx, id string, req GroupUpsertR
 	}
 	previousNodeIDs := decodeStringSlice(group.NodeIDsJSON)
 
-	normalized, err := normalizeGroupRequest(ctx, tx, id, req)
+	normalized, err := normalizeGroupRequest(ctx, tx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func GroupUpdate(ctx context.Context, tx model.DBTx, id string, req GroupUpsertR
 		"name":           normalized.Name,
 		"strategy":       normalized.Strategy,
 		"node_ids_json":  encodeStringSlice(normalized.NodeIDs),
-		"group_ids_json": encodeStringSlice(normalized.GroupIDs),
+		"group_ids_json": encodeStringSlice(nil),
 		"remark":         normalized.Remark,
 		"updated_at":     time.Now(),
 	}).Error; err != nil {
@@ -139,7 +139,7 @@ func groupDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 	return tx.Delete(&group).Error
 }
 
-func normalizeGroupRequest(ctx context.Context, tx model.DBTx, groupID string, req GroupUpsertRequest) (*GroupUpsertRequest, error) {
+func normalizeGroupRequest(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*GroupUpsertRequest, error) {
 	normalized := req
 	normalized.Name = strings.TrimSpace(normalized.Name)
 	normalized.Strategy = normalizeGroupStrategy(normalized.Strategy)
@@ -155,18 +155,6 @@ func normalizeGroupRequest(ctx context.Context, tx model.DBTx, groupID string, r
 	normalized.NodeIDs = make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		normalized.NodeIDs = append(normalized.NodeIDs, node.ID)
-	}
-
-	groups, err := findGroupsByIDs(ctx, tx, normalized.GroupIDs)
-	if err != nil {
-		return nil, err
-	}
-	normalized.GroupIDs = make([]string, 0, len(groups))
-	for _, group := range groups {
-		if group.ID == groupID {
-			continue
-		}
-		normalized.GroupIDs = append(normalized.GroupIDs, group.ID)
 	}
 	return &normalized, nil
 }
