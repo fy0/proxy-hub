@@ -197,7 +197,9 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 	for _, mapping := range mappings {
 		nodeIDs := removeString(decodeStringSlice(mapping.NodeIDsJSON), id)
 		active := mapping.ActiveNodeID
-		if active == id {
+		if normalizeStrategy(mapping.Strategy) != StrategyManual {
+			active = ""
+		} else if active == id {
 			active = ""
 			if len(nodeIDs) > 0 {
 				active = nodeIDs[0]
@@ -1268,14 +1270,19 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 		activeGroup = ""
 	}
 
-	switch {
-	case activeGroup != "":
+	if normalized.Strategy != StrategyManual {
 		activeNode = ""
-	case activeNode != "":
-	case len(normalized.GroupIDs) > 0:
-		activeGroup = normalized.GroupIDs[0]
-	case len(normalized.NodeIDs) > 0:
-		activeNode = normalized.NodeIDs[0]
+		activeGroup = ""
+	} else {
+		switch {
+		case activeGroup != "":
+			activeNode = ""
+		case activeNode != "":
+		case len(normalized.GroupIDs) > 0:
+			activeGroup = normalized.GroupIDs[0]
+		case len(normalized.NodeIDs) > 0:
+			activeNode = normalized.NodeIDs[0]
+		}
 	}
 
 	normalized.ActiveNodeID = stringPtrOrNil(activeNode)

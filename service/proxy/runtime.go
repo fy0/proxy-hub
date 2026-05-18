@@ -636,10 +636,12 @@ func buildDynamicRuntimePlanForMapping(
 		members = []dynamicMemberPlan{builtinMember(constant.TypeBlock)}
 	}
 	mappingGroup := dynamicGroupPlan{
-		tag:      mappingOutboundTag(mapping.ID),
-		policy:   policyForMapping(mapping),
-		members:  members,
-		selected: selectedMappingMember(mapping, members),
+		tag:     mappingOutboundTag(mapping.ID),
+		policy:  policyForMapping(mapping),
+		members: members,
+	}
+	if normalizeStrategy(mapping.Strategy) == StrategyManual {
+		mappingGroup.selected = selectedMappingMember(mapping, members)
 	}
 	builder.groupPlans[mappingGroup.tag] = &mappingGroup
 
@@ -1284,11 +1286,13 @@ func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (
 	}
 
 	activeTag := ""
-	if mapping.ActiveGroupID != "" {
-		activeTag = proxyGroupOutboundTag(mapping.ActiveGroupID)
-	}
-	if activeTag == "" && mapping.ActiveNodeID != "" {
-		activeTag = nodeOutboundTag(mapping.ActiveNodeID)
+	if normalizeStrategy(mapping.Strategy) == StrategyManual {
+		if mapping.ActiveGroupID != "" {
+			activeTag = proxyGroupOutboundTag(mapping.ActiveGroupID)
+		}
+		if activeTag == "" && mapping.ActiveNodeID != "" {
+			activeTag = nodeOutboundTag(mapping.ActiveNodeID)
+		}
 	}
 	if activeTag == "" || !containsString(nodeTags, activeTag) {
 		activeTag = nodeTags[0]

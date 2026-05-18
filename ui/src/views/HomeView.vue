@@ -494,6 +494,19 @@ function groupRouteRuntimeHealth(mapping: PortMapping, group: ProxyGroup): Runti
   );
 }
 
+function hasKnownNodeHealth(health: ProxyNodeHealth | null | undefined): boolean {
+  return Boolean(
+    health &&
+      (health.lastCheckedAt ||
+        health.lastSuccessAt ||
+        health.lastFailureAt ||
+        health.lastError ||
+        health.blacklisted ||
+        health.probeRunning ||
+        health.lastLatencyMs > 0)
+  );
+}
+
 function isAvailableNodeHealth(health: ProxyNodeHealth | null | undefined): boolean {
   if (!health || health.blacklisted || (health.lastError && !health.probeRunning)) return false;
   return health.available || health.lastLatencyMs > 0 || health.probeRunning;
@@ -566,6 +579,7 @@ function groupRouteHealthSummary(mapping: PortMapping, group: ProxyGroup) {
   const nodeIds = groupNodeIds(group);
   const total = Math.max(group.nodeCount, nodeIds.length, runtimeItems.length);
   let available = 0;
+  let known = runtimeItems.length;
   let probing = 0;
   let fastestLatencyMs = 0;
 
@@ -580,11 +594,12 @@ function groupRouteHealthSummary(mapping: PortMapping, group: ProxyGroup) {
         fastestLatencyMs = health.lastLatencyMs;
       }
     }
-    return { available, fastestLatencyMs, probing, total };
+    return { available, fastestLatencyMs, known, probing, total };
   }
 
   for (const nodeId of nodeIds) {
     const health = nodeHealthById.value[nodeId];
+    if (hasKnownNodeHealth(health)) known += 1;
     if (isAvailableNodeHealth(health)) available += 1;
     if (health?.probeRunning) probing += 1;
     if (
@@ -595,7 +610,7 @@ function groupRouteHealthSummary(mapping: PortMapping, group: ProxyGroup) {
       fastestLatencyMs = health.lastLatencyMs;
     }
   }
-  return { available, fastestLatencyMs, probing, total };
+  return { available, fastestLatencyMs, known, probing, total };
 }
 
 function groupRouteTotalLabel(mapping: PortMapping, group: ProxyGroup): string {
@@ -619,6 +634,17 @@ function groupRouteLatencyLabel(mapping: PortMapping, group: ProxyGroup): string
   return latency > 0 ? `${latency}ms` : '-ms';
 }
 
+function groupRouteHealthState(
+  mapping: PortMapping,
+  group: ProxyGroup
+): 'success' | 'failure' | 'probing' | 'unknown' {
+  const summary = groupRouteHealthSummary(mapping, group);
+  if (summary.probing > 0) return 'probing';
+  if (summary.available > 0) return 'success';
+  if (summary.known > 0 && summary.total > 0) return 'failure';
+  return 'unknown';
+}
+
 function groupRouteHealthTitle(mapping: PortMapping, group: ProxyGroup): string {
   const summary = groupRouteHealthSummary(mapping, group);
   const details = [
@@ -638,11 +664,16 @@ function mappingHasActiveRoute(mapping: PortMapping): boolean {
   return Boolean(mapping.activeNodeId || mapping.activeGroupId);
 }
 
+function shouldUseManualActiveRoute(mapping: PortMapping): boolean {
+  return mapping.strategy === 'manual';
+}
+
 function isActiveRoute(
   mapping: PortMapping,
   targetType: MappingSwitchTargetType,
   targetId: string
 ): boolean {
+  if (!shouldUseManualActiveRoute(mapping)) return false;
   if (targetType === 'group') return mapping.activeGroupId === targetId;
   return mapping.activeNodeId === targetId && !mapping.activeGroupId;
 }
@@ -1731,7 +1762,7 @@ function findDuplicateRouteNode(rawUri: string): ProxyNode | null {
 function attachNodeToMapping(mapping: PortMapping, nodeId: string): Promise<PortMapping> {
   const nodeIds = Array.from(new Set([...mapping.nodeIds, nodeId]));
   const patch: Partial<PortMapping> = { nodeIds };
-  if (!mappingHasActiveRoute(mapping)) {
+  if (shouldUseManualActiveRoute(mapping) && !mappingHasActiveRoute(mapping)) {
     patch.activeNodeId = nodeId;
   }
   return updateMapping(mapping.id, patch);
@@ -1807,7 +1838,7 @@ async function saveRouteDialog(): Promise<void> {
     } else {
       const groupIds = Array.from(new Set([...mapping.groupIds, routeNodeForm.groupId]));
       const patch: Partial<PortMapping> = { groupIds };
-      if (!mappingHasActiveRoute(mapping)) {
+      if (shouldUseManualActiveRoute(mapping) && !mappingHasActiveRoute(mapping)) {
         patch.activeGroupId = routeNodeForm.groupId;
       }
       await updateMapping(mapping.id, patch);
@@ -1825,10 +1856,13 @@ function handleRouteNodeNameInput(): void {
 
 async function removeNodeFromMapping(mapping: PortMapping, nodeId: string): Promise<void> {
   const nodeIds = mapping.nodeIds.filter(id => id !== nodeId);
-  const activeNodeId = mapping.activeNodeId === nodeId ? nodeIds[0] || null : mapping.activeNodeId;
+  const patch: Partial<PortMapping> = { nodeIds };
+  if (shouldUseManualActiveRoute(mapping)) {
+    patch.activeNodeId = mapping.activeNodeId === nodeId ? nodeIds[0] || null : mapping.activeNodeId;
+  }
 
   try {
-    await updateMapping(mapping.id, { nodeIds, activeNodeId });
+    await updateMapping(mapping.id, patch);
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -1836,11 +1870,14 @@ async function removeNodeFromMapping(mapping: PortMapping, nodeId: string): Prom
 
 async function removeGroupFromMapping(mapping: PortMapping, groupId: string): Promise<void> {
   const groupIds = mapping.groupIds.filter(id => id !== groupId);
-  const activeGroupId =
-    mapping.activeGroupId === groupId ? groupIds[0] || null : mapping.activeGroupId;
+  const patch: Partial<PortMapping> = { groupIds };
+  if (shouldUseManualActiveRoute(mapping)) {
+    patch.activeGroupId =
+      mapping.activeGroupId === groupId ? groupIds[0] || null : mapping.activeGroupId;
+  }
 
   try {
-    await updateMapping(mapping.id, { groupIds, activeGroupId });
+    await updateMapping(mapping.id, patch);
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -2352,6 +2389,27 @@ function routeFailureLabel(node: ProxyNode): string {
   return String(node.health?.failureCount ?? 0);
 }
 
+function healthTime(value: string | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function routeHealthState(node: ProxyNode): 'success' | 'failure' | 'probing' | 'unknown' {
+  const health = node.health;
+  if (!health) return 'unknown';
+  if (health.probeRunning) return 'probing';
+
+  const lastSuccess = healthTime(health.lastSuccessAt);
+  const lastFailure = healthTime(health.lastFailureAt);
+  if (lastFailure > lastSuccess) return 'failure';
+  if (lastSuccess > 0) return 'success';
+  if (health.blacklisted || health.lastError?.trim()) return 'failure';
+  if (health.available) return 'success';
+  if (health.lastCheckedAt) return health.available ? 'success' : 'failure';
+  return 'unknown';
+}
+
 function isProbeUnavailableNode(node: ProxyNode): boolean {
   const health = node.health;
   return Boolean(health && !health.blacklisted && !health.probeRunning && health.lastError?.trim());
@@ -2513,6 +2571,7 @@ const homeContext = {
   openNodeTestDialog,
   requestRemoveRoute,
   protocolLabels,
+  routeHealthState,
   nodeHealthTitle,
   isProbeUnavailableNode,
   routeLatencyLabel,
@@ -2523,6 +2582,7 @@ const homeContext = {
   groupRouteAvailableLabel,
   groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
+  groupRouteHealthState,
   groupRouteHealthTitle,
   openNewMappingDialog,
   nodeSearch,

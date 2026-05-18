@@ -819,6 +819,8 @@ function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
 }
 
 function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
+  const strategy = normalizeStrategy(input.strategy);
+  const useManualActiveRoute = strategy === 'manual';
   return {
     enabled: input.enabled,
     listenAddress: input.listenAddress.trim() || '0.0.0.0',
@@ -826,11 +828,11 @@ function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
     outboundProtocol: normalizeOutboundProtocol(input.outboundProtocol),
     username: input.username.trim(),
     password: input.password.trim(),
-    strategy: normalizeStrategy(input.strategy),
+    strategy,
     nodeIds: input.nodeIds,
-    activeNodeId: input.activeNodeId ?? undefined,
+    activeNodeId: useManualActiveRoute ? (input.activeNodeId ?? undefined) : undefined,
     groupIds: input.groupIds,
-    activeGroupId: input.activeGroupId ?? undefined,
+    activeGroupId: useManualActiveRoute ? (input.activeGroupId ?? undefined) : undefined,
     remark: input.remark.trim(),
   };
 }
@@ -864,17 +866,27 @@ function subscriptionToRequest(input: SubscriptionInput): SubscriptionUpsertRequ
 }
 
 function mergeMappingPatch(mapping: PortMapping, patch: Partial<MappingInput>): MappingInput {
+  const strategy = patch.strategy ?? mapping.strategy;
+  const useManualActiveRoute = strategy === 'manual';
   return {
     listenAddress: patch.listenAddress ?? mapping.listenAddress,
     listenPort: patch.listenPort ?? mapping.listenPort,
     outboundProtocol: patch.outboundProtocol ?? mapping.outboundProtocol,
     username: patch.username ?? mapping.username,
     password: patch.password ?? mapping.password,
-    strategy: patch.strategy ?? mapping.strategy,
+    strategy,
     nodeIds: patch.nodeIds ?? mapping.nodeIds,
-    activeNodeId: patch.activeNodeId === undefined ? mapping.activeNodeId : patch.activeNodeId,
+    activeNodeId: useManualActiveRoute
+      ? patch.activeNodeId === undefined
+        ? mapping.activeNodeId
+        : patch.activeNodeId
+      : null,
     groupIds: patch.groupIds ?? mapping.groupIds,
-    activeGroupId: patch.activeGroupId === undefined ? mapping.activeGroupId : patch.activeGroupId,
+    activeGroupId: useManualActiveRoute
+      ? patch.activeGroupId === undefined
+        ? mapping.activeGroupId
+        : patch.activeGroupId
+      : null,
     enabled: patch.enabled ?? mapping.enabled,
     remark: patch.remark ?? mapping.remark,
   };
@@ -914,7 +926,12 @@ function removeNodeFromLocalState(id: string): void {
   }));
   mappings.value = mappings.value.map(mapping => {
     const nodeIds = mapping.nodeIds.filter(nodeId => nodeId !== id);
-    const activeNodeId = mapping.activeNodeId === id ? nodeIds[0] || null : mapping.activeNodeId;
+    const activeNodeId =
+      mapping.strategy === 'manual'
+        ? mapping.activeNodeId === id
+          ? nodeIds[0] || null
+          : mapping.activeNodeId
+        : null;
 
     return {
       ...mapping,
@@ -946,7 +963,11 @@ function removeGroupFromLocalState(id: string): void {
   mappings.value = mappings.value.map(mapping => {
     const groupIds = mapping.groupIds.filter(groupId => groupId !== id);
     const activeGroupId =
-      mapping.activeGroupId === id ? groupIds[0] || null : mapping.activeGroupId;
+      mapping.strategy === 'manual'
+        ? mapping.activeGroupId === id
+          ? groupIds[0] || null
+          : mapping.activeGroupId
+        : null;
 
     return {
       ...mapping,

@@ -860,6 +860,53 @@ func TestMappingCreateAcceptsLeastLatencyStrategy(t *testing.T) {
 	}
 }
 
+func TestMappingUpsertClearsActiveRouteForNonManualStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10087,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		NodeIDs:          []string{node.ID},
+		ActiveNodeID:     &node.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if mapping.ActiveNodeID != "" || mapping.ActiveGroupID != "" {
+		t.Fatalf("active route = node %q group %q, want empty for non-manual strategy", mapping.ActiveNodeID, mapping.ActiveGroupID)
+	}
+
+	updated, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         StrategyLoadBalance,
+		NodeIDs:          []string{node.ID},
+		ActiveNodeID:     &node.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingUpdate() error = %v", err)
+	}
+	if updated.ActiveNodeID != "" || updated.ActiveGroupID != "" {
+		t.Fatalf("updated active route = node %q group %q, want empty for non-manual strategy", updated.ActiveNodeID, updated.ActiveGroupID)
+	}
+}
+
 func TestMappingCreateDefaultsToLeastLatencyStrategy(t *testing.T) {
 	initProxyInMemoryDB(t)
 

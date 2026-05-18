@@ -1030,9 +1030,24 @@
   transform: translateY(-50%);
 }
 
-.inner-route-card.active strong::before {
-  background: rgb(59 130 246);
-  box-shadow: 0 0 0 6px rgb(59 130 246 / 0.11);
+.inner-route-card.route-health-state-success strong::before {
+  background: rgb(34 197 94);
+  box-shadow: 0 0 0 6px rgb(34 197 94 / 0.11);
+}
+
+.inner-route-card.route-health-state-failure strong::before {
+  background: rgb(239 68 68);
+  box-shadow: 0 0 0 6px rgb(239 68 68 / 0.11);
+}
+
+.inner-route-card.route-health-state-probing strong::before {
+  background: rgb(100 116 139);
+  box-shadow: 0 0 0 6px rgb(100 116 139 / 0.12);
+}
+
+.inner-route-card.route-health-state-unknown strong::before {
+  background: rgb(148 163 184);
+  box-shadow: 0 0 0 6px rgb(148 163 184 / 0.12);
 }
 
 .route-card-meta {

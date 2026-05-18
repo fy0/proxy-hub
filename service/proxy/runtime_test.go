@@ -870,6 +870,69 @@ func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testin
 	}
 }
 
+func TestRuntimeLeastLatencyMappingIgnoresStoredActiveRoute(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	portA := uint16(65011)
+	nodeA, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portA,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node-a) error = %v", err)
+	}
+	portB := uint16(65012)
+	nodeB, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node-b",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portB,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node-b) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		NodeIDs:          []string{nodeA.ID, nodeB.ID},
+		ActiveNodeID:     &nodeB.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if mapping.ActiveNodeID != "" {
+		t.Fatalf("mapping active node = %q, want empty for least-latency", mapping.ActiveNodeID)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	instance := runtimeInstanceForMapping(mapping.ID)
+	if instance == nil {
+		t.Fatalf("runtime instance was not created")
+	}
+	snapshot := instance.core.Snapshot()
+	for _, group := range snapshot.Groups {
+		if group.Tag != mappingOutboundTag(mapping.ID) {
+			continue
+		}
+		if group.Selected == nodeB.ID {
+			t.Fatalf("least-latency group selected stored active node %q", group.Selected)
+		}
+		return
+	}
+	t.Fatalf("mapping dynamic group %q not found", mappingOutboundTag(mapping.ID))
+}
+
 func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T) {
 	initProxyInMemoryDB(t)
 	t.Cleanup(func() {

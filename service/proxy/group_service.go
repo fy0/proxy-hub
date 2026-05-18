@@ -175,7 +175,9 @@ func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []strin
 			nextGroupIDs = removeString(nextGroupIDs, groupID)
 		}
 		active := mapping.ActiveGroupID
-		if containsString(groupIDs, active) {
+		if normalizeStrategy(mapping.Strategy) != StrategyManual {
+			active = ""
+		} else if containsString(groupIDs, active) {
 			active = ""
 			if len(nextGroupIDs) > 0 {
 				active = nextGroupIDs[0]

@@ -567,7 +567,9 @@ func cleanupNodeReferences(ctx context.Context, tx model.DBTx, nodeIDs []string)
 	for _, mapping := range mappings {
 		nextNodeIDs := removeStrings(decodeStringSlice(mapping.NodeIDsJSON), nodeIDs)
 		active := mapping.ActiveNodeID
-		if containsString(nodeIDs, active) {
+		if normalizeStrategy(mapping.Strategy) != StrategyManual {
+			active = ""
+		} else if containsString(nodeIDs, active) {
 			active = ""
 			if len(nextNodeIDs) > 0 {
 				active = nextNodeIDs[0]

@@ -41,6 +41,7 @@ const {
   requestRemoveRoute,
   openEditGroupDialog,
   protocolLabels,
+  routeHealthState,
   nodeHealthTitle,
   routeLatencyLabel,
   routeSuccessLabel,
@@ -50,6 +51,7 @@ const {
   groupRouteAvailableLabel,
   groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
+  groupRouteHealthState,
   groupRouteHealthTitle,
   openNewMappingDialog,
 } = props.context;
@@ -179,7 +181,10 @@ const {
             v-for="node in mappingNodes(mapping)"
             :key="node.id"
             class="inner-route-card"
-            :class="{ active: isActiveRoute(mapping, 'node', node.id) }"
+            :class="[
+              { active: isActiveRoute(mapping, 'node', node.id) },
+              `route-health-state-${routeHealthState(node)}`,
+            ]"
           >
             <div class="route-card-actions">
               <DropdownMenu>
@@ -256,7 +261,10 @@ const {
             v-for="group in mappingGroups(mapping)"
             :key="group.id"
             class="inner-route-card group-route-card"
-            :class="{ active: isActiveRoute(mapping, 'group', group.id) }"
+            :class="[
+              { active: isActiveRoute(mapping, 'group', group.id) },
+              `route-health-state-${groupRouteHealthState(mapping, group)}`,
+            ]"
           >
             <div class="route-card-actions">
               <DropdownMenu>

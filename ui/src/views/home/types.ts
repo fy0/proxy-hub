@@ -97,6 +97,7 @@ export interface HomeViewContext {
   openNodeTestDialog: (node: ProxyNode) => void;
   requestRemoveRoute: (mapping: PortMapping, target: ProxyNode | ProxyGroup) => void;
   protocolLabels: Readable<Record<ProxyProtocol, string>>;
+  routeHealthState: (node: ProxyNode) => 'success' | 'failure' | 'probing' | 'unknown';
   nodeHealthTitle: (node: ProxyNode) => string;
   isProbeUnavailableNode: (node: ProxyNode) => boolean;
   routeLatencyLabel: (node: ProxyNode) => string;
@@ -107,6 +108,10 @@ export interface HomeViewContext {
   groupRouteAvailableLabel: (mapping: PortMapping, group: ProxyGroup) => string;
   groupRouteAvailableUnavailable: (mapping: PortMapping, group: ProxyGroup) => boolean;
   groupRouteLatencyLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteHealthState: (
+    mapping: PortMapping,
+    group: ProxyGroup
+  ) => 'success' | 'failure' | 'probing' | 'unknown';
   groupRouteHealthTitle: (mapping: PortMapping, group: ProxyGroup) => string;
   openNewMappingDialog: () => void;
 
