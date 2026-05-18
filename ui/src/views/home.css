@@ -1136,76 +1136,19 @@
 }
 
 .mini-menu-button:hover,
-.mini-menu-button[aria-expanded='true'] {
+.mini-menu-button[aria-expanded='true'],
+.mini-menu-button[data-state='open'] {
   background: rgb(15 23 42 / 0.06);
   color: rgb(15 23 42);
 }
 
-.route-action-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 132px;
-  padding: 6px;
-  border: 1px solid rgb(15 23 42 / 0.08);
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 16px 38px rgb(15 23 42 / 0.16);
+.route-actions-menu {
+  min-width: 152px;
 }
 
-.route-action-menu::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  right: 12px;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 0 6px 6px;
-  border-color: transparent transparent #ffffff;
-}
-
-.route-action-menu::after {
-  content: '';
-  position: absolute;
-  top: -7px;
-  right: 11px;
-  z-index: -1;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 0 7px 7px;
-  border-color: transparent transparent rgb(15 23 42 / 0.08);
-}
-
-.route-action-menu-item {
-  width: 100%;
+.route-actions-menu-item {
   min-height: 36px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: rgb(51 65 85);
-  font-size: 13px;
-  font-weight: 750;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.route-action-menu-item:hover,
-.route-action-menu-item:focus-visible {
-  background: rgb(248 250 252);
-  outline: none;
-}
-
-.route-action-menu-item.danger {
-  color: rgb(185 28 28);
-}
-
-.route-action-menu-item.danger:hover,
-.route-action-menu-item.danger:focus-visible {
-  background: rgb(254 242 242);
+  font-weight: 650;
 }
 
 .inner-add-card,

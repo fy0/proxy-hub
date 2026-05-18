@@ -17,7 +17,6 @@ import type {
 export type TabKey = 'mappings' | 'nodes' | 'groups' | 'subscriptions';
 export type NodeGroupFilterKey = 'all' | 'summary' | 'default' | `group:${string}`;
 export type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
-export type RouteActionTargetType = 'node' | 'group';
 export type RouteNodeMode = 'uri' | 'node' | 'group';
 
 type Readable<T> = Ref<T> | ComputedRef<T>;
@@ -84,16 +83,6 @@ export interface HomeViewContext {
   portStatusTitle: (mapping: PortMapping) => string;
   portStatusLabel: (mapping: PortMapping) => string;
   mappingNodes: (mapping: PortMapping) => ProxyNode[];
-  isRouteActionMenuOpen: (
-    mapping: PortMapping,
-    targetType: RouteActionTargetType,
-    targetId: string
-  ) => boolean;
-  toggleRouteActionMenu: (
-    mapping: PortMapping,
-    targetType: RouteActionTargetType,
-    targetId: string
-  ) => void;
   isActiveRoute: (
     mapping: PortMapping,
     targetType: MappingSwitchTargetType,

@@ -35,8 +35,6 @@ const {
   portStatusTitle,
   portStatusLabel,
   mappingNodes,
-  isRouteActionMenuOpen,
-  toggleRouteActionMenu,
   isActiveRoute,
   switchMappingRoute,
   openNodeTestDialog,
@@ -182,53 +180,47 @@ const {
             class="inner-route-card"
             :class="{ active: isActiveRoute(mapping, 'node', node.id) }"
           >
-            <div class="route-card-actions" @click.stop>
-              <ActionTooltip :label="t('home.aria.moreActions')" align="end">
-                <button
-                  type="button"
-                  class="mini-menu-button"
-                  aria-haspopup="menu"
-                  :aria-expanded="isRouteActionMenuOpen(mapping, 'node', node.id)"
-                  :aria-label="t('home.aria.moreActions')"
-                  @click.stop="toggleRouteActionMenu(mapping, 'node', node.id)"
-                >
-                  <MoreVertical class="size-3" aria-hidden="true" />
-                </button>
-              </ActionTooltip>
-              <div
-                v-if="isRouteActionMenuOpen(mapping, 'node', node.id)"
-                class="route-action-menu"
-                role="menu"
-              >
-                <button
-                  v-if="mapping.strategy === 'manual' && !isActiveRoute(mapping, 'node', node.id)"
-                  type="button"
-                  class="route-action-menu-item"
-                  role="menuitem"
-                  @click.stop="switchMappingRoute(mapping, 'node', node.id)"
-                >
-                  <Check class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.setActiveRoute') }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="route-action-menu-item"
-                  role="menuitem"
-                  @click.stop="openNodeTestDialog(node)"
-                >
-                  <Gauge class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.test') }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="route-action-menu-item danger"
-                  role="menuitem"
-                  @click.stop="requestRemoveRoute(mapping, node)"
-                >
-                  <Trash2 class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.removeRoute') }}</span>
-                </button>
-              </div>
+            <div class="route-card-actions">
+              <DropdownMenu>
+                <ActionTooltip :label="t('home.aria.moreActions')" align="end" wrap>
+                  <DropdownMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="mini-menu-button"
+                      :aria-label="t('home.aria.moreActions')"
+                    >
+                      <MoreVertical class="size-3" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </ActionTooltip>
+                <DropdownMenuContent align="end" :side-offset="6" class="route-actions-menu">
+                  <DropdownMenuItem
+                    v-if="
+                      mapping.strategy === 'manual' && !isActiveRoute(mapping, 'node', node.id)
+                    "
+                    class="route-actions-menu-item"
+                    @select="switchMappingRoute(mapping, 'node', node.id)"
+                  >
+                    <Check class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.setActiveRoute') }}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    class="route-actions-menu-item"
+                    @select="openNodeTestDialog(node)"
+                  >
+                    <Gauge class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.test') }}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    class="route-actions-menu-item"
+                    @select="requestRemoveRoute(mapping, node)"
+                  >
+                    <Trash2 class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.removeRoute') }}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
             <div class="route-main">
               <strong>{{ node.name }}</strong>
@@ -265,54 +257,48 @@ const {
             class="inner-route-card group-route-card"
             :class="{ active: isActiveRoute(mapping, 'group', group.id) }"
           >
-            <div class="route-card-actions" @click.stop>
-              <ActionTooltip :label="t('home.aria.moreActions')" align="end">
-                <button
-                  type="button"
-                  class="mini-menu-button"
-                  aria-haspopup="menu"
-                  :aria-expanded="isRouteActionMenuOpen(mapping, 'group', group.id)"
-                  :aria-label="t('home.aria.moreActions')"
-                  @click.stop="toggleRouteActionMenu(mapping, 'group', group.id)"
-                >
-                  <MoreVertical class="size-3" aria-hidden="true" />
-                </button>
-              </ActionTooltip>
-              <div
-                v-if="isRouteActionMenuOpen(mapping, 'group', group.id)"
-                class="route-action-menu"
-                role="menu"
-              >
-                <button
-                  v-if="mapping.strategy === 'manual' && !isActiveRoute(mapping, 'group', group.id)"
-                  type="button"
-                  class="route-action-menu-item"
-                  role="menuitem"
-                  @click.stop="switchMappingRoute(mapping, 'group', group.id)"
-                >
-                  <Check class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.setActiveRoute') }}</span>
-                </button>
-                <button
-                  v-if="group.type === 'manual'"
-                  type="button"
-                  class="route-action-menu-item"
-                  role="menuitem"
-                  @click.stop="openEditGroupDialog(group)"
-                >
-                  <Edit3 class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.editGroup') }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="route-action-menu-item danger"
-                  role="menuitem"
-                  @click.stop="requestRemoveRoute(mapping, group)"
-                >
-                  <Trash2 class="size-4" aria-hidden="true" />
-                  <span>{{ t('common.removeRoute') }}</span>
-                </button>
-              </div>
+            <div class="route-card-actions">
+              <DropdownMenu>
+                <ActionTooltip :label="t('home.aria.moreActions')" align="end" wrap>
+                  <DropdownMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="mini-menu-button"
+                      :aria-label="t('home.aria.moreActions')"
+                    >
+                      <MoreVertical class="size-3" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </ActionTooltip>
+                <DropdownMenuContent align="end" :side-offset="6" class="route-actions-menu">
+                  <DropdownMenuItem
+                    v-if="
+                      mapping.strategy === 'manual' && !isActiveRoute(mapping, 'group', group.id)
+                    "
+                    class="route-actions-menu-item"
+                    @select="switchMappingRoute(mapping, 'group', group.id)"
+                  >
+                    <Check class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.setActiveRoute') }}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    v-if="group.type === 'manual'"
+                    class="route-actions-menu-item"
+                    @select="openEditGroupDialog(group)"
+                  >
+                    <Edit3 class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.editGroup') }}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    class="route-actions-menu-item"
+                    @select="requestRemoveRoute(mapping, group)"
+                  >
+                    <Trash2 class="size-4" aria-hidden="true" />
+                    <span>{{ t('common.removeRoute') }}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
             <div class="route-main">
               <strong>{{ group.name }}</strong>

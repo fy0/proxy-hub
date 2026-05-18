@@ -31,7 +31,6 @@ import type {
   NodeGroupFilterOption,
   NodeGroupSummaryItem,
   PortRuntimeState,
-  RouteActionTargetType,
   RouteNodeMode,
   TabKey,
   HomeViewContext,
@@ -213,7 +212,6 @@ const editingGroupId = ref<string | null>(null);
 const addNodeDialogMode = ref<AddNodeDialogMode | null>(null);
 const isGroupDialogOpen = ref(false);
 const routeTargetMappingId = ref<string | null>(null);
-const openRouteActionKey = ref<string | null>(null);
 const confirmationDialog = ref<ConfirmationDialog | null>(null);
 const duplicateRouteNodeDialog = ref<DuplicateRouteNodeDialog | null>(null);
 const testDialog = ref<TestDialogState | null>(null);
@@ -1315,7 +1313,6 @@ function resetChainNodeForm(): void {
 }
 
 function openAddNodeDialog(mode: AddNodeDialogMode): void {
-  closeRouteActionMenu();
   addNodeDialogMode.value = mode;
   if (mode === 'uri') {
     resetNodeCreateForm();
@@ -1345,7 +1342,6 @@ function editableNestedGroups(): ProxyGroup[] {
 }
 
 function openNewGroupDialog(): void {
-  closeRouteActionMenu();
   closeNodeEditDialog();
   editingGroupId.value = null;
   resetManualGroupForm();
@@ -1354,7 +1350,6 @@ function openNewGroupDialog(): void {
 }
 
 function openEditGroupDialog(group: ProxyGroup): void {
-  closeRouteActionMenu();
   closeNodeEditDialog();
   if (group.type !== 'manual') return;
 
@@ -1430,7 +1425,6 @@ function resetNodeEditForm(): void {
 }
 
 function openEditNodeDialog(node: ProxyNode): void {
-  closeRouteActionMenu();
   ensureNodeOptions(node.chainNodeIds).catch(() => undefined);
   Object.assign(nodeEditForm, {
     name: node.name,
@@ -1550,7 +1544,6 @@ async function saveMappingDialog(): Promise<void> {
 }
 
 function openRouteDialog(mapping: PortMapping): void {
-  closeRouteActionMenu();
   routeNodeForm.name = '';
   routeNodeForm.uri = '';
   routeNodeForm.existingNodeId = routeNodeOptions.value[0]?.id ?? '';
@@ -1730,41 +1723,11 @@ async function removeGroupFromMapping(mapping: PortMapping, groupId: string): Pr
   }
 }
 
-function routeActionKey(
-  mapping: PortMapping,
-  targetType: RouteActionTargetType,
-  targetId: string
-): string {
-  return `${mapping.id}:${targetType}:${targetId}`;
-}
-
-function isRouteActionMenuOpen(
-  mapping: PortMapping,
-  targetType: RouteActionTargetType,
-  targetId: string
-): boolean {
-  return openRouteActionKey.value === routeActionKey(mapping, targetType, targetId);
-}
-
-function toggleRouteActionMenu(
-  mapping: PortMapping,
-  targetType: RouteActionTargetType,
-  targetId: string
-): void {
-  const nextKey = routeActionKey(mapping, targetType, targetId);
-  openRouteActionKey.value = openRouteActionKey.value === nextKey ? null : nextKey;
-}
-
-function closeRouteActionMenu(): void {
-  openRouteActionKey.value = null;
-}
-
 async function switchMappingRoute(
   mapping: PortMapping,
   targetType: MappingSwitchTargetType,
   targetId: string
 ): Promise<void> {
-  closeRouteActionMenu();
   if (mapping.strategy !== 'manual' || isActiveRoute(mapping, targetType, targetId)) return;
 
   try {
@@ -1776,8 +1739,7 @@ async function switchMappingRoute(
 }
 
 function requestRemoveRoute(mapping: PortMapping, target: ProxyNode | ProxyGroup): void {
-  closeRouteActionMenu();
-  const targetType: RouteActionTargetType = 'protocol' in target ? 'node' : 'group';
+  const targetType = 'protocol' in target ? 'node' : 'group';
   const routeKind = t(`home.routeKind.${targetType}`);
 
   confirmationDialog.value = {
@@ -1796,7 +1758,6 @@ function requestRemoveRoute(mapping: PortMapping, target: ProxyNode | ProxyGroup
 }
 
 function requestRemoveMapping(mapping: PortMapping): void {
-  closeRouteActionMenu();
   confirmationDialog.value = {
     title: t('home.confirm.deletePortTitle'),
     message: t('home.confirm.deletePortMessage', { port: mapping.listenPort }),
@@ -1815,7 +1776,6 @@ function requestRemoveNode(node: ProxyNode): void {
 }
 
 function openMappingTestDialog(mapping: PortMapping): void {
-  closeRouteActionMenu();
   testDialog.value = {
     targetType: 'mapping',
     targetId: mapping.id,
@@ -1828,7 +1788,6 @@ function openMappingTestDialog(mapping: PortMapping): void {
 }
 
 function openNodeTestDialog(node: ProxyNode): void {
-  closeRouteActionMenu();
   testDialog.value = {
     targetType: 'node',
     targetId: node.id,
@@ -2167,7 +2126,6 @@ async function handleReset(): Promise<void> {
 }
 
 function openTab(tab: TabKey): void {
-  closeRouteActionMenu();
   closeNodeEditDialog();
   if (tab === 'nodes' && currentTab.value !== 'nodes') {
     activeNodeGroupFilter.value = 'all';
@@ -2380,8 +2338,6 @@ const homeContext = {
   portStatusTitle,
   portStatusLabel,
   mappingNodes,
-  isRouteActionMenuOpen,
-  toggleRouteActionMenu,
   isActiveRoute,
   switchMappingRoute,
   openNodeTestDialog,
@@ -2460,7 +2416,7 @@ const homeContext = {
 </script>
 
 <template>
-  <main class="console-shell" @click="closeRouteActionMenu">
+  <main class="console-shell">
     <section class="shell-header">
       <header class="brand-bar">
         <div class="brand-lockup">
