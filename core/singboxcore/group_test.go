@@ -185,10 +185,9 @@ func TestLeastLatencyFallsBackToStaleSuccessfulNodes(t *testing.T) {
 	}
 }
 
-func TestLeastLatencyToleranceKeepsCurrentSelection(t *testing.T) {
+func TestLeastLatencyAlwaysUsesFastestCandidate(t *testing.T) {
 	group := NewDynamicGroup("group-latency", nil, Policy{
-		Strategy:         BalanceLeastLatency,
-		LatencyTolerance: 50 * time.Millisecond,
+		Strategy: BalanceLeastLatency,
 	})
 	current := NewNodeState("current", "node-current", option.Outbound{})
 	best := NewNodeState("best", "node-best", option.Outbound{})
@@ -205,8 +204,8 @@ func TestLeastLatencyToleranceKeepsCurrentSelection(t *testing.T) {
 		t.Fatalf("SelectNode(current) error = %v", err)
 	}
 
-	if got := candidateIDs(group); !sameStrings(got, []string{"current", "best"}) {
-		t.Fatalf("least latency order = %v, want current retained within tolerance", got)
+	if got := candidateIDs(group); !sameStrings(got, []string{"best", "current"}) {
+		t.Fatalf("least latency order = %v, want fastest candidate first", got)
 	}
 }
 

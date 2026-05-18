@@ -24,9 +24,7 @@ const router = createRouter({
     },
     {
       path: '/subscriptions',
-      name: 'subscriptions',
-      component: HomeView,
-      props: { tab: 'subscriptions' },
+      redirect: '/groups',
     },
     {
       path: '/login',

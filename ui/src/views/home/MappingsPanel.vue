@@ -183,7 +183,7 @@ const {
             class="inner-route-card"
             :class="[
               { active: isActiveRoute(mapping, 'node', node.id) },
-              `route-health-state-${routeHealthState(node)}`,
+              `route-health-state-${routeHealthState(node, mapping)}`,
             ]"
           >
             <div class="route-card-actions">
@@ -201,9 +201,7 @@ const {
                 </ActionTooltip>
                 <DropdownMenuContent align="end" :side-offset="6" class="route-actions-menu">
                   <DropdownMenuItem
-                    v-if="
-                      mapping.strategy === 'manual' && !isActiveRoute(mapping, 'node', node.id)
-                    "
+                    v-if="mapping.strategy === 'manual' && !isActiveRoute(mapping, 'node', node.id)"
                     class="route-actions-menu-item"
                     @select="switchMappingRoute(mapping, 'node', node.id)"
                   >
@@ -241,10 +239,10 @@ const {
                 blacklisted: node.health?.blacklisted,
                 probing: node.health?.probeRunning,
               }"
-              :title="nodeHealthTitle(node)"
+              :title="nodeHealthTitle(node, mapping)"
             >
               <small class="latency" :title="t('home.nodeHealth.latency')">
-                {{ routeLatencyLabel(node) }}
+                {{ routeLatencyLabel(node, mapping) }}
               </small>
               <small class="success" :title="t('home.nodeHealth.success')">
                 <i aria-hidden="true"></i>

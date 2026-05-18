@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderTree, Link2, RefreshCw, Server } from 'lucide-vue-next';
+import { FolderTree, Link2, Server } from 'lucide-vue-next';
 import { useI18n } from '@/i18n';
 import type { TabKey } from './types';
 
@@ -7,6 +7,7 @@ const { t } = useI18n();
 
 defineProps<{
   currentTab: TabKey;
+  groupsLabel: string;
   nodesLabel: string;
 }>();
 
@@ -39,15 +40,7 @@ const emit = defineEmits<{
       @click="emit('select', 'groups')"
     >
       <FolderTree class="size-4" aria-hidden="true" />
-      <span>{{ t('home.tabs.groups') }}</span>
-    </button>
-    <button
-      :class="{ active: currentTab === 'subscriptions' }"
-      type="button"
-      @click="emit('select', 'subscriptions')"
-    >
-      <RefreshCw class="size-4" aria-hidden="true" />
-      <span>{{ t('home.tabs.subscriptions') }}</span>
+      <span>{{ groupsLabel }}</span>
     </button>
   </nav>
 </template>

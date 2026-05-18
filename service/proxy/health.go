@@ -432,12 +432,6 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		ProbeURL:   probeURL,
 		CheckedAt:  checkedAt,
 	}
-	if node, tag, nodeErr := mappingTestNodeInfo(ctx, mapping); node != nil {
-		result.NodeID = node.ID
-		result.NodeName = node.Name
-		result.NodeTag = tag
-		result.NodeError = nodeErr
-	}
 	if !mapping.Enabled {
 		result.Error = "port mapping is disabled"
 		return result, nil
@@ -452,13 +446,16 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		result.Error = "port mapping runtime is not running"
 		return result, nil
 	}
-	if mappingHasLeastLatencyRoute(ctx, mapping) {
+	if runtimeStatusHasLeastLatencyRoute(status, mapping.ID) {
 		probeRuntimeLeastLatencyGroups(mapping.ID)
-		if node, tag, nodeErr := mappingTestNodeInfo(ctx, mapping); node != nil {
-			result.NodeID = node.ID
-			result.NodeName = node.Name
-			result.NodeTag = tag
-			result.NodeError = nodeErr
+		status = RuntimeStatusGet()
+	}
+	if node, ok := runtimeSelectedRouteNode(status, mapping.ID); ok {
+		result.NodeName = node.NodeName
+		result.NodeTag = node.NodeTag
+		result.NodeError = node.Error
+		if node.Kind == "node" {
+			result.NodeID = node.NodeID
 		}
 	}
 
@@ -919,75 +916,6 @@ func testResultFromHealth(targetType, targetID, targetName, probeURL string, che
 	return result
 }
 
-func mappingTestNodeInfo(ctx context.Context, mapping *tables.PortMappingTable) (*tables.ProxyNodeTable, string, string) {
-	if mapping == nil {
-		return nil, "", ""
-	}
-	options, inbounds, outboundNodes, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, nil, []*tables.PortMappingTable{mapping}, nil)
-	if err != nil {
-		if buildErr, ok := asNodeBuildError(err); ok {
-			return buildErr.node, outboundTagForNode(outboundNodes, buildErr.node), buildErr.err.Error()
-		}
-		return nil, "", err.Error()
-	}
-	if len(inbounds) == 0 {
-		return nil, "", ""
-	}
-	tag := resolveRuntimeOutboundTag(inbounds[0].Outbound, options.Outbounds, outboundNodes)
-	node := outboundNodes[tag]
-	if node == nil {
-		return nil, tag, ""
-	}
-	health, healthErr := getNodeHealth(ctx, nil, node.ID)
-	if healthErr != nil {
-		return node, tag, ""
-	}
-	return node, tag, nodeHealthError(health)
-}
-
-func mappingHasLeastLatencyRoute(ctx context.Context, mapping *tables.PortMappingTable) bool {
-	if mapping == nil {
-		return false
-	}
-	if normalizeStrategy(mapping.Strategy) == StrategyLeastLatency {
-		return true
-	}
-	groups, err := findGroupsByIDs(ctx, nil, decodeStringSlice(mapping.GroupIDsJSON))
-	if err != nil {
-		return false
-	}
-	visited := map[string]bool{}
-	for _, group := range groups {
-		if groupHasLeastLatencyStrategy(ctx, group, visited) {
-			return true
-		}
-	}
-	return false
-}
-
-func groupHasLeastLatencyStrategy(ctx context.Context, group *tables.ProxyGroupTable, visited map[string]bool) bool {
-	if group == nil {
-		return false
-	}
-	if groupUsesLeastLatencyPolicy(group) {
-		return true
-	}
-	if visited[group.ID] {
-		return false
-	}
-	visited[group.ID] = true
-	childGroups, err := findGroupsByIDs(ctx, nil, decodeStringSlice(group.GroupIDsJSON))
-	if err != nil {
-		return false
-	}
-	for _, childGroup := range childGroups {
-		if groupHasLeastLatencyStrategy(ctx, childGroup, visited) {
-			return true
-		}
-	}
-	return false
-}
-
 func probeRuntimeLeastLatencyGroups(mappingID string) {
 	instance := runtimeInstanceForMapping(mappingID)
 	if instance == nil || instance.core == nil {
@@ -1002,41 +930,6 @@ func probeRuntimeLeastLatencyGroups(mappingID string) {
 			utils.Logger.Warn("least-latency 手动测速探测失败", zap.String("mappingId", mappingID), zap.String("groupTag", group.Tag), zap.Error(err))
 		}
 	}
-}
-
-func resolveRuntimeOutboundTag(routeTag string, outbounds []option.Outbound, outboundNodes map[string]*tables.ProxyNodeTable) string {
-	routeTag = strings.TrimSpace(routeTag)
-	if outboundNodes[routeTag] != nil {
-		return routeTag
-	}
-	if outbound := outboundByTag(outbounds, routeTag); outbound != nil && outbound.Type == constant.TypeSelector {
-		if selector, ok := outbound.Options.(*option.SelectorOutboundOptions); ok {
-			nextTag := strings.TrimSpace(selector.Default)
-			if nextTag == "" && len(selector.Outbounds) > 0 {
-				nextTag = selector.Outbounds[0]
-			}
-			if nextTag != "" && nextTag != routeTag {
-				return resolveRuntimeOutboundTag(nextTag, outbounds, outboundNodes)
-			}
-		}
-	}
-	return routeTag
-}
-
-func outboundByTag(outbounds []option.Outbound, tag string) *option.Outbound {
-	for index := range outbounds {
-		if outbounds[index].Tag == tag {
-			return &outbounds[index]
-		}
-	}
-	return nil
-}
-
-func nodeHealthError(health *tables.ProxyNodeHealthTable) string {
-	if health == nil {
-		return ""
-	}
-	return strings.TrimSpace(health.LastError)
 }
 
 func runtimeNodeErrorFromProbe(nodeTag string, fallback string) string {

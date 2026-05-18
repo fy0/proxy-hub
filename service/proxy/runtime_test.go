@@ -1241,6 +1241,30 @@ func TestMappingTestResultIncludesSelectedNodeInfo(t *testing.T) {
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
+	status := RuntimeStatusGet()
+	selected, ok := runtimeSelectedRouteNode(status, mapping.ID)
+	if !ok {
+		t.Fatalf("runtime selected node missing for mapping %q", mapping.ID)
+	}
+	if selected.NodeID != node.ID || selected.NodeName != node.Name || selected.NodeTag != nodeOutboundTag(node.ID) {
+		t.Fatalf("runtime selected node = id %q name %q tag %q, want node %q",
+			selected.NodeID,
+			selected.NodeName,
+			selected.NodeTag,
+			node.ID,
+		)
+	}
+	rootRoute := runtimeRouteByTag(status, mapping.ID, mappingOutboundTag(mapping.ID))
+	if rootRoute == nil {
+		t.Fatalf("runtime root route missing for mapping %q", mapping.ID)
+	}
+	if rootRoute.SelectedMemberID != group.ID || rootRoute.SelectedMemberTag != proxyGroupOutboundTag(group.ID) {
+		t.Fatalf("runtime selected member = id %q tag %q, want group %q",
+			rootRoute.SelectedMemberID,
+			rootRoute.SelectedMemberTag,
+			group.ID,
+		)
+	}
 
 	result, err := MappingTest(ctx, mapping.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
 	if err != nil {
@@ -1254,6 +1278,16 @@ func TestMappingTestResultIncludesSelectedNodeInfo(t *testing.T) {
 			node.ID,
 		)
 	}
+}
+
+func runtimeRouteByTag(status RuntimeStatus, mappingID string, groupTag string) *RuntimeRoute {
+	for index := range status.Routes {
+		route := &status.Routes[index]
+		if route.MappingID == mappingID && route.GroupTag == groupTag {
+			return route
+		}
+	}
+	return nil
 }
 
 func freeTCPPort(t *testing.T) uint16 {

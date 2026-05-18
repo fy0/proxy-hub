@@ -14,7 +14,7 @@ import type {
   RouteStrategy,
 } from '@/types/proxyHub';
 
-export type TabKey = 'mappings' | 'nodes' | 'groups' | 'subscriptions';
+export type TabKey = 'mappings' | 'nodes' | 'groups';
 export type NodeGroupFilterKey = 'all' | 'default' | `group:${string}`;
 export type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
 export type RouteNodeMode = 'uri' | 'node' | 'group';
@@ -34,8 +34,6 @@ interface GroupFilterOption {
 interface SubscriptionForm {
   name: string;
   url: string;
-  groupId: string;
-  remark: string;
 }
 
 interface ManualGroupForm {
@@ -97,10 +95,13 @@ export interface HomeViewContext {
   openNodeTestDialog: (node: ProxyNode) => void;
   requestRemoveRoute: (mapping: PortMapping, target: ProxyNode | ProxyGroup) => void;
   protocolLabels: Readable<Record<ProxyProtocol, string>>;
-  routeHealthState: (node: ProxyNode) => 'success' | 'failure' | 'probing' | 'unknown';
-  nodeHealthTitle: (node: ProxyNode) => string;
+  routeHealthState: (
+    node: ProxyNode,
+    mapping?: PortMapping
+  ) => 'success' | 'failure' | 'probing' | 'unknown';
+  nodeHealthTitle: (node: ProxyNode, mapping?: PortMapping) => string;
   isProbeUnavailableNode: (node: ProxyNode) => boolean;
-  routeLatencyLabel: (node: ProxyNode) => string;
+  routeLatencyLabel: (node: ProxyNode, mapping?: PortMapping) => string;
   routeSuccessLabel: (node: ProxyNode) => string;
   routeFailureLabel: (node: ProxyNode) => string;
   mappingGroups: (mapping: PortMapping) => ProxyGroup[];
@@ -161,7 +162,6 @@ export interface HomeViewContext {
   isLoadingManualGroupNodes: Readable<boolean>;
   loadMoreManualGroupNodeOptions: () => void;
   selectedManualGroupNodes: () => ProxyNode[];
-  manualGroups: Readable<ProxyGroup[]>;
   openEditGroupById: (groupId: string) => void;
   openEditGroupDialog: (group: ProxyGroup) => void;
   requestRemoveGroup: (groupId: string) => void;

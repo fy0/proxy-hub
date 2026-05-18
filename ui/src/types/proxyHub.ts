@@ -160,25 +160,40 @@ export interface RuntimeExcludedNode {
   error: string;
 }
 
-export interface RuntimeNodeHealth {
-  mappingId: string;
-  groupTag: string;
+export interface RuntimeRouteNode {
   nodeId: string;
-  tag: string;
+  nodeName: string;
+  nodeTag: string;
+  kind: 'node' | 'group' | 'builtin' | string;
   selected: boolean;
-  groupProbeRunning: boolean;
-  groupLastProbeAt: string | null;
-  groupNextProbeAt: string | null;
+  available: boolean;
   latencyCandidate: boolean;
   latencyFallback: boolean;
   latencySlowCount: number;
-  lastLatencyMs: number;
-  lastError: string;
+  latencyMs: number;
+  error: string;
   lastCheckedAt: string | null;
   lastSuccessAt: string | null;
   probeRunning: boolean;
   probeStartedAt: string | null;
   probeFailureCount: number;
+}
+
+export interface RuntimeRoute {
+  mappingId: string;
+  groupTag: string;
+  strategy: string;
+  selectedMemberId: string;
+  selectedMemberTag: string;
+  selectedNodeId: string;
+  selectedNodeName: string;
+  selectedNodeTag: string;
+  selectedNodeKind: string;
+  probeRunning: boolean;
+  runtimeStarted: boolean;
+  lastProbeAt: string | null;
+  nextProbeAt: string | null;
+  nodes: RuntimeRouteNode[];
 }
 
 export interface ProxyTestResult {

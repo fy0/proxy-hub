@@ -45,25 +45,40 @@ type RuntimeExcludedNode struct {
 	Error     string `json:"error"`
 }
 
-type RuntimeNodeHealth struct {
-	MappingID         string    `json:"mappingId"`
-	GroupTag          string    `json:"groupTag"`
+type RuntimeRouteNode struct {
 	NodeID            string    `json:"nodeId"`
-	Tag               string    `json:"tag"`
+	NodeName          string    `json:"nodeName,omitempty"`
+	NodeTag           string    `json:"nodeTag"`
+	Kind              string    `json:"kind"`
 	Selected          bool      `json:"selected"`
-	GroupProbeRunning bool      `json:"groupProbeRunning"`
-	GroupLastProbeAt  time.Time `json:"groupLastProbeAt,omitempty"`
-	GroupNextProbeAt  time.Time `json:"groupNextProbeAt,omitempty"`
+	Available         bool      `json:"available"`
 	LatencyCandidate  bool      `json:"latencyCandidate"`
 	LatencyFallback   bool      `json:"latencyFallback"`
 	LatencySlowCount  int       `json:"latencySlowCount"`
-	LastLatencyMs     int64     `json:"lastLatencyMs"`
-	LastError         string    `json:"lastError,omitempty"`
+	LatencyMs         int64     `json:"latencyMs"`
+	Error             string    `json:"error,omitempty"`
 	LastCheckedAt     time.Time `json:"lastCheckedAt,omitempty"`
 	LastSuccessAt     time.Time `json:"lastSuccessAt,omitempty"`
 	ProbeStartedAt    time.Time `json:"probeStartedAt,omitempty"`
 	ProbeRunning      bool      `json:"probeRunning"`
 	ProbeFailureCount int       `json:"probeFailureCount"`
+}
+
+type RuntimeRoute struct {
+	MappingID         string             `json:"mappingId"`
+	GroupTag          string             `json:"groupTag"`
+	Strategy          string             `json:"strategy"`
+	SelectedMemberID  string             `json:"selectedMemberId,omitempty"`
+	SelectedMemberTag string             `json:"selectedMemberTag,omitempty"`
+	SelectedNodeID    string             `json:"selectedNodeId,omitempty"`
+	SelectedNodeName  string             `json:"selectedNodeName,omitempty"`
+	SelectedNodeTag   string             `json:"selectedNodeTag,omitempty"`
+	SelectedNodeKind  string             `json:"selectedNodeKind,omitempty"`
+	ProbeRunning      bool               `json:"probeRunning"`
+	RuntimeStarted    bool               `json:"runtimeStarted"`
+	LastProbeAt       time.Time          `json:"lastProbeAt,omitempty"`
+	NextProbeAt       time.Time          `json:"nextProbeAt,omitempty"`
+	Nodes             []RuntimeRouteNode `json:"nodes"`
 }
 
 type RuntimeStatus struct {
@@ -73,7 +88,7 @@ type RuntimeStatus struct {
 	Inbounds      []RuntimeInbound        `json:"inbounds"`
 	Failures      []RuntimeInboundFailure `json:"failures"`
 	ExcludedNodes []RuntimeExcludedNode   `json:"excludedNodes"`
-	NodeHealth    []RuntimeNodeHealth     `json:"nodeHealth"`
+	Routes        []RuntimeRoute          `json:"routes"`
 	UpdatedAt     time.Time               `json:"updatedAt"`
 }
 
@@ -193,14 +208,15 @@ var singBoxRuntime = &runtimeManager{
 
 func RuntimeStatusGet() RuntimeStatus {
 	singBoxRuntime.mu.Lock()
-	defer singBoxRuntime.mu.Unlock()
-
 	status := singBoxRuntime.status
 	status.Inbounds = append([]RuntimeInbound{}, singBoxRuntime.status.Inbounds...)
 	status.Failures = append([]RuntimeInboundFailure{}, singBoxRuntime.status.Failures...)
 	status.ExcludedNodes = append([]RuntimeExcludedNode{}, singBoxRuntime.status.ExcludedNodes...)
-	status.NodeHealth = runtimeNodeHealthLocked()
+	status.Routes = runtimeRoutesLocked()
 	status.UpdatedAt = time.Now()
+	singBoxRuntime.mu.Unlock()
+
+	status.Routes = hydrateRuntimeRouteNames(context.Background(), status.Routes)
 	return status
 }
 
@@ -244,10 +260,11 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 		inbounds = append(inbounds, inbound)
 	}
 
-	return setRuntimeInstances(
+	setRuntimeInstances(
 		instances,
 		runtimeStatusFromResults(len(mappings), inbounds, failures, excludedNodes),
-	), nil
+	)
+	return RuntimeStatusGet(), nil
 }
 
 func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, error) {
@@ -272,7 +289,10 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 	}
 
 	if updated, status, err := syncRuntimeMappingDynamic(ctx, mapping); updated {
-		return status, err
+		if err != nil {
+			return status, err
+		}
+		return RuntimeStatusGet(), nil
 	}
 
 	oldInstance := detachRuntimeMapping(mapping.ID)
@@ -282,9 +302,11 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 
 	instance, inbound, excludedNodes, failure := createRuntimeMappingInstance(ctx, mapping)
 	if failure != nil {
-		return setRuntimeMappingFailure(mapping.ID, *failure, excludedNodes), nil
+		setRuntimeMappingFailure(mapping.ID, *failure, excludedNodes)
+		return RuntimeStatusGet(), nil
 	}
-	return setRuntimeMappingInstance(mapping.ID, instance, inbound, excludedNodes), nil
+	setRuntimeMappingInstance(mapping.ID, instance, inbound, excludedNodes)
+	return RuntimeStatusGet(), nil
 }
 
 func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatus, error) {
@@ -2171,51 +2193,270 @@ func runtimeInstanceForMapping(mappingID string) *runtimeInstance {
 	return singBoxRuntime.instances[strings.TrimSpace(mappingID)]
 }
 
-func runtimeNodeHealthLocked() []RuntimeNodeHealth {
-	items := make([]RuntimeNodeHealth, 0)
+func runtimeRoutesLocked() []RuntimeRoute {
+	routes := make([]RuntimeRoute, 0)
 	for mappingID, instance := range singBoxRuntime.instances {
 		if instance == nil || instance.core == nil {
 			continue
 		}
 		state := instance.core.Snapshot()
+		groups := make(map[string]singboxcore.GroupSnapshot, len(state.Groups))
 		for _, group := range state.Groups {
-			if group.Policy.Strategy != singboxcore.BalanceLeastLatency {
-				continue
+			groups[group.Tag] = group
+		}
+		for _, group := range state.Groups {
+			routes = append(routes, runtimeRouteFromSnapshot(mappingID, group, groups))
+		}
+	}
+	sort.SliceStable(routes, func(i, j int) bool {
+		if routes[i].MappingID != routes[j].MappingID {
+			return routes[i].MappingID < routes[j].MappingID
+		}
+		iRoot := routes[i].GroupTag == mappingOutboundTag(routes[i].MappingID)
+		jRoot := routes[j].GroupTag == mappingOutboundTag(routes[j].MappingID)
+		if iRoot != jRoot {
+			return iRoot
+		}
+		return routes[i].GroupTag < routes[j].GroupTag
+	})
+	return routes
+}
+
+func runtimeRouteFromSnapshot(mappingID string, group singboxcore.GroupSnapshot, groups map[string]singboxcore.GroupSnapshot) RuntimeRoute {
+	route := RuntimeRoute{
+		MappingID:      mappingID,
+		GroupTag:       group.Tag,
+		Strategy:       string(group.Policy.Strategy),
+		ProbeRunning:   group.ProbeRunning,
+		RuntimeStarted: group.RuntimeStarted,
+		LastProbeAt:    group.LastProbeAt,
+		NextProbeAt:    group.NextProbeAt,
+		Nodes:          make([]RuntimeRouteNode, 0, len(group.Nodes)),
+	}
+	for _, node := range group.Nodes {
+		routeNode := runtimeRouteNodeFromSnapshot(group, node, groups)
+		if routeNode.Selected {
+			route.SelectedMemberID = routeNode.NodeID
+			route.SelectedMemberTag = routeNode.NodeTag
+		}
+		route.Nodes = append(route.Nodes, routeNode)
+	}
+	if selected := resolveSelectedRuntimeRouteNode(group, groups, map[string]bool{}); selected != nil {
+		route.SelectedNodeID = selected.NodeID
+		route.SelectedNodeTag = selected.NodeTag
+		route.SelectedNodeName = selected.NodeName
+		route.SelectedNodeKind = selected.Kind
+	}
+	return route
+}
+
+func runtimeRouteNodeFromSnapshot(group singboxcore.GroupSnapshot, node singboxcore.NodeSnapshot, groups map[string]singboxcore.GroupSnapshot) RuntimeRouteNode {
+	return RuntimeRouteNode{
+		NodeID:            node.ID,
+		NodeTag:           node.Tag,
+		Kind:              runtimeRouteNodeKind(node, groups),
+		Selected:          group.Selected == node.ID,
+		Available:         runtimeSnapshotNodeAvailable(node),
+		LatencyCandidate:  node.LatencyCandidate,
+		LatencyFallback:   node.LatencyFallback,
+		LatencySlowCount:  node.LatencySlowCount,
+		LatencyMs:         node.LastLatencyMs,
+		Error:             firstNonEmpty(node.LastProbeError, node.LastError),
+		LastCheckedAt:     node.LastCheckedAt,
+		LastSuccessAt:     node.LastSuccessAt,
+		ProbeStartedAt:    node.ProbeStartedAt,
+		ProbeRunning:      node.ProbeRunning,
+		ProbeFailureCount: node.ProbeFailureCount,
+	}
+}
+
+func runtimeRouteNodeKind(node singboxcore.NodeSnapshot, groups map[string]singboxcore.GroupSnapshot) string {
+	if node.Tag == constant.TypeDirect || node.Tag == constant.TypeBlock || node.ID == constant.TypeDirect || node.ID == constant.TypeBlock {
+		return "builtin"
+	}
+	if _, ok := groups[node.Tag]; ok {
+		return "group"
+	}
+	return "node"
+}
+
+func runtimeSnapshotNodeAvailable(node singboxcore.NodeSnapshot) bool {
+	if !node.Enabled || node.Tombstoned || node.Blacklisted || node.Health == singboxcore.HealthDead {
+		return false
+	}
+	return firstNonEmpty(node.LastProbeError, node.LastError) == ""
+}
+
+func resolveSelectedRuntimeRouteNode(group singboxcore.GroupSnapshot, groups map[string]singboxcore.GroupSnapshot, visited map[string]bool) *RuntimeRouteNode {
+	if visited[group.Tag] {
+		return nil
+	}
+	visited[group.Tag] = true
+	for _, node := range group.Nodes {
+		if node.ID != group.Selected {
+			continue
+		}
+		if child, ok := groups[node.Tag]; ok {
+			if selected := resolveSelectedRuntimeRouteNode(child, groups, visited); selected != nil {
+				return selected
 			}
-			for _, node := range group.Nodes {
-				items = append(items, RuntimeNodeHealth{
-					MappingID:         mappingID,
-					GroupTag:          group.Tag,
-					NodeID:            node.ID,
-					Tag:               node.Tag,
-					Selected:          group.Selected == node.ID,
-					GroupProbeRunning: group.ProbeRunning,
-					GroupLastProbeAt:  group.LastProbeAt,
-					GroupNextProbeAt:  group.NextProbeAt,
-					LatencyCandidate:  node.LatencyCandidate,
-					LatencyFallback:   node.LatencyFallback,
-					LatencySlowCount:  node.LatencySlowCount,
-					LastLatencyMs:     node.LastLatencyMs,
-					LastError:         firstNonEmpty(node.LastProbeError, node.LastError),
-					LastCheckedAt:     node.LastCheckedAt,
-					LastSuccessAt:     node.LastSuccessAt,
-					ProbeStartedAt:    node.ProbeStartedAt,
-					ProbeRunning:      node.ProbeRunning,
-					ProbeFailureCount: node.ProbeFailureCount,
-				})
+		}
+		routeNode := runtimeRouteNodeFromSnapshot(group, node, groups)
+		return &routeNode
+	}
+	return nil
+}
+
+func runtimeStatusHasLeastLatencyRoute(status RuntimeStatus, mappingID string) bool {
+	for _, route := range status.Routes {
+		if route.MappingID == mappingID && route.Strategy == string(singboxcore.BalanceLeastLatency) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeSelectedRouteNode(status RuntimeStatus, mappingID string) (RuntimeRouteNode, bool) {
+	rootTag := mappingOutboundTag(mappingID)
+	var fallback *RuntimeRoute
+	for index := range status.Routes {
+		route := &status.Routes[index]
+		if route.MappingID != mappingID {
+			continue
+		}
+		if route.GroupTag == rootTag {
+			return selectedRouteNodeFromRoute(*route, status.Routes)
+		}
+		if fallback == nil {
+			fallback = route
+		}
+	}
+	if fallback == nil {
+		return RuntimeRouteNode{}, false
+	}
+	return selectedRouteNodeFromRoute(*fallback, status.Routes)
+}
+
+func selectedRouteNodeFromRoute(route RuntimeRoute, routes []RuntimeRoute) (RuntimeRouteNode, bool) {
+	if route.SelectedNodeID == "" && route.SelectedNodeTag == "" {
+		return RuntimeRouteNode{}, false
+	}
+	for _, candidateRoute := range routes {
+		if candidateRoute.MappingID != route.MappingID {
+			continue
+		}
+		for _, node := range candidateRoute.Nodes {
+			if node.NodeID == route.SelectedNodeID && node.NodeTag == route.SelectedNodeTag {
+				return node, true
 			}
 		}
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].MappingID != items[j].MappingID {
-			return items[i].MappingID < items[j].MappingID
+	return RuntimeRouteNode{
+		NodeID:   route.SelectedNodeID,
+		NodeName: route.SelectedNodeName,
+		NodeTag:  route.SelectedNodeTag,
+		Kind:     route.SelectedNodeKind,
+	}, true
+}
+
+func hydrateRuntimeRouteNames(ctx context.Context, routes []RuntimeRoute) []RuntimeRoute {
+	if len(routes) == 0 {
+		return []RuntimeRoute{}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	nodeIDs := make([]string, 0)
+	groupIDs := make([]string, 0)
+	for _, route := range routes {
+		for _, node := range route.Nodes {
+			switch node.Kind {
+			case "node":
+				nodeIDs = append(nodeIDs, node.NodeID)
+			case "group":
+				groupIDs = append(groupIDs, node.NodeID)
+			}
 		}
-		if items[i].GroupTag != items[j].GroupTag {
-			return items[i].GroupTag < items[j].GroupTag
+		if route.SelectedNodeID != "" {
+			switch route.SelectedNodeKind {
+			case "node":
+				nodeIDs = append(nodeIDs, route.SelectedNodeID)
+			case "group":
+				groupIDs = append(groupIDs, route.SelectedNodeID)
+			}
 		}
-		return items[i].NodeID < items[j].NodeID
-	})
-	return items
+	}
+	nodeNames := runtimeNodeNames(ctx, uniqueNonEmpty(nodeIDs))
+	groupNames := runtimeGroupNames(ctx, uniqueNonEmpty(groupIDs))
+	for routeIndex := range routes {
+		for nodeIndex := range routes[routeIndex].Nodes {
+			node := &routes[routeIndex].Nodes[nodeIndex]
+			node.NodeName = runtimeRouteDisplayName(*node, nodeNames, groupNames)
+		}
+		if routes[routeIndex].SelectedNodeID == "" {
+			continue
+		}
+		routes[routeIndex].SelectedNodeName = runtimeSelectedRouteDisplayName(routes[routeIndex], nodeNames, groupNames)
+	}
+	return routes
+}
+
+func runtimeNodeNames(ctx context.Context, ids []string) map[string]string {
+	names := map[string]string{}
+	if len(ids) == 0 {
+		return names
+	}
+	var rows []*tables.ProxyNodeTable
+	if err := model.GetTx(nil).WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		utils.Logger.Warn("读取运行时节点名称失败", zap.Error(err))
+		return names
+	}
+	for _, row := range rows {
+		if row != nil && row.ID != "" {
+			names[row.ID] = row.Name
+		}
+	}
+	return names
+}
+
+func runtimeGroupNames(ctx context.Context, ids []string) map[string]string {
+	names := map[string]string{}
+	if len(ids) == 0 {
+		return names
+	}
+	var rows []*tables.ProxyGroupTable
+	if err := model.GetTx(nil).WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		utils.Logger.Warn("读取运行时节点组名称失败", zap.Error(err))
+		return names
+	}
+	for _, row := range rows {
+		if row != nil && row.ID != "" {
+			names[row.ID] = row.Name
+		}
+	}
+	return names
+}
+
+func runtimeRouteDisplayName(node RuntimeRouteNode, nodeNames map[string]string, groupNames map[string]string) string {
+	switch node.Kind {
+	case "node":
+		return firstNonEmpty(nodeNames[node.NodeID], node.NodeID)
+	case "group":
+		return firstNonEmpty(groupNames[node.NodeID], node.NodeID)
+	case "builtin":
+		return firstNonEmpty(node.NodeTag, node.NodeID)
+	default:
+		return node.NodeID
+	}
+}
+
+func runtimeSelectedRouteDisplayName(route RuntimeRoute, nodeNames map[string]string, groupNames map[string]string) string {
+	node := RuntimeRouteNode{
+		NodeID:  route.SelectedNodeID,
+		NodeTag: route.SelectedNodeTag,
+		Kind:    route.SelectedNodeKind,
+	}
+	return runtimeRouteDisplayName(node, nodeNames, groupNames)
 }
 
 func runtimeInboundsWithoutMapping(inbounds []RuntimeInbound, mappingID string) []RuntimeInbound {
@@ -2290,8 +2531,8 @@ func normalizeRuntimeStatus(status RuntimeStatus) RuntimeStatus {
 	if status.ExcludedNodes == nil {
 		status.ExcludedNodes = []RuntimeExcludedNode{}
 	}
-	if status.NodeHealth == nil {
-		status.NodeHealth = []RuntimeNodeHealth{}
+	if status.Routes == nil {
+		status.Routes = []RuntimeRoute{}
 	}
 	if status.UpdatedAt.IsZero() {
 		status.UpdatedAt = time.Now()

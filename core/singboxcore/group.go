@@ -26,7 +26,6 @@ const (
 	DefaultLeastLatencyProbeConcurrency = 5
 	DefaultLeastLatencyMaxLatency       = 3 * time.Second
 	DefaultLeastLatencySlowThreshold    = 3
-	DefaultLeastLatencyTolerance        = 50 * time.Millisecond
 )
 
 type ProbeRecord struct {
@@ -60,7 +59,6 @@ type Policy struct {
 	ProbeConcurrency         int
 	MaxLatency               time.Duration
 	SlowThreshold            int
-	LatencyTolerance         time.Duration
 	FallbackStrategy         BalanceStrategy
 	ProbeResultCallback      ProbeResultCallback      `json:"-"`
 	BlacklistRevivalCallback BlacklistRevivalCallback `json:"-"`
@@ -96,12 +94,6 @@ func (p Policy) normalized() Policy {
 	}
 	if p.SlowThreshold <= 0 {
 		p.SlowThreshold = DefaultLeastLatencySlowThreshold
-	}
-	if p.LatencyTolerance < 0 {
-		p.LatencyTolerance = 0
-	}
-	if p.LatencyTolerance == 0 {
-		p.LatencyTolerance = DefaultLeastLatencyTolerance
 	}
 	if p.FallbackStrategy == "" {
 		p.FallbackStrategy = BalanceRoundRobin
@@ -477,7 +469,7 @@ func (g *DynamicGroup) candidates() []*NodeState {
 	}
 	if strategy == BalanceLeastLatency {
 		policy := g.policySnapshot()
-		return g.orderLeastLatencyCandidates(nodes, selected, policy.LatencyTolerance, policy.FallbackStrategy)
+		return g.orderLeastLatencyCandidates(nodes, policy.FallbackStrategy)
 	}
 	return g.balancer.Order(nodes)
 }
@@ -535,7 +527,7 @@ func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
 	return true
 }
 
-func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, selected *NodeState, tolerance time.Duration, fallbackStrategy BalanceStrategy) []*NodeState {
+func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, fallbackStrategy BalanceStrategy) []*NodeState {
 	candidates := make([]*NodeState, 0, len(nodes))
 	for _, node := range nodes {
 		if node.LeastLatencyCandidate() {
@@ -551,17 +543,7 @@ func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, selected 
 	}
 	if len(candidates) == 0 {
 		if fallbackStrategy == BalanceManual {
-			ordered := make([]*NodeState, 0, len(nodes))
-			if selected != nil && selected.Eligible(time.Now()) {
-				ordered = append(ordered, selected)
-			}
-			for _, node := range nodes {
-				if selected != nil && node.ID == selected.ID {
-					continue
-				}
-				ordered = append(ordered, node)
-			}
-			return ordered
+			return append([]*NodeState(nil), nodes...)
 		}
 		if g.fallback != nil {
 			return g.fallback.Order(nodes)
@@ -571,23 +553,7 @@ func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, selected 
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return latencySortValue(candidates[i]) < latencySortValue(candidates[j])
 	})
-	if selected == nil || !containsNode(candidates, selected.ID) {
-		return candidates
-	}
-	best := candidates[0]
-	selectedLatency := latencySortValue(selected)
-	bestLatency := latencySortValue(best)
-	if selected.ID != best.ID && selectedLatency > bestLatency+int64(tolerance.Milliseconds()) {
-		return candidates
-	}
-	ordered := make([]*NodeState, 0, len(candidates))
-	ordered = append(ordered, selected)
-	for _, node := range candidates {
-		if node.ID != selected.ID {
-			ordered = append(ordered, node)
-		}
-	}
-	return ordered
+	return candidates
 }
 
 func latencySortValue(node *NodeState) int64 {
@@ -599,15 +565,6 @@ func latencySortValue(node *NodeState) int64 {
 		return 1<<63 - 1
 	}
 	return latency
-}
-
-func containsNode(nodes []*NodeState, nodeID string) bool {
-	for _, node := range nodes {
-		if node != nil && node.ID == nodeID {
-			return true
-		}
-	}
-	return false
 }
 
 func (g *DynamicGroup) referencedTags() map[string]struct{} {

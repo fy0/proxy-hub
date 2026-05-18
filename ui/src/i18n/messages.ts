@@ -156,6 +156,7 @@ export const messages = {
         manual: '手动分组',
         noMatches: '没有匹配的分组卡片。',
         searchLabel: '搜索分组卡片',
+        subscriptionCount: '{count} 个订阅',
         unknownSubscription: '未知订阅',
       },
       groupStrategy: {
@@ -347,6 +348,7 @@ export const messages = {
       tabs: {
         import: '导入',
         groups: '节点分组',
+        groupsWithCount: '节点分组（{count}）',
         mappings: '本地端口',
         mappingsWithCount: '本地端口（{enabled}/{total}）',
         nodes: '节点库',
@@ -378,6 +380,7 @@ export const messages = {
       },
       subscription: {
         createGroup: '自动创建同名分组',
+        empty: '暂无订阅。',
         noGroup: '未绑定分组',
         notSynced: '未同步',
         source: '订阅',
@@ -622,6 +625,7 @@ export const messages = {
         manual: 'Manual groups',
         noMatches: 'No matching group cards.',
         searchLabel: 'Search group cards',
+        subscriptionCount: '{count} subscription(s)',
         unknownSubscription: 'Unknown subscription',
       },
       groupStrategy: {
@@ -815,6 +819,7 @@ export const messages = {
       tabs: {
         import: 'Import',
         groups: 'Node groups',
+        groupsWithCount: 'Node groups ({count})',
         mappings: 'Local ports',
         mappingsWithCount: 'Local ports ({enabled}/{total})',
         nodes: 'Nodes',
@@ -846,6 +851,7 @@ export const messages = {
       },
       subscription: {
         createGroup: 'Create a matching group',
+        empty: 'No subscriptions yet.',
         noGroup: 'No group',
         notSynced: 'Not synced',
         source: 'Subscription',

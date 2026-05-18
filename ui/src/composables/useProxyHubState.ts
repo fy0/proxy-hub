@@ -61,7 +61,8 @@ import type {
   ProxyProtocol,
   ProxySubscription,
   ProxyTestResult,
-  RuntimeNodeHealth,
+  RuntimeRoute,
+  RuntimeRouteNode,
   RouteStrategy,
 } from '@/types/proxyHub';
 import { t } from '@/i18n';
@@ -151,7 +152,7 @@ const subscriptions = ref<ProxySubscription[]>([]);
 const mappings = ref<PortMapping[]>([]);
 const lastSavedAt = ref<string | null>(null);
 const runtime = ref<RuntimeStatus | null>(null);
-const runtimeNodeHealth = ref<RuntimeNodeHealth[]>([]);
+const runtimeRoutes = ref<RuntimeRoute[]>([]);
 let runtimeRefreshTimer: number | null = null;
 const isLoading = ref(false);
 const activeMutations = ref(0);
@@ -431,85 +432,35 @@ function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null 
   };
 }
 
-function nodeHealthTimestamp(health: ProxyNodeHealth | null | undefined): number {
-  if (!health) return 0;
-  const timestamps = [
-    health.updatedAt,
-    health.lastCheckedAt,
-    health.lastSuccessAt,
-    health.lastFailureAt,
-    health.probeStartedAt,
-  ]
-    .map(value => (value ? new Date(value).getTime() : 0))
-    .filter(value => Number.isFinite(value));
-  return timestamps.length > 0 ? Math.max(...timestamps) : 0;
-}
-
-function mergeCachedNodeHealth(
-  existing: ProxyNodeHealth | undefined,
-  incoming: ProxyNodeHealth
-): ProxyNodeHealth {
-  if (!existing) return incoming;
-  if (existing.source === 'runtime' && incoming.source === 'saved') {
-    const runtimeUpdatedAt = nodeHealthTimestamp(existing);
-    const savedUpdatedAt = nodeHealthTimestamp(incoming);
-    return {
-      ...incoming,
-      available: existing.available || incoming.available,
-      blacklisted: existing.blacklisted || incoming.blacklisted,
-      blacklistedUntil: existing.blacklistedUntil ?? incoming.blacklistedUntil,
-      failureCount: Math.max(existing.failureCount, incoming.failureCount),
-      successCount: Math.max(existing.successCount, incoming.successCount),
-      consecutiveFailureCount: Math.max(
-        existing.consecutiveFailureCount,
-        incoming.consecutiveFailureCount
-      ),
-      lastLatencyMs: existing.lastLatencyMs > 0 ? existing.lastLatencyMs : incoming.lastLatencyMs,
-      lastError: existing.lastError || incoming.lastError,
-      lastCheckedAt: existing.lastCheckedAt ?? incoming.lastCheckedAt,
-      lastSuccessAt: existing.lastSuccessAt ?? incoming.lastSuccessAt,
-      lastFailureAt: existing.lastFailureAt ?? incoming.lastFailureAt,
-      probeRunning: existing.probeRunning,
-      probeStartedAt: existing.probeStartedAt,
-      nextProbeAt: existing.nextProbeAt,
-      source: 'runtime',
-      updatedAt: runtimeUpdatedAt >= savedUpdatedAt ? existing.updatedAt : incoming.updatedAt,
-    };
-  }
-  return incoming;
-}
-
 function cacheNodeHealth(items: Array<ProxyNodeHealth | null | undefined>): void {
   const healthItems = items.filter((item): item is ProxyNodeHealth => Boolean(item?.nodeId));
   if (healthItems.length === 0) return;
 
   const next = { ...nodeHealthById.value };
   for (const health of healthItems) {
-    next[health.nodeId] = mergeCachedNodeHealth(next[health.nodeId], health);
+    next[health.nodeId] = health;
   }
   nodeHealthById.value = next;
 }
 
-function toRuntimeNodeHealth(dto: unknown): RuntimeNodeHealth | null {
+function toRuntimeRouteNode(dto: unknown): RuntimeRouteNode | null {
   if (!dto || typeof dto !== 'object') return null;
   const item = dto as Record<string, unknown>;
   const nodeId = typeof item.nodeId === 'string' ? item.nodeId : '';
   if (!nodeId) return null;
 
   return {
-    mappingId: typeof item.mappingId === 'string' ? item.mappingId : '',
-    groupTag: typeof item.groupTag === 'string' ? item.groupTag : '',
     nodeId,
-    tag: typeof item.tag === 'string' ? item.tag : '',
+    nodeName: typeof item.nodeName === 'string' ? item.nodeName : '',
+    nodeTag: typeof item.nodeTag === 'string' ? item.nodeTag : '',
+    kind: typeof item.kind === 'string' ? item.kind : 'node',
     selected: item.selected === true,
-    groupProbeRunning: item.groupProbeRunning === true,
-    groupLastProbeAt: typeof item.groupLastProbeAt === 'string' ? item.groupLastProbeAt : null,
-    groupNextProbeAt: typeof item.groupNextProbeAt === 'string' ? item.groupNextProbeAt : null,
+    available: item.available === true,
     latencyCandidate: item.latencyCandidate === true,
     latencyFallback: item.latencyFallback === true,
     latencySlowCount: typeof item.latencySlowCount === 'number' ? item.latencySlowCount : 0,
-    lastLatencyMs: typeof item.lastLatencyMs === 'number' ? item.lastLatencyMs : 0,
-    lastError: typeof item.lastError === 'string' ? item.lastError : '',
+    latencyMs: typeof item.latencyMs === 'number' ? item.latencyMs : 0,
+    error: typeof item.error === 'string' ? item.error : '',
     lastCheckedAt: typeof item.lastCheckedAt === 'string' ? item.lastCheckedAt : null,
     lastSuccessAt: typeof item.lastSuccessAt === 'string' ? item.lastSuccessAt : null,
     probeRunning: item.probeRunning === true,
@@ -518,52 +469,37 @@ function toRuntimeNodeHealth(dto: unknown): RuntimeNodeHealth | null {
   };
 }
 
-function runtimeHealthToNodeHealth(item: RuntimeNodeHealth): ProxyNodeHealth | null {
-  const hasRuntimeHealth =
-    item.lastLatencyMs > 0 ||
-    Boolean(item.lastCheckedAt) ||
-    Boolean(item.lastError) ||
-    item.probeRunning ||
-    item.groupProbeRunning ||
-    Boolean(item.groupLastProbeAt) ||
-    Boolean(item.groupNextProbeAt) ||
-    item.latencyCandidate ||
-    item.latencyFallback;
-  if (!item.nodeId || !hasRuntimeHealth) return null;
-  const now = new Date().toISOString();
+function toRuntimeRoute(dto: unknown): RuntimeRoute | null {
+  if (!dto || typeof dto !== 'object') return null;
+  const item = dto as Record<string, unknown>;
+  const mappingId = typeof item.mappingId === 'string' ? item.mappingId : '';
+  const groupTag = typeof item.groupTag === 'string' ? item.groupTag : '';
+  if (!mappingId || !groupTag) return null;
+
   return {
-    nodeId: item.nodeId,
-    available:
-      item.latencyCandidate || item.latencyFallback || (item.lastLatencyMs > 0 && !item.lastError),
-    failureCount: item.probeFailureCount,
-    successCount: item.lastSuccessAt ? 1 : 0,
-    consecutiveFailureCount: item.probeFailureCount,
-    blacklisted: false,
-    blacklistedUntil: null,
-    lastLatencyMs: item.lastLatencyMs,
-    lastError: item.lastError,
-    lastCheckedAt: item.lastCheckedAt,
-    lastSuccessAt: item.lastSuccessAt,
-    lastFailureAt: item.lastError ? item.lastCheckedAt : null,
-    probeRunning: item.probeRunning,
-    probeStartedAt: item.probeStartedAt,
-    nextProbeAt: null,
-    source: 'runtime',
-    updatedAt:
-      item.lastCheckedAt ??
-      item.probeStartedAt ??
-      item.groupLastProbeAt ??
-      item.groupNextProbeAt ??
-      now,
+    mappingId,
+    groupTag,
+    strategy: typeof item.strategy === 'string' ? item.strategy : '',
+    selectedMemberId: typeof item.selectedMemberId === 'string' ? item.selectedMemberId : '',
+    selectedMemberTag: typeof item.selectedMemberTag === 'string' ? item.selectedMemberTag : '',
+    selectedNodeId: typeof item.selectedNodeId === 'string' ? item.selectedNodeId : '',
+    selectedNodeName: typeof item.selectedNodeName === 'string' ? item.selectedNodeName : '',
+    selectedNodeTag: typeof item.selectedNodeTag === 'string' ? item.selectedNodeTag : '',
+    selectedNodeKind: typeof item.selectedNodeKind === 'string' ? item.selectedNodeKind : '',
+    probeRunning: item.probeRunning === true,
+    runtimeStarted: item.runtimeStarted === true,
+    lastProbeAt: typeof item.lastProbeAt === 'string' ? item.lastProbeAt : null,
+    nextProbeAt: typeof item.nextProbeAt === 'string' ? item.nextProbeAt : null,
+    nodes: Array.isArray(item.nodes)
+      ? item.nodes.map(toRuntimeRouteNode).filter((node): node is RuntimeRouteNode => Boolean(node))
+      : [],
   };
 }
 
-function applyRuntimeNodeHealth(status: RuntimeStatus | null): void {
-  const items = ((status as { nodeHealth?: unknown[] } | null)?.nodeHealth ?? [])
-    .map(toRuntimeNodeHealth)
-    .filter((item): item is RuntimeNodeHealth => Boolean(item));
-  runtimeNodeHealth.value = items;
-  cacheNodeHealth(items.map(runtimeHealthToNodeHealth));
+function applyRuntimeRoutes(status: RuntimeStatus | null): void {
+  runtimeRoutes.value = ((status as { routes?: unknown[] } | null)?.routes ?? [])
+    .map(toRuntimeRoute)
+    .filter((item): item is RuntimeRoute => Boolean(item));
 }
 
 function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
@@ -692,7 +628,7 @@ function applySnapshot(snapshot: StateSnapshotDto): void {
   subscriptions.value = (snapshot.subscriptions ?? []).map(toProxySubscription);
   mappings.value = (snapshot.mappings ?? []).map(toPortMapping);
   runtime.value = snapshotRuntime;
-  applyRuntimeNodeHealth(snapshotRuntime);
+  applyRuntimeRoutes(snapshotRuntime);
   lastSavedAt.value = snapshot.lastSavedAt;
   cacheNodeOptions(nodes.value.map(nodeToOption));
   cacheNodeHealth(nodes.value.map(node => node.health));
@@ -1001,7 +937,7 @@ async function refreshRuntimeStatus(): Promise<void> {
   try {
     const { data } = await getProxyRuntimeStatus({ throwOnError: true });
     runtime.value = data;
-    applyRuntimeNodeHealth(data);
+    applyRuntimeRoutes(data);
   } catch {
     // Runtime status is secondary; the main mutation result is already applied.
   }
@@ -1235,22 +1171,25 @@ async function removeNode(id: string): Promise<void> {
 }
 
 async function testNode(id: string, probeUrl = '', signal?: AbortSignal): Promise<ProxyTestResult> {
-  return runMutation(async () => {
-    const { data } = await postProxyNodesByIdTest({
-      path: { id },
-      body: { probeUrl: probeUrl.trim() || undefined },
-      throwOnError: true,
-      signal,
-    });
-    const result = toProxyTestResult(data);
-    if (result.health) {
-      cacheNodeHealth([result.health]);
-      nodes.value = nodes.value.map(node =>
-        node.id === id ? { ...node, health: result.health } : node
-      );
-    }
-    return result;
-  }, { ignoreError: signal ? isAbortError : undefined });
+  return runMutation(
+    async () => {
+      const { data } = await postProxyNodesByIdTest({
+        path: { id },
+        body: { probeUrl: probeUrl.trim() || undefined },
+        throwOnError: true,
+        signal,
+      });
+      const result = toProxyTestResult(data);
+      if (result.health) {
+        cacheNodeHealth([result.health]);
+        nodes.value = nodes.value.map(node =>
+          node.id === id ? { ...node, health: result.health } : node
+        );
+      }
+      return result;
+    },
+    { ignoreError: signal ? isAbortError : undefined }
+  );
 }
 
 async function addGroup(input: GroupInput): Promise<ProxyGroup> {
@@ -1412,24 +1351,31 @@ async function removeMapping(id: string): Promise<void> {
   });
 }
 
-async function testMapping(id: string, probeUrl = '', signal?: AbortSignal): Promise<ProxyTestResult> {
-  return runMutation(async () => {
-    const { data } = await postProxyMappingsByIdTest({
-      path: { id },
-      body: { probeUrl: probeUrl.trim() || undefined },
-      throwOnError: true,
-      signal,
-    });
-    const result = toProxyTestResult(data);
-    if (result.health) {
-      cacheNodeHealth([result.health]);
-      nodes.value = nodes.value.map(node =>
-        node.id === result.nodeId ? { ...node, health: result.health } : node
-      );
-    }
-    await refreshRuntimeStatus();
-    return result;
-  }, { ignoreError: signal ? isAbortError : undefined });
+async function testMapping(
+  id: string,
+  probeUrl = '',
+  signal?: AbortSignal
+): Promise<ProxyTestResult> {
+  return runMutation(
+    async () => {
+      const { data } = await postProxyMappingsByIdTest({
+        path: { id },
+        body: { probeUrl: probeUrl.trim() || undefined },
+        throwOnError: true,
+        signal,
+      });
+      const result = toProxyTestResult(data);
+      if (result.health) {
+        cacheNodeHealth([result.health]);
+        nodes.value = nodes.value.map(node =>
+          node.id === result.nodeId ? { ...node, health: result.health } : node
+        );
+      }
+      await refreshRuntimeStatus();
+      return result;
+    },
+    { ignoreError: signal ? isAbortError : undefined }
+  );
 }
 
 async function resetDemoData(): Promise<void> {
@@ -1472,7 +1418,7 @@ export function useProxyHubState() {
     mappings,
     lastSavedAt,
     runtime,
-    runtimeNodeHealth,
+    runtimeRoutes,
     isLoading,
     isSaving,
     errorMessage,

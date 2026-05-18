@@ -1462,6 +1462,51 @@ textarea:focus {
   gap: 22px;
 }
 
+.node-group-subscriptions {
+  display: grid;
+  gap: 14px;
+  margin-top: 2px;
+  padding-top: 22px;
+  border-top: 1px solid rgb(148 163 184 / 0.22);
+}
+
+.node-group-subscriptions .import-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.node-group-subscriptions-header {
+  display: grid;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.node-group-subscriptions-header div {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.node-group-subscriptions-header strong {
+  min-width: 0;
+  color: rgb(15 23 42);
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.node-group-subscriptions-header span,
+.node-group-subscriptions-header small {
+  color: rgb(100 116 139);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.node-group-subscriptions-header small {
+  max-width: 720px;
+  line-height: 1.45;
+}
+
 .node-group-card-section {
   display: grid;
   gap: 12px;
