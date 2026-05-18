@@ -72,18 +72,19 @@ type ProxyNodeOptionDTO struct {
 }
 
 type ProxyNodeHealthDTO struct {
-	NodeID           string     `json:"nodeId"`
-	Available        bool       `json:"available"`
-	FailureCount     int        `json:"failureCount"`
-	SuccessCount     int64      `json:"successCount"`
-	Blacklisted      bool       `json:"blacklisted"`
-	BlacklistedUntil *time.Time `json:"blacklistedUntil"`
-	LastLatencyMs    int64      `json:"lastLatencyMs"`
-	LastError        string     `json:"lastError"`
-	LastCheckedAt    *time.Time `json:"lastCheckedAt"`
-	LastSuccessAt    *time.Time `json:"lastSuccessAt"`
-	LastFailureAt    *time.Time `json:"lastFailureAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	NodeID                  string     `json:"nodeId"`
+	Available               bool       `json:"available"`
+	FailureCount            int        `json:"failureCount"`
+	SuccessCount            int64      `json:"successCount"`
+	ConsecutiveFailureCount int        `json:"consecutiveFailureCount"`
+	Blacklisted             bool       `json:"blacklisted"`
+	BlacklistedUntil        *time.Time `json:"blacklistedUntil"`
+	LastLatencyMs           int64      `json:"lastLatencyMs"`
+	LastError               string     `json:"lastError"`
+	LastCheckedAt           *time.Time `json:"lastCheckedAt"`
+	LastSuccessAt           *time.Time `json:"lastSuccessAt"`
+	LastFailureAt           *time.Time `json:"lastFailureAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 type ProxySubscriptionDTO struct {
@@ -388,18 +389,19 @@ func ToNodeHealthDTO(health *tables.ProxyNodeHealthTable) *ProxyNodeHealthDTO {
 		return nil
 	}
 	return &ProxyNodeHealthDTO{
-		NodeID:           health.NodeID,
-		Available:        health.Available,
-		FailureCount:     health.FailureCount,
-		SuccessCount:     health.SuccessCount,
-		Blacklisted:      health.Blacklisted,
-		BlacklistedUntil: health.BlacklistedUntil,
-		LastLatencyMs:    health.LastLatencyMs,
-		LastError:        health.LastError,
-		LastCheckedAt:    health.LastCheckedAt,
-		LastSuccessAt:    health.LastSuccessAt,
-		LastFailureAt:    health.LastFailureAt,
-		UpdatedAt:        health.UpdatedAt,
+		NodeID:                  health.NodeID,
+		Available:               health.Available,
+		FailureCount:            health.FailureCount,
+		SuccessCount:            health.SuccessCount,
+		ConsecutiveFailureCount: health.ConsecutiveFailureCount,
+		Blacklisted:             health.Blacklisted,
+		BlacklistedUntil:        health.BlacklistedUntil,
+		LastLatencyMs:           health.LastLatencyMs,
+		LastError:               health.LastError,
+		LastCheckedAt:           health.LastCheckedAt,
+		LastSuccessAt:           health.LastSuccessAt,
+		LastFailureAt:           health.LastFailureAt,
+		UpdatedAt:               health.UpdatedAt,
 	}
 }
 

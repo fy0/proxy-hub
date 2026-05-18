@@ -416,6 +416,7 @@ function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null 
     available: dto.available,
     failureCount: dto.failureCount,
     successCount: dto.successCount,
+    consecutiveFailureCount: dto.consecutiveFailureCount ?? 0,
     blacklisted: dto.blacklisted,
     blacklistedUntil: dto.blacklistedUntil,
     lastLatencyMs: dto.lastLatencyMs,
@@ -460,6 +461,10 @@ function mergeCachedNodeHealth(
       blacklistedUntil: existing.blacklistedUntil ?? incoming.blacklistedUntil,
       failureCount: Math.max(existing.failureCount, incoming.failureCount),
       successCount: Math.max(existing.successCount, incoming.successCount),
+      consecutiveFailureCount: Math.max(
+        existing.consecutiveFailureCount,
+        incoming.consecutiveFailureCount
+      ),
       lastLatencyMs: existing.lastLatencyMs > 0 ? existing.lastLatencyMs : incoming.lastLatencyMs,
       lastError: existing.lastError || incoming.lastError,
       lastCheckedAt: existing.lastCheckedAt ?? incoming.lastCheckedAt,
@@ -533,6 +538,7 @@ function runtimeHealthToNodeHealth(item: RuntimeNodeHealth): ProxyNodeHealth | n
       item.latencyCandidate || item.latencyFallback || (item.lastLatencyMs > 0 && !item.lastError),
     failureCount: item.probeFailureCount,
     successCount: item.lastSuccessAt ? 1 : 0,
+    consecutiveFailureCount: item.probeFailureCount,
     blacklisted: false,
     blacklistedUntil: null,
     lastLatencyMs: item.lastLatencyMs,

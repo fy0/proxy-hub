@@ -587,6 +587,7 @@ func buildDynamicRuntimePlanForMapping(
 		outboundNodes:      map[string]*tables.ProxyNodeTable{},
 		groupPlans:         map[string]*dynamicGroupPlan{},
 		blacklistedNodeIDs: blacklistedNodeIDs,
+		excludedNodeIDs:    excludedNodeIDs,
 	}
 
 	members := make([]dynamicMemberPlan, 0)
@@ -598,15 +599,23 @@ func buildDynamicRuntimePlanForMapping(
 	if err != nil {
 		return nil, err
 	}
-	for _, node := range nodes {
-		member, err := builder.memberForNode(node)
+	nodeMembers, err := builder.membersForNodes(nodes)
+	if err != nil {
+		return nil, err
+	}
+	if len(nodeMembers) == 0 {
+		revived, err := builder.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes))
 		if err != nil {
-			return nil, nodeBuildError{node: node, err: err}
+			return nil, err
 		}
-		if member.tag != "" {
-			members = append(members, member)
+		if revived {
+			nodeMembers, err = builder.membersForNodes(nodes)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
+	members = append(members, nodeMembers...)
 
 	groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
 	if err != nil {
@@ -888,6 +897,48 @@ type dynamicPlanBuilder struct {
 	outboundNodes      map[string]*tables.ProxyNodeTable
 	groupPlans         map[string]*dynamicGroupPlan
 	blacklistedNodeIDs map[string]struct{}
+	excludedNodeIDs    map[string]struct{}
+}
+
+func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]dynamicMemberPlan, error) {
+	members := make([]dynamicMemberPlan, 0, len(nodes))
+	for _, node := range nodes {
+		member, err := b.memberForNode(node)
+		if err != nil {
+			return nil, nodeBuildError{node: node, err: err}
+		}
+		if member.tag != "" {
+			members = append(members, member)
+		}
+	}
+	return members, nil
+}
+
+func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) (bool, error) {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return false, nil
+	}
+	reviveIDs := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if _, excluded := b.excludedNodeIDs[nodeID]; excluded {
+			return false, nil
+		}
+		if _, blacklisted := b.blacklistedNodeIDs[nodeID]; !blacklisted {
+			return false, nil
+		}
+		reviveIDs = append(reviveIDs, nodeID)
+	}
+	if len(reviveIDs) == 0 {
+		return false, nil
+	}
+	if err := reviveNodeHealthIDs(b.ctx, b.tx, reviveIDs); err != nil {
+		return false, err
+	}
+	for _, nodeID := range reviveIDs {
+		delete(b.blacklistedNodeIDs, nodeID)
+	}
+	return true, nil
 }
 
 func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamicMemberPlan, error) {
@@ -962,15 +1013,23 @@ func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, 
 	if err != nil {
 		return dynamicMemberPlan{}, err
 	}
-	for _, node := range nodes {
-		member, err := b.memberForNode(node)
+	nodeMembers, err := b.membersForNodes(nodes)
+	if err != nil {
+		return dynamicMemberPlan{}, err
+	}
+	if len(nodeMembers) == 0 {
+		revived, err := b.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes))
 		if err != nil {
-			return dynamicMemberPlan{}, nodeBuildError{node: node, err: err}
+			return dynamicMemberPlan{}, err
 		}
-		if member.tag != "" {
-			members = append(members, member)
+		if revived {
+			nodeMembers, err = b.membersForNodes(nodes)
+			if err != nil {
+				return dynamicMemberPlan{}, err
+			}
 		}
 	}
+	members = append(members, nodeMembers...)
 
 	childGroups, err := findGroupsByIDs(b.ctx, b.tx, decodeStringSlice(proxyGroup.GroupIDsJSON))
 	if err != nil {
@@ -1017,17 +1076,19 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 	}
 	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
-		Strategy:            strategy,
-		FailureBlacklistTTL: healthConfig.BlacklistDuration,
-		RemoveTTL:           2 * time.Minute,
-		ProbeURL:            healthConfig.ProbeURL,
-		ProbeInterval:       healthConfig.Interval,
-		ProbeTimeout:        healthConfig.Timeout,
-		ProbeTestTimeout:    minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
-		ProbeConcurrency:    minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
-		MaxLatency:          healthConfig.Timeout,
-		SlowThreshold:       healthConfig.FailureThreshold,
-		FallbackStrategy:    singboxcore.BalanceRoundRobin,
+		Strategy:                 strategy,
+		FailureBlacklistTTL:      healthConfig.BlacklistDuration,
+		RemoveTTL:                2 * time.Minute,
+		ProbeURL:                 healthConfig.ProbeURL,
+		ProbeInterval:            healthConfig.Interval,
+		ProbeTimeout:             healthConfig.Timeout,
+		ProbeTestTimeout:         minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
+		ProbeConcurrency:         minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
+		MaxLatency:               healthConfig.Timeout,
+		SlowThreshold:            healthConfig.FailureThreshold,
+		FallbackStrategy:         singboxcore.BalanceRoundRobin,
+		ProbeResultCallback:      recordRuntimeProbeResult,
+		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
 	}
 }
 
@@ -1041,17 +1102,19 @@ func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 	}
 	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
-		Strategy:            strategy,
-		FailureBlacklistTTL: healthConfig.BlacklistDuration,
-		RemoveTTL:           2 * time.Minute,
-		ProbeURL:            healthConfig.ProbeURL,
-		ProbeInterval:       healthConfig.Interval,
-		ProbeTimeout:        healthConfig.Timeout,
-		ProbeTestTimeout:    minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
-		ProbeConcurrency:    minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
-		MaxLatency:          healthConfig.Timeout,
-		SlowThreshold:       healthConfig.FailureThreshold,
-		FallbackStrategy:    singboxcore.BalanceRoundRobin,
+		Strategy:                 strategy,
+		FailureBlacklistTTL:      healthConfig.BlacklistDuration,
+		RemoveTTL:                2 * time.Minute,
+		ProbeURL:                 healthConfig.ProbeURL,
+		ProbeInterval:            healthConfig.Interval,
+		ProbeTimeout:             healthConfig.Timeout,
+		ProbeTestTimeout:         minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
+		ProbeConcurrency:         minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
+		MaxLatency:               healthConfig.Timeout,
+		SlowThreshold:            healthConfig.FailureThreshold,
+		FallbackStrategy:         singboxcore.BalanceRoundRobin,
+		ProbeResultCallback:      recordRuntimeProbeResult,
+		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
 	}
 }
 

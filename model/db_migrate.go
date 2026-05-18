@@ -11,6 +11,7 @@ func GetAllModels() []any {
 		&tables.ProxySubscriptionTable{},
 		&tables.ProxyNodeTable{},
 		&tables.ProxyNodeHealthTable{},
+		&tables.ProxyNodeHealthHistoryTable{},
 		&tables.ProxyGroupTable{},
 		&tables.PortMappingTable{},
 	}

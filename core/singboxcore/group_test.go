@@ -31,18 +31,20 @@ func TestRoundRobinSelection(t *testing.T) {
 
 func TestBlacklistTTL(t *testing.T) {
 	group := NewDynamicGroup("group-auto", nil, Policy{Strategy: BalanceManual})
-	if err := group.AddNode(NewNodeState("a", "node-a", option.Outbound{})); err != nil {
-		t.Fatalf("AddNode() error = %v", err)
+	for _, id := range []string{"a", "b"} {
+		if err := group.AddNode(NewNodeState(id, "node-"+id, option.Outbound{})); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", id, err)
+		}
 	}
 	if err := group.MarkNodeFailed("a", 30*time.Millisecond, "dial failed"); err != nil {
 		t.Fatalf("MarkNodeFailed() error = %v", err)
 	}
-	if got := candidateIDs(group); len(got) != 0 {
-		t.Fatalf("blacklisted candidates = %v, want empty", got)
+	if got := candidateIDs(group); !sameStrings(got, []string{"b"}) {
+		t.Fatalf("blacklisted candidates = %v, want only b", got)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if got := candidateIDs(group); !sameStrings(got, []string{"a"}) {
-		t.Fatalf("expired blacklist candidates = %v, want a", got)
+	if got := candidateIDs(group); !sameStrings(got, []string{"b", "a"}) {
+		t.Fatalf("expired blacklist candidates = %v, want b,a", got)
 	}
 }
 
@@ -224,6 +226,62 @@ func TestLeastLatencyFallsBackBeforeProbeResults(t *testing.T) {
 	}
 	if got := candidateIDs(group); !sameStrings(got, []string{"b", "c", "a"}) {
 		t.Fatalf("second fallback order = %v, want b,c,a", got)
+	}
+}
+
+func TestLeastLatencyProbeFailuresBlacklistNode(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{Strategy: BalanceLeastLatency})
+	nodeA := NewNodeState("a", "node-a", option.Outbound{})
+	nodeB := NewNodeState("b", "node-b", option.Outbound{})
+	if err := group.AddNode(nodeA); err != nil {
+		t.Fatalf("AddNode(a) error = %v", err)
+	}
+	if err := group.AddNode(nodeB); err != nil {
+		t.Fatalf("AddNode(b) error = %v", err)
+	}
+
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		nodeA.recordLeastLatencyProbeFailure("probe failed", now.Add(time.Duration(i)*time.Second), probeFailurePolicy{
+			threshold: 3,
+			ttl:       time.Hour,
+		})
+	}
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"b"}) {
+		t.Fatalf("candidates after node a blacklist = %v, want b", got)
+	}
+}
+
+func TestLeastLatencyRevivesAllBlacklistedNodes(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{Strategy: BalanceLeastLatency})
+	nodes := []*NodeState{
+		NewNodeState("a", "node-a", option.Outbound{}),
+		NewNodeState("b", "node-b", option.Outbound{}),
+	}
+	for _, node := range nodes {
+		if err := group.AddNode(node); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", node.ID, err)
+		}
+	}
+
+	now := time.Now()
+	for _, node := range nodes {
+		for i := 0; i < 3; i++ {
+			node.recordLeastLatencyProbeFailure("probe failed", now.Add(time.Duration(i)*time.Second), probeFailurePolicy{
+				threshold: 3,
+				ttl:       time.Hour,
+			})
+		}
+	}
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"a", "b"}) {
+		t.Fatalf("candidates after all blacklisted = %v, want revived a,b", got)
+	}
+	for _, snapshot := range group.Snapshot().Nodes {
+		if snapshot.Blacklisted {
+			t.Fatalf("node %s remained blacklisted after all-node revival", snapshot.ID)
+		}
 	}
 }
 

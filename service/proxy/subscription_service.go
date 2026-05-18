@@ -524,6 +524,9 @@ func deleteSubscriptionNodesBulk(ctx context.Context, tx model.DBTx, nodeIDs []s
 	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
 		return err
 	}
+	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
+		return err
+	}
 	return tx.WithContext(ctx).Where("id IN ?", nodeIDs).Delete(&tables.ProxyNodeTable{}).Error
 }
 

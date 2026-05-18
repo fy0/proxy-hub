@@ -249,9 +249,18 @@ func (n *NodeState) recordLeastLatencyProbeSuccess(latency time.Duration, maxLat
 	n.leastLatencyStaleFallback = false
 }
 
-func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time) {
+type probeFailurePolicy struct {
+	threshold int
+	ttl       time.Duration
+}
+
+func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time, policies ...probeFailurePolicy) {
 	if n == nil {
 		return
+	}
+	policy := probeFailurePolicy{}
+	if len(policies) > 0 {
+		policy = policies[0]
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -263,6 +272,15 @@ func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time)
 	n.leastLatencyCandidate = false
 	n.leastLatencyStaleFallback = !n.leastLatencyLastSuccessAt.IsZero()
 	n.lastError = reason
+	if policy.threshold > 0 && n.leastLatencyFailureCount >= policy.threshold {
+		n.health = HealthBlacklisted
+		if policy.ttl > 0 {
+			n.blacklistedUntil = now.Add(policy.ttl)
+		} else {
+			n.blacklistedUntil = time.Time{}
+		}
+		n.blacklistReason = reason
+	}
 }
 
 func (n *NodeState) markLeastLatencyProbeRunning(now time.Time) {
@@ -273,6 +291,27 @@ func (n *NodeState) markLeastLatencyProbeRunning(now time.Time) {
 	defer n.mu.Unlock()
 	n.leastLatencyProbeRunning = true
 	n.leastLatencyProbeStartedAt = now
+}
+
+func (n *NodeState) reviveBlacklist() bool {
+	if n == nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.health != HealthBlacklisted {
+		return false
+	}
+	n.health = HealthAlive
+	n.blacklistedUntil = time.Time{}
+	n.blacklistReason = ""
+	n.lastError = ""
+	n.leastLatencyLastProbeError = ""
+	n.leastLatencyFailureCount = 0
+	n.leastLatencySlowCount = 0
+	n.leastLatencyCandidate = true
+	n.leastLatencyStaleFallback = false
+	return true
 }
 
 func (n *NodeState) removeReady(now time.Time) bool {

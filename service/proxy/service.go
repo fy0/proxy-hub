@@ -229,6 +229,9 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 	if err := tx.Where("node_id = ?", id).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
 		return err
 	}
+	if err := tx.Where("node_id = ?", id).Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
+		return err
+	}
 	return tx.Delete(&node).Error
 }
 

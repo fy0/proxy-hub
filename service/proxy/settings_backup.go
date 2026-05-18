@@ -210,6 +210,9 @@ func replaceSettingsRows(ctx context.Context, tx model.DBTx, rows *settingsBacku
 	if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
 		return err
 	}
+	if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
+		return err
+	}
 	if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&tables.ProxyNodeTable{}).Error; err != nil {
 		return err
 	}

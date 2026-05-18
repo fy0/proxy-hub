@@ -29,19 +29,41 @@ const (
 	DefaultLeastLatencyTolerance        = 50 * time.Millisecond
 )
 
+type ProbeRecord struct {
+	GroupTag  string
+	NodeID    string
+	NodeTag   string
+	Available bool
+	Latency   time.Duration
+	Error     string
+	CheckedAt time.Time
+}
+
+type BlacklistRevivalEvent struct {
+	GroupTag  string
+	NodeIDs   []string
+	RevivedAt time.Time
+}
+
+type ProbeResultCallback func(ProbeRecord)
+
+type BlacklistRevivalCallback func(BlacklistRevivalEvent)
+
 type Policy struct {
-	Strategy            BalanceStrategy
-	FailureBlacklistTTL time.Duration
-	RemoveTTL           time.Duration
-	ProbeURL            string
-	ProbeInterval       time.Duration
-	ProbeTimeout        time.Duration
-	ProbeTestTimeout    time.Duration
-	ProbeConcurrency    int
-	MaxLatency          time.Duration
-	SlowThreshold       int
-	LatencyTolerance    time.Duration
-	FallbackStrategy    BalanceStrategy
+	Strategy                 BalanceStrategy
+	FailureBlacklistTTL      time.Duration
+	RemoveTTL                time.Duration
+	ProbeURL                 string
+	ProbeInterval            time.Duration
+	ProbeTimeout             time.Duration
+	ProbeTestTimeout         time.Duration
+	ProbeConcurrency         int
+	MaxLatency               time.Duration
+	SlowThreshold            int
+	LatencyTolerance         time.Duration
+	FallbackStrategy         BalanceStrategy
+	ProbeResultCallback      ProbeResultCallback      `json:"-"`
+	BlacklistRevivalCallback BlacklistRevivalCallback `json:"-"`
 }
 
 func (p Policy) normalized() Policy {
@@ -432,17 +454,10 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return nil
 	}
 	now := time.Now()
-	g.mu.RLock()
-	strategy := g.policy.Strategy
-	selected := g.nodes[g.selected]
-	nodes := make([]*NodeState, 0, len(g.order))
-	for _, id := range g.order {
-		node := g.nodes[id]
-		if node != nil && node.Eligible(now) {
-			nodes = append(nodes, node)
-		}
+	strategy, selected, nodes := g.candidateState(now)
+	if len(nodes) == 0 && g.reviveBlacklistedNodes(now) {
+		strategy, selected, nodes = g.candidateState(now)
 	}
-	g.mu.RUnlock()
 
 	if len(nodes) == 0 {
 		return nil
@@ -465,6 +480,59 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return g.orderLeastLatencyCandidates(nodes, selected, policy.LatencyTolerance, policy.FallbackStrategy)
 	}
 	return g.balancer.Order(nodes)
+}
+
+func (g *DynamicGroup) candidateState(now time.Time) (BalanceStrategy, *NodeState, []*NodeState) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	strategy := g.policy.Strategy
+	selected := g.nodes[g.selected]
+	nodes := make([]*NodeState, 0, len(g.order))
+	for _, id := range g.order {
+		node := g.nodes[id]
+		if node != nil && node.Eligible(now) {
+			nodes = append(nodes, node)
+		}
+	}
+	return strategy, selected, nodes
+}
+
+func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.RLock()
+	nodes := make([]*NodeState, 0, len(g.order))
+	for _, id := range g.order {
+		if node := g.nodes[id]; node != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	policy := g.policy
+	groupTag := g.Tag()
+	g.mu.RUnlock()
+
+	revivedIDs := make([]string, 0)
+	for _, node := range nodes {
+		if node.Eligible(now) {
+			continue
+		}
+		if node.reviveBlacklist() {
+			revivedIDs = append(revivedIDs, node.ID)
+		}
+	}
+	if len(revivedIDs) == 0 {
+		return false
+	}
+	if policy.BlacklistRevivalCallback != nil {
+		policy.BlacklistRevivalCallback(BlacklistRevivalEvent{
+			GroupTag:  groupTag,
+			NodeIDs:   append([]string(nil), revivedIDs...),
+			RevivedAt: now,
+		})
+	}
+	return true
 }
 
 func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, selected *NodeState, tolerance time.Duration, fallbackStrategy BalanceStrategy) []*NodeState {
@@ -742,7 +810,16 @@ func (g *DynamicGroup) runLeastLatencyProbeRound(policy Policy) {
 
 func (g *DynamicGroup) probeCandidates() []*NodeState {
 	now := time.Now()
+	nodes := g.eligibleNodes(now)
+	if len(nodes) == 0 && g.reviveBlacklistedNodes(now) {
+		nodes = g.eligibleNodes(now)
+	}
+	return nodes
+}
+
+func (g *DynamicGroup) eligibleNodes(now time.Time) []*NodeState {
 	g.mu.RLock()
+	defer g.mu.RUnlock()
 	nodes := make([]*NodeState, 0, len(g.order))
 	for _, id := range g.order {
 		node := g.nodes[id]
@@ -750,7 +827,6 @@ func (g *DynamicGroup) probeCandidates() []*NodeState {
 			nodes = append(nodes, node)
 		}
 	}
-	g.mu.RUnlock()
 	return nodes
 }
 
@@ -761,7 +837,9 @@ func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
 	node.markLeastLatencyProbeRunning(time.Now())
 	outbound, ok := g.manager.Outbound(node.Tag)
 	if !ok {
-		node.recordLeastLatencyProbeFailure("outbound not found", time.Now())
+		now := time.Now()
+		node.recordLeastLatencyProbeFailure("outbound not found", now, probeFailurePolicy{threshold: policy.SlowThreshold, ttl: policy.FailureBlacklistTTL})
+		g.emitProbeResult(policy, node, false, 0, "outbound not found", now)
 		return
 	}
 	timeout := policy.ProbeTimeout
@@ -770,10 +848,27 @@ func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
 	latency, err := urltest.URLTest(ctx, policy.ProbeURL, outbound)
 	now := time.Now()
 	if err != nil {
-		node.recordLeastLatencyProbeFailure(err.Error(), now)
+		node.recordLeastLatencyProbeFailure(err.Error(), now, probeFailurePolicy{threshold: policy.SlowThreshold, ttl: policy.FailureBlacklistTTL})
+		g.emitProbeResult(policy, node, false, 0, err.Error(), now)
 		return
 	}
 	node.recordLeastLatencyProbeSuccess(time.Duration(latency)*time.Millisecond, policy.MaxLatency, policy.SlowThreshold, now)
+	g.emitProbeResult(policy, node, true, time.Duration(latency)*time.Millisecond, "", now)
+}
+
+func (g *DynamicGroup) emitProbeResult(policy Policy, node *NodeState, available bool, latency time.Duration, errMessage string, checkedAt time.Time) {
+	if policy.ProbeResultCallback == nil || node == nil {
+		return
+	}
+	policy.ProbeResultCallback(ProbeRecord{
+		GroupTag:  g.Tag(),
+		NodeID:    node.ID,
+		NodeTag:   node.Tag,
+		Available: available,
+		Latency:   latency,
+		Error:     errMessage,
+		CheckedAt: checkedAt,
+	})
 }
 
 func removeString(values []string, target string) []string {

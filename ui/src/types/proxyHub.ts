@@ -49,6 +49,7 @@ export interface ProxyNodeHealth {
   available: boolean;
   failureCount: number;
   successCount: number;
+  consecutiveFailureCount: number;
   blacklisted: boolean;
   blacklistedUntil: string | null;
   lastLatencyMs: number;
