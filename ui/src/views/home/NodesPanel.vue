@@ -16,7 +16,6 @@ const {
   nodeGroupFilterOptions,
   activeNodeGroupFilter,
   selectNodeGroupFilter,
-  groupSummaryItems,
   selectedGroup,
   selectedNodeGroupTitle,
   selectedNodeGroupHealthSummary,
@@ -40,7 +39,6 @@ const {
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
-  openEditGroupById,
   openEditGroupDialog,
   importMessage,
 } = props.context;
@@ -76,46 +74,7 @@ const {
       </button>
     </div>
 
-    <div v-if="activeNodeGroupFilter === 'summary'" class="node-group-summary-grid">
-      <article
-        v-for="item in groupSummaryItems"
-        :key="item.key"
-        class="node-group-summary-card"
-      >
-        <button
-          type="button"
-          class="node-group-summary-main"
-          @click="selectNodeGroupFilter(item.key)"
-        >
-          <span class="node-summary-type" :class="{ subscription: item.isSubscription }">
-            {{ item.typeLabel }}
-          </span>
-          <strong>{{ item.title }}</strong>
-          <span class="node-summary-count">{{
-            t('home.groupMeta.nodeCount', { count: item.count })
-          }}</span>
-          <small>{{ item.detail }}</small>
-          <span class="node-summary-meta">
-            <em>{{ item.strategyLabel }}</em>
-            <em v-if="item.filter">{{ item.filter }}</em>
-          </span>
-        </button>
-        <ActionTooltip v-if="item.editable && item.groupId" :label="t('common.editGroup')">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            class="node-group-summary-edit"
-            :aria-label="t('common.editGroup')"
-            @click="openEditGroupById(item.groupId)"
-          >
-            <Edit3 class="size-4" aria-hidden="true" />
-          </Button>
-        </ActionTooltip>
-      </article>
-    </div>
-
-    <section v-else class="node-group-section active-node-group">
+    <section class="node-group-section active-node-group">
       <div class="node-group-heading">
         <div class="node-group-title">
           <strong>{{ selectedNodeGroupTitle }}</strong>
@@ -123,7 +82,11 @@ const {
         </div>
         <div class="node-group-health-summary">
           <span class="available">
-            {{ t('home.nodeGroupHealth.available', { count: selectedNodeGroupHealthSummary.available }) }}
+            {{
+              t('home.nodeGroupHealth.available', {
+                count: selectedNodeGroupHealthSummary.available,
+              })
+            }}
           </span>
           <span class="fastest">
             {{
@@ -142,7 +105,9 @@ const {
                 selectedNodeGroupHealthSummary.autoProbeRunning,
             }"
           >
-            {{ t('home.nodeGroupHealth.probing', { count: selectedNodeGroupHealthSummary.probing }) }}
+            {{
+              t('home.nodeGroupHealth.probing', { count: selectedNodeGroupHealthSummary.probing })
+            }}
           </span>
           <span
             class="probe-state"
@@ -159,10 +124,7 @@ const {
                   : t('home.nodeGroupHealth.autoProbeDisabled')
             }}
           </span>
-          <span
-            v-if="selectedNodeGroupHealthSummary.autoProbeEnabled"
-            class="needs-probe"
-          >
+          <span v-if="selectedNodeGroupHealthSummary.autoProbeEnabled" class="needs-probe">
             {{
               t('home.nodeGroupHealth.needsProbe', {
                 count: selectedNodeGroupHealthSummary.needsProbe,

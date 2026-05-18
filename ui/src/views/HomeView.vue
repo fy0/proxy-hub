@@ -22,7 +22,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useRoute, useRouter } from 'vue-router';
 import HomeTabs from './home/HomeTabs.vue';
+import GroupsPanel from './home/GroupsPanel.vue';
 import MappingsPanel from './home/MappingsPanel.vue';
 import NodesPanel from './home/NodesPanel.vue';
 import SubscriptionsPanel from './home/SubscriptionsPanel.vue';
@@ -80,6 +82,11 @@ interface TestDialogState {
 type AddNodeDialogMode = 'uri' | 'chain' | 'import';
 
 const { formatDateTime, t } = useI18n();
+const props = defineProps<{
+  tab?: TabKey;
+}>();
+const route = useRoute();
+const router = useRouter();
 const appStore = useAppStore();
 const clipboard = useClipboard({
   legacy: true,
@@ -169,7 +176,7 @@ const {
   ensureNodeOptions,
 } = useProxyHubState();
 
-const currentTab = ref<TabKey>('mappings');
+const currentTab = computed<TabKey>(() => props.tab ?? 'mappings');
 const activeNodeGroupFilter = ref<NodeGroupFilterKey>('all');
 const hideEmptyNodeGroups = ref(false);
 const nodeSearch = ref('');
@@ -380,7 +387,7 @@ const backendNotice = computed(() => {
 const loginRoute = computed(() => ({
   name: 'login',
   query: {
-    redirect: '/',
+    redirect: currentRoutePath(),
   },
 }));
 
@@ -616,11 +623,6 @@ const nodeGroupFilterOptions = computed<NodeGroupFilterOption[]>(() => [
     countLabel: t('home.groupMeta.nodeCount', { count: nodeTotal.value }),
   },
   {
-    key: 'summary',
-    label: t('home.groupFilters.summary'),
-    countLabel: t('home.groupMeta.groupCount', { count: visibleGroups.value.length + 1 }),
-  },
-  {
     key: 'default',
     label: t('home.groupFilters.default'),
     countLabel: t('home.groupMeta.nodeCount', { count: defaultNodeTotal.value }),
@@ -750,13 +752,11 @@ onBeforeUnmount(() => {
 });
 
 async function reloadCurrentNodes(): Promise<void> {
-  if (activeNodeGroupFilter.value === 'summary') return;
   await loadNodes(nodeListQuery.value);
   scrollNodeListTo(0);
 }
 
 async function loadNextNodePage(): Promise<void> {
-  if (activeNodeGroupFilter.value === 'summary') return;
   await loadMoreNodes(nodeListQuery.value);
 }
 
@@ -776,7 +776,7 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     isSubscription: false,
     editable: false,
   },
-  ...visibleGroups.value.map(group => ({
+  ...groups.value.map(group => ({
     key: toGroupFilterKey(group.id),
     groupId: group.id,
     title: group.name,
@@ -798,6 +798,24 @@ watch(
     }
   }
 );
+
+watch(
+  () => [currentTab.value, route.query.group],
+  () => {
+    if (currentTab.value !== 'nodes') return;
+    const nextFilter = filterKeyFromQuery(route.query.group);
+    if (activeNodeGroupFilter.value !== nextFilter) {
+      activeNodeGroupFilter.value = nextFilter;
+    }
+  },
+  { immediate: true }
+);
+
+watch(currentTab, tab => {
+  if (tab !== 'nodes' && activeNodeGroupFilter.value !== 'all') {
+    activeNodeGroupFilter.value = 'all';
+  }
+});
 
 watch(
   [activeNodeGroupFilter, nodeSearch],
@@ -842,6 +860,31 @@ function nodeGroupIds(node: ProxyNode): string[] {
 
 function selectNodeGroupFilter(key: NodeGroupFilterKey): void {
   activeNodeGroupFilter.value = key;
+}
+
+function filterKeyFromQuery(value: unknown): NodeGroupFilterKey {
+  const group = Array.isArray(value) ? value[0] : value;
+  if (group === 'default') return 'default';
+  if (typeof group === 'string' && group.trim() !== '') return toGroupFilterKey(group.trim());
+  return 'all';
+}
+
+function queryValueFromFilterKey(key: NodeGroupFilterKey): string | undefined {
+  if (key === 'default') return 'default';
+  const groupId = groupIdFromFilterKey(key);
+  return groupId || undefined;
+}
+
+function currentRoutePath(): string {
+  const query = route.fullPath.split('?')[1];
+  return query ? `${route.path}?${query}` : route.path;
+}
+
+function tabPath(tab: TabKey): string {
+  if (tab === 'nodes') return '/nodes';
+  if (tab === 'groups') return '/groups';
+  if (tab === 'subscriptions') return '/subscriptions';
+  return '/';
 }
 
 function nodeFilterGroupId(value: string): string | undefined {
@@ -2125,22 +2168,21 @@ async function handleReset(): Promise<void> {
   }
 }
 
-function openTab(tab: TabKey): void {
+async function openTab(tab: TabKey): Promise<void> {
   closeNodeEditDialog();
   if (tab === 'nodes' && currentTab.value !== 'nodes') {
     activeNodeGroupFilter.value = 'all';
   }
-  if (tab === 'groups') {
-    activeNodeGroupFilter.value = 'summary';
-  }
-  currentTab.value = tab;
+  await router.push({ path: tabPath(tab) });
 }
 
-function selectNodeGroupFilterFromPanel(key: NodeGroupFilterKey): void {
-  if (key !== 'summary') {
-    currentTab.value = 'nodes';
-  }
+async function selectNodeGroupFilterFromPanel(key: NodeGroupFilterKey): Promise<void> {
   selectNodeGroupFilter(key);
+  const group = queryValueFromFilterKey(key);
+  await router.push({
+    path: '/nodes',
+    query: group ? { group } : {},
+  });
 }
 
 function portEnabledLabel(mapping: PortMapping): string {
@@ -2475,7 +2517,7 @@ const homeContext = {
             }}</span>
             <span v-else-if="currentTab === 'nodes'" class="workspace-count">{{ nodeTotal }}</span>
             <span v-else-if="currentTab === 'groups'" class="workspace-count">{{
-              visibleGroups.length + 1
+              groups.length + 1
             }}</span>
             <span v-else-if="currentTab === 'subscriptions'" class="workspace-count">{{
               subscriptions.length
@@ -2558,10 +2600,8 @@ const homeContext = {
       </div>
 
       <MappingsPanel v-if="currentTab === 'mappings'" :context="homeContext" />
-      <NodesPanel
-        v-else-if="currentTab === 'nodes' || currentTab === 'groups'"
-        :context="homeContext"
-      />
+      <NodesPanel v-else-if="currentTab === 'nodes'" :context="homeContext" />
+      <GroupsPanel v-else-if="currentTab === 'groups'" :context="homeContext" />
       <SubscriptionsPanel v-else-if="currentTab === 'subscriptions'" :context="homeContext" />
     </section>
 

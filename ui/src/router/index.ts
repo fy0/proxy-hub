@@ -8,6 +8,25 @@ const router = createRouter({
       path: '/',
       name: 'home',
       component: HomeView,
+      props: { tab: 'mappings' },
+    },
+    {
+      path: '/nodes',
+      name: 'nodes',
+      component: HomeView,
+      props: { tab: 'nodes' },
+    },
+    {
+      path: '/groups',
+      name: 'groups',
+      component: HomeView,
+      props: { tab: 'groups' },
+    },
+    {
+      path: '/subscriptions',
+      name: 'subscriptions',
+      component: HomeView,
+      props: { tab: 'subscriptions' },
     },
     {
       path: '/login',

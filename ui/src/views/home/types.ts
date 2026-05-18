@@ -15,7 +15,7 @@ import type {
 } from '@/types/proxyHub';
 
 export type TabKey = 'mappings' | 'nodes' | 'groups' | 'subscriptions';
-export type NodeGroupFilterKey = 'all' | 'summary' | 'default' | `group:${string}`;
+export type NodeGroupFilterKey = 'all' | 'default' | `group:${string}`;
 export type PortRuntimeState = 'running' | 'failed' | 'closed' | 'notRunning';
 export type RouteNodeMode = 'uri' | 'node' | 'group';
 
@@ -111,7 +111,7 @@ export interface HomeViewContext {
   hideEmptyNodeGroups: Ref<boolean>;
   nodeGroupFilterOptions: Readable<NodeGroupFilterOption[]>;
   activeNodeGroupFilter: Ref<NodeGroupFilterKey>;
-  selectNodeGroupFilter: (key: NodeGroupFilterKey) => void;
+  selectNodeGroupFilter: (key: NodeGroupFilterKey) => Promise<void>;
   groupSummaryItems: Readable<NodeGroupSummaryItem[]>;
   selectedGroup: Readable<ProxyGroup | null>;
   selectedNodeGroupTitle: Readable<string>;
