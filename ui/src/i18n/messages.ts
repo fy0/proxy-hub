@@ -188,7 +188,8 @@ export const messages = {
         routeNodeRequired: '请填写节点 URI。',
         routeExistingRequired: '请选择已有节点。',
         routeGroupRequired: '请选择已有分组。',
-        routeSwitched: '已切换当前线路。',
+        routeSwitched:
+          '已切换完成。已建立的连接不会被强制断开，新进入的连接会切换为新节点。',
         runtimeError: '运行时异常：{message}',
         runtimeFailureDetail: '{port}（{reason}）',
         runtimeFailureReason: '失败原因：{reason}',
@@ -642,7 +643,8 @@ export const messages = {
         routeNodeRequired: 'Enter a node URI.',
         routeExistingRequired: 'Select an existing node.',
         routeGroupRequired: 'Select an existing group.',
-        routeSwitched: 'Current route switched.',
+        routeSwitched:
+          'Route switch completed. Existing connections will not be forcibly disconnected; new connections will use the new node.',
         runtimeError: 'Runtime error: {message}',
         runtimeFailureDetail: '{port} ({reason})',
         runtimeFailureReason: 'Reason: {reason}',

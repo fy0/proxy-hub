@@ -80,6 +80,7 @@ interface TestDialogState {
 }
 
 type AddNodeDialogMode = 'uri' | 'chain' | 'import';
+type ToastVariant = 'default' | 'success';
 
 const { formatDateTime, t } = useI18n();
 const props = defineProps<{
@@ -210,6 +211,7 @@ const importPreview = ref<ImportPreviewResult | null>(null);
 const importPreviewSignature = ref('');
 const importMessage = ref('');
 const copyMessage = ref('');
+const copyMessageVariant = ref<ToastVariant>('default');
 const copyMessageTimer = ref<number | null>(null);
 const copiedMappingId = ref<string | null>(null);
 const copiedNodeId = ref<string | null>(null);
@@ -1775,7 +1777,9 @@ async function switchMappingRoute(
 
   try {
     await switchMapping(mapping.id, targetType, targetId);
-    importMessage.value = t('home.messages.routeSwitched');
+    const message = t('home.messages.routeSwitched');
+    importMessage.value = message;
+    showCopyMessage(message, 'success');
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -2113,14 +2117,16 @@ async function toggleMappingEnabled(mapping: PortMapping): Promise<void> {
   }
 }
 
-function showCopyMessage(message: string): void {
+function showCopyMessage(message: string, variant: ToastVariant = 'default'): void {
   if (copyMessageTimer.value !== null) {
     window.clearTimeout(copyMessageTimer.value);
   }
 
   copyMessage.value = message;
+  copyMessageVariant.value = variant;
   copyMessageTimer.value = window.setTimeout(() => {
     copyMessage.value = '';
+    copyMessageVariant.value = 'default';
     copiedMappingId.value = null;
     copiedNodeId.value = null;
     copyMessageTimer.value = null;
@@ -3746,6 +3752,13 @@ const homeContext = {
       </section>
     </div>
 
-    <p v-if="copyMessage" class="toast-message" role="status">{{ copyMessage }}</p>
+    <p
+      v-if="copyMessage"
+      class="toast-message"
+      :class="`toast-${copyMessageVariant}`"
+      role="status"
+    >
+      {{ copyMessage }}
+    </p>
   </main>
 </template>
