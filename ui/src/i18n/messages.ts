@@ -255,6 +255,7 @@ export const messages = {
         probeStartedAt: '测速开始：{time}',
         summary: '延迟 {latency}，成功 {success}，失败 {failure}',
         success: '成功数',
+        unavailable: '不可用',
       },
       nodeGroupHealth: {
         autoProbeDisabled: '当前分组不自动测速',
@@ -710,6 +711,7 @@ export const messages = {
         probeStartedAt: 'Probe started: {time}',
         summary: 'Latency {latency}, successes {success}, failures {failure}',
         success: 'Successes',
+        unavailable: 'Unavailable',
       },
       nodeGroupHealth: {
         autoProbeDisabled: 'No auto probe for this group',

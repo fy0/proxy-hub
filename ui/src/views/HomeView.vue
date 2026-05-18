@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Download,
+  Gauge,
   Link2,
   Plus,
   RefreshCw,
@@ -497,6 +498,57 @@ function isAvailableNodeHealth(health: ProxyNodeHealth | null | undefined): bool
   return health.available || health.lastLatencyMs > 0 || health.probeRunning;
 }
 
+function isUnavailableNodeHealth(health: ProxyNodeHealth | null | undefined): boolean {
+  if (!health || health.probeRunning) return false;
+  return health.blacklisted || Boolean(health.lastError?.trim());
+}
+
+function nodeGroupCardHealthSummary(group: ProxyGroup): { allUnavailable: boolean } {
+  const nodeIds = groupNodeIds(group);
+  const nodeIdSet = new Set(nodeIds);
+  const total = Math.max(group.nodeCount, nodeIds.length);
+  if (total === 0) return { allUnavailable: false };
+
+  const groupTag = `group-${group.id}`;
+  const runtimeItems = runtimeNodeHealth.value.filter(
+    item =>
+      item.groupTag === groupTag &&
+      item.nodeId !== group.id &&
+      (nodeIdSet.size === 0 || nodeIdSet.has(item.nodeId))
+  );
+  if (runtimeItems.length > 0) {
+    const available = runtimeItems.filter(isAvailableRuntimeHealth).length;
+    const probing = runtimeItems.filter(item => item.probeRunning || item.groupProbeRunning).length;
+    return {
+      allUnavailable:
+        runtimeItems.length >= Math.min(total, nodeIds.length || total) &&
+        available === 0 &&
+        probing === 0,
+    };
+  }
+
+  if (nodeIds.length < total) return { allUnavailable: false };
+
+  let available = 0;
+  let unavailable = 0;
+  let known = 0;
+
+  for (const nodeId of nodeIds) {
+    const health = nodeHealthById.value[nodeId];
+    if (!health) continue;
+    known += 1;
+    if (isAvailableNodeHealth(health)) {
+      available += 1;
+    } else if (isUnavailableNodeHealth(health)) {
+      unavailable += 1;
+    }
+  }
+
+  return {
+    allUnavailable: known >= total && available === 0 && unavailable >= total,
+  };
+}
+
 function isAvailableRuntimeHealth(health: RuntimeNodeHealth): boolean {
   if (health.lastError && !health.probeRunning) return false;
   return (
@@ -777,19 +829,24 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     filter: '',
     isSubscription: false,
     editable: false,
+    allUnavailable: false,
   },
-  ...groups.value.map(group => ({
-    key: toGroupFilterKey(group.id),
-    groupId: group.id,
-    title: group.name,
-    typeLabel: t(`home.groupType.${group.type}`),
-    count: group.nodeCount,
-    detail: groupSummary(group),
-    strategyLabel: t(`home.groupStrategy.${group.strategy}`),
-    filter: group.filter,
-    isSubscription: group.type === 'subscription',
-    editable: group.type === 'manual',
-  })),
+  ...groups.value.map(group => {
+    const healthSummary = nodeGroupCardHealthSummary(group);
+    return {
+      key: toGroupFilterKey(group.id),
+      groupId: group.id,
+      title: group.name,
+      typeLabel: t(`home.groupType.${group.type}`),
+      count: group.nodeCount,
+      detail: groupSummary(group),
+      strategyLabel: t(`home.groupStrategy.${group.strategy}`),
+      filter: group.filter,
+      isSubscription: group.type === 'subscription',
+      editable: group.type === 'manual',
+      allUnavailable: healthSummary.allUnavailable,
+    };
+  }),
 ]);
 
 watch(
@@ -2235,6 +2292,11 @@ function routeFailureLabel(node: ProxyNode): string {
   return String(node.health?.failureCount ?? 0);
 }
 
+function isProbeUnavailableNode(node: ProxyNode): boolean {
+  const health = node.health;
+  return Boolean(health && !health.blacklisted && !health.probeRunning && health.lastError?.trim());
+}
+
 function nodeHealthTime(value: string | null | undefined): number | null {
   if (!value) return null;
 
@@ -2392,6 +2454,7 @@ const homeContext = {
   requestRemoveRoute,
   protocolLabels,
   nodeHealthTitle,
+  isProbeUnavailableNode,
   routeLatencyLabel,
   routeSuccessLabel,
   routeFailureLabel,

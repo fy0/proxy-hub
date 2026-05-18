@@ -134,6 +134,25 @@
   background: rgb(255 247 247);
 }
 
+.node-row.probe-unavailable {
+  position: relative;
+  border-color: rgb(239 68 68 / 0.5);
+  background: rgb(255 241 242);
+  box-shadow: 0 12px 30px rgb(190 18 60 / 0.08);
+}
+
+.node-row.probe-unavailable::before {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 4px;
+  border-radius: 0 999px 999px 0;
+  background: rgb(220 38 38);
+}
+
 .notice-bar {
   min-height: 58px;
   display: flex;
@@ -1395,6 +1414,28 @@ textarea:focus {
   border-color: rgb(34 197 94 / 0.34);
 }
 
+.node-group-summary-card.unavailable {
+  border-color: rgb(239 68 68 / 0.48);
+  background: rgb(255 241 242);
+  box-shadow: 0 12px 30px rgb(190 18 60 / 0.08);
+}
+
+.node-group-summary-card.unavailable::before {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 4px;
+  border-radius: 0 999px 999px 0;
+  background: rgb(220 38 38);
+}
+
+.node-group-summary-card.unavailable:hover {
+  border-color: rgb(220 38 38 / 0.58);
+}
+
 .node-group-summary-main {
   width: 100%;
   min-height: 132px;
@@ -1434,6 +1475,11 @@ textarea:focus {
   color: rgb(37 99 235);
 }
 
+.node-group-summary-card.unavailable .node-summary-type {
+  background: rgb(254 226 226);
+  color: rgb(185 28 28);
+}
+
 .node-group-summary-card strong {
   grid-column: 1 / span 2;
   padding-right: 28px;
@@ -1451,6 +1497,10 @@ textarea:focus {
   color: rgb(15 23 42);
   font-size: 12px;
   font-weight: 850;
+}
+
+.node-group-summary-card.unavailable .node-summary-count {
+  color: rgb(185 28 28);
 }
 
 .node-group-summary-card small {
@@ -1478,6 +1528,11 @@ textarea:focus {
   font-size: 11px;
   font-style: normal;
   font-weight: 750;
+}
+
+.node-group-summary-card.unavailable .node-summary-meta em {
+  background: rgb(254 226 226);
+  color: rgb(185 28 28);
 }
 
 .active-node-group {
@@ -1772,11 +1827,18 @@ textarea:focus {
   box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.28);
 }
 
+.node-health-strip.probe-unavailable .latency {
+  color: rgb(185 28 28);
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgb(239 68 68 / 0.28);
+}
+
 .node-meta .action-tooltip-trigger {
   min-width: 0;
 }
 
-.node-meta .blacklisted {
+.node-meta .blacklisted,
+.node-meta .probe-unavailable {
   max-width: 100%;
   min-height: 18px;
   display: inline-flex;
@@ -1790,6 +1852,12 @@ textarea:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-meta .probe-unavailable {
+  background: rgb(220 38 38);
+  color: #ffffff;
+  box-shadow: 0 6px 14px rgb(220 38 38 / 0.16);
 }
 
 .manual-node-form,

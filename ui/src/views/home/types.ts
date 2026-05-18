@@ -63,6 +63,7 @@ export interface NodeGroupSummaryItem {
   filter: string;
   isSubscription: boolean;
   editable: boolean;
+  allUnavailable: boolean;
 }
 
 export interface HomeViewContext {
@@ -97,6 +98,7 @@ export interface HomeViewContext {
   requestRemoveRoute: (mapping: PortMapping, target: ProxyNode | ProxyGroup) => void;
   protocolLabels: Readable<Record<ProxyProtocol, string>>;
   nodeHealthTitle: (node: ProxyNode) => string;
+  isProbeUnavailableNode: (node: ProxyNode) => boolean;
   routeLatencyLabel: (node: ProxyNode) => string;
   routeSuccessLabel: (node: ProxyNode) => string;
   routeFailureLabel: (node: ProxyNode) => string;

@@ -17,7 +17,12 @@ const { groupSummaryItems, selectNodeGroupFilter, openEditGroupById, importMessa
 <template>
   <section class="panel simple-panel">
     <div class="node-group-summary-grid">
-      <article v-for="item in groupSummaryItems" :key="item.key" class="node-group-summary-card">
+      <article
+        v-for="item in groupSummaryItems"
+        :key="item.key"
+        class="node-group-summary-card"
+        :class="{ unavailable: item.allUnavailable }"
+      >
         <button
           type="button"
           class="node-group-summary-main"

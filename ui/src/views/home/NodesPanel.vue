@@ -36,6 +36,7 @@ const {
   routeSuccessLabel,
   routeFailureLabel,
   nodeHealthTitle,
+  isProbeUnavailableNode,
   nodeBlacklistLabel,
   isLoadingNodes,
   loadNextNodePage,
@@ -162,7 +163,10 @@ const {
               v-for="row in virtualNodeRows"
               :key="row.data.id"
               class="node-row"
-              :class="{ blacklisted: row.data.health?.blacklisted }"
+              :class="{
+                blacklisted: row.data.health?.blacklisted,
+                'probe-unavailable': isProbeUnavailableNode(row.data),
+              }"
               :style="{ height: '116px' }"
             >
               <div class="node-protocol" :class="{ chain: row.data.protocol === 'chain' }">
@@ -235,6 +239,7 @@ const {
                   class="node-health-strip"
                   :class="{
                     blacklisted: row.data.health?.blacklisted,
+                    'probe-unavailable': isProbeUnavailableNode(row.data),
                     probing: row.data.health?.probeRunning,
                   }"
                 >
@@ -258,6 +263,17 @@ const {
                   wrap
                 >
                   <small class="blacklisted" tabindex="0">{{ nodeBlacklistLabel(row.data) }}</small>
+                </ActionTooltip>
+                <ActionTooltip
+                  v-else-if="isProbeUnavailableNode(row.data)"
+                  :label="nodeHealthTitle(row.data)"
+                  side="bottom"
+                  align="start"
+                  wrap
+                >
+                  <small class="probe-unavailable" tabindex="0">{{
+                    t('home.nodeHealth.unavailable')
+                  }}</small>
                 </ActionTooltip>
               </div>
             </article>
