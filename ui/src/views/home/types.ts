@@ -2,6 +2,7 @@ import type { ComputedRef, Ref } from 'vue';
 import type {
   ImportPreviewItem,
   ImportPreviewResult,
+  MappingSwitchTargetType,
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
@@ -93,6 +94,16 @@ export interface HomeViewContext {
     targetType: RouteActionTargetType,
     targetId: string
   ) => void;
+  isActiveRoute: (
+    mapping: PortMapping,
+    targetType: MappingSwitchTargetType,
+    targetId: string
+  ) => boolean;
+  switchMappingRoute: (
+    mapping: PortMapping,
+    targetType: MappingSwitchTargetType,
+    targetId: string
+  ) => Promise<void>;
   openNodeTestDialog: (node: ProxyNode) => void;
   requestRemoveRoute: (mapping: PortMapping, target: ProxyNode | ProxyGroup) => void;
   protocolLabels: Readable<Record<ProxyProtocol, string>>;
@@ -101,6 +112,10 @@ export interface HomeViewContext {
   routeSuccessLabel: (node: ProxyNode) => string;
   routeFailureLabel: (node: ProxyNode) => string;
   mappingGroups: (mapping: PortMapping) => ProxyGroup[];
+  groupRouteTotalLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteAvailableLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteLatencyLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteHealthTitle: (mapping: PortMapping, group: ProxyGroup) => string;
   openNewMappingDialog: () => void;
 
   nodeSearch: Ref<string>;

@@ -694,6 +694,52 @@ func MappingUpdate(ctx context.Context, tx model.DBTx, id string, req MappingUps
 	return MappingGet(ctx, tx, id)
 }
 
+func MappingSwitch(ctx context.Context, tx model.DBTx, id string, req MappingSwitchRequest) (*tables.PortMappingTable, error) {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var mapping tables.PortMappingTable
+	if err := tx.First(&mapping, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrMappingNotFound
+		}
+		return nil, err
+	}
+	if normalizeStrategy(mapping.Strategy) != StrategyManual {
+		return nil, ErrInvalidMappingSwitch
+	}
+
+	targetType := strings.ToLower(strings.TrimSpace(req.TargetType))
+	targetID := strings.TrimSpace(req.TargetID)
+	if targetID == "" {
+		return nil, ErrInvalidMappingSwitch
+	}
+
+	updates := map[string]any{
+		"updated_at": time.Now(),
+	}
+	switch targetType {
+	case MappingSwitchTargetNode:
+		if !containsString(decodeStringSlice(mapping.NodeIDsJSON), targetID) {
+			return nil, ErrInvalidMappingSwitch
+		}
+		updates["active_node_id"] = targetID
+		updates["active_group_id"] = ""
+	case MappingSwitchTargetGroup:
+		if !containsString(decodeStringSlice(mapping.GroupIDsJSON), targetID) {
+			return nil, ErrInvalidMappingSwitch
+		}
+		updates["active_node_id"] = ""
+		updates["active_group_id"] = targetID
+	default:
+		return nil, ErrInvalidMappingSwitch
+	}
+
+	if err := tx.Model(&mapping).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	return MappingGet(ctx, tx, id)
+}
+
 func MappingGet(ctx context.Context, tx model.DBTx, id string) (*tables.PortMappingTable, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
 
@@ -1195,17 +1241,13 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	for _, node := range nodes {
 		normalized.NodeIDs = append(normalized.NodeIDs, node.ID)
 	}
-	active := ""
+	activeNode := ""
 	if normalized.ActiveNodeID != nil {
-		active = strings.TrimSpace(*normalized.ActiveNodeID)
+		activeNode = strings.TrimSpace(*normalized.ActiveNodeID)
 	}
-	if active != "" && !containsString(normalized.NodeIDs, active) {
-		active = ""
+	if activeNode != "" && !containsString(normalized.NodeIDs, activeNode) {
+		activeNode = ""
 	}
-	if active == "" && len(normalized.NodeIDs) > 0 {
-		active = normalized.NodeIDs[0]
-	}
-	normalized.ActiveNodeID = stringPtrOrNil(active)
 
 	groups, err := findGroupsByIDs(ctx, tx, normalized.GroupIDs)
 	if err != nil {
@@ -1222,9 +1264,18 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	if activeGroup != "" && !containsString(normalized.GroupIDs, activeGroup) {
 		activeGroup = ""
 	}
-	if activeGroup == "" && len(normalized.GroupIDs) > 0 {
+
+	switch {
+	case activeGroup != "":
+		activeNode = ""
+	case activeNode != "":
+	case len(normalized.GroupIDs) > 0:
 		activeGroup = normalized.GroupIDs[0]
+	case len(normalized.NodeIDs) > 0:
+		activeNode = normalized.NodeIDs[0]
 	}
+
+	normalized.ActiveNodeID = stringPtrOrNil(activeNode)
 	normalized.ActiveGroupID = stringPtrOrNil(activeGroup)
 
 	if err := ensureListenPortAvailable(ctx, tx, mappingID, normalized.ListenPort); err != nil {
@@ -1325,6 +1376,8 @@ func normalizeStrategy(strategy string) string {
 		return StrategyLoadBalance
 	case StrategyManual:
 		return StrategyManual
+	case StrategyLeastLatency:
+		return StrategyLeastLatency
 	default:
 		return StrategyManual
 	}

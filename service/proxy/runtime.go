@@ -1012,11 +1012,22 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 		strategy = singboxcore.BalanceRoundRobin
 	case StrategyFailover:
 		strategy = singboxcore.BalanceManual
+	case StrategyLeastLatency:
+		strategy = singboxcore.BalanceLeastLatency
 	}
+	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
 		Strategy:            strategy,
-		FailureBlacklistTTL: normalizeHealthConfig(currentHealthConfig()).BlacklistDuration,
+		FailureBlacklistTTL: healthConfig.BlacklistDuration,
 		RemoveTTL:           2 * time.Minute,
+		ProbeURL:            healthConfig.ProbeURL,
+		ProbeInterval:       healthConfig.Interval,
+		ProbeTimeout:        healthConfig.Timeout,
+		ProbeTestTimeout:    minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
+		ProbeConcurrency:    minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
+		MaxLatency:          healthConfig.Timeout,
+		SlowThreshold:       healthConfig.FailureThreshold,
+		FallbackStrategy:    singboxcore.BalanceRoundRobin,
 	}
 }
 

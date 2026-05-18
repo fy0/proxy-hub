@@ -42,16 +42,19 @@ import { useAppStore } from '@/stores/app';
 import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import type {
   ImportPreviewResult,
+  MappingSwitchTargetType,
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
   ProxyGroupStrategy,
   ProxyNode,
+  ProxyNodeHealth,
   ProxyNodeOption,
   ProxyTestResult,
   ProxyProtocol,
   RouteStrategy,
   RuntimeExcludedNode,
+  RuntimeNodeHealth,
 } from '@/types/proxyHub';
 import './home.css';
 
@@ -108,12 +111,14 @@ const strategyLabels = computed<Record<RouteStrategy, string>>(() => ({
   failover: t('home.strategy.failover'),
   'load-balance': t('home.strategy.loadBalance'),
   manual: t('home.strategy.manual'),
+  'least-latency': t('home.strategy.leastLatency'),
 }));
 
 const strategyOptions = computed<Array<{ label: string; value: RouteStrategy }>>(() => [
   { label: strategyLabels.value.failover, value: 'failover' },
   { label: strategyLabels.value['load-balance'], value: 'load-balance' },
   { label: strategyLabels.value.manual, value: 'manual' },
+  { label: strategyLabels.value['least-latency'], value: 'least-latency' },
 ]);
 
 const {
@@ -156,6 +161,7 @@ const {
   removeSubscription,
   addMapping,
   updateMapping,
+  switchMapping,
   removeMapping,
   testMapping,
   loadNodes,
@@ -458,6 +464,125 @@ function mappingGroups(mapping: PortMapping): ProxyGroup[] {
     .filter((group): group is ProxyGroup => Boolean(group));
 }
 
+function groupNodeIds(group: ProxyGroup, visited = new Set<string>()): string[] {
+  if (visited.has(group.id)) return [];
+  visited.add(group.id);
+
+  const ids = [...group.nodeIds];
+  for (const childGroupId of group.groupIds) {
+    const childGroup = groupById.value.get(childGroupId);
+    if (childGroup) {
+      ids.push(...groupNodeIds(childGroup, visited));
+    }
+  }
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
+function groupRouteRuntimeHealth(mapping: PortMapping, group: ProxyGroup): RuntimeNodeHealth[] {
+  const groupTag = `group-${group.id}`;
+  return runtimeNodeHealth.value.filter(
+    item => item.mappingId === mapping.id && item.groupTag === groupTag
+  );
+}
+
+function isAvailableNodeHealth(health: ProxyNodeHealth | null | undefined): boolean {
+  if (!health || health.blacklisted || (health.lastError && !health.probeRunning)) return false;
+  return health.available || health.lastLatencyMs > 0 || health.probeRunning;
+}
+
+function isAvailableRuntimeHealth(health: RuntimeNodeHealth): boolean {
+  if (health.lastError && !health.probeRunning) return false;
+  return (
+    health.latencyCandidate ||
+    health.latencyFallback ||
+    health.lastLatencyMs > 0 ||
+    health.probeRunning ||
+    health.groupProbeRunning
+  );
+}
+
+function groupRouteHealthSummary(mapping: PortMapping, group: ProxyGroup) {
+  const runtimeItems = groupRouteRuntimeHealth(mapping, group);
+  const nodeIds = groupNodeIds(group);
+  const total = Math.max(group.nodeCount, nodeIds.length, runtimeItems.length);
+  let available = 0;
+  let probing = 0;
+  let fastestLatencyMs = 0;
+
+  if (runtimeItems.length > 0) {
+    for (const health of runtimeItems) {
+      if (isAvailableRuntimeHealth(health)) available += 1;
+      if (health.probeRunning || health.groupProbeRunning) probing += 1;
+      if (
+        health.lastLatencyMs > 0 &&
+        (fastestLatencyMs === 0 || health.lastLatencyMs < fastestLatencyMs)
+      ) {
+        fastestLatencyMs = health.lastLatencyMs;
+      }
+    }
+    return { available, fastestLatencyMs, probing, total };
+  }
+
+  for (const nodeId of nodeIds) {
+    const health = nodeHealthById.value[nodeId];
+    if (isAvailableNodeHealth(health)) available += 1;
+    if (health?.probeRunning) probing += 1;
+    if (
+      health?.lastLatencyMs &&
+      health.lastLatencyMs > 0 &&
+      (fastestLatencyMs === 0 || health.lastLatencyMs < fastestLatencyMs)
+    ) {
+      fastestLatencyMs = health.lastLatencyMs;
+    }
+  }
+  return { available, fastestLatencyMs, probing, total };
+}
+
+function groupRouteTotalLabel(mapping: PortMapping, group: ProxyGroup): string {
+  return t('home.nodeGroupHealth.total', {
+    count: groupRouteHealthSummary(mapping, group).total,
+  });
+}
+
+function groupRouteAvailableLabel(mapping: PortMapping, group: ProxyGroup): string {
+  return t('home.nodeGroupHealth.available', {
+    count: groupRouteHealthSummary(mapping, group).available,
+  });
+}
+
+function groupRouteLatencyLabel(mapping: PortMapping, group: ProxyGroup): string {
+  const latency = groupRouteHealthSummary(mapping, group).fastestLatencyMs;
+  return latency > 0 ? `${latency}ms` : '-ms';
+}
+
+function groupRouteHealthTitle(mapping: PortMapping, group: ProxyGroup): string {
+  const summary = groupRouteHealthSummary(mapping, group);
+  const details = [
+    t('home.nodeGroupHealth.total', { count: summary.total }),
+    t('home.nodeGroupHealth.available', { count: summary.available }),
+    t('home.nodeGroupHealth.fastest', {
+      latency: summary.fastestLatencyMs > 0 ? `${summary.fastestLatencyMs}ms` : '-',
+    }),
+  ];
+  if (summary.probing > 0) {
+    details.push(t('home.nodeGroupHealth.probing', { count: summary.probing }));
+  }
+  return details.join('\n');
+}
+
+function mappingHasActiveRoute(mapping: PortMapping): boolean {
+  return Boolean(mapping.activeNodeId || mapping.activeGroupId);
+}
+
+function isActiveRoute(
+  mapping: PortMapping,
+  targetType: MappingSwitchTargetType,
+  targetId: string
+): boolean {
+  if (targetType === 'group') return mapping.activeGroupId === targetId;
+  return mapping.activeNodeId === targetId && !mapping.activeGroupId;
+}
+
 function mappingEndpoint(mapping: PortMapping): string {
   return `${mapping.listenAddress}:${mapping.listenPort}`;
 }
@@ -569,7 +694,10 @@ const selectedNodeGroupHealthSummary = computed(() => {
     } else if (health.available || health.lastLatencyMs > 0) {
       available += 1;
     }
-    if (health.lastLatencyMs > 0 && (fastestLatencyMs === 0 || health.lastLatencyMs < fastestLatencyMs)) {
+    if (
+      health.lastLatencyMs > 0 &&
+      (fastestLatencyMs === 0 || health.lastLatencyMs < fastestLatencyMs)
+    ) {
       fastestLatencyMs = health.lastLatencyMs;
     }
   }
@@ -777,11 +905,26 @@ function mergeNodeOptions(...groupsToMerge: ProxyNodeOption[][]): ProxyNodeOptio
   return Array.from(byId.values());
 }
 
+function groupFilterLabel(name: string, count: number): string {
+  return t('home.groupMeta.optionNodeCount', {
+    name,
+    countLabel: t('home.groupMeta.nodeCount', { count }),
+  });
+}
+
 function groupFilterOptions(includeAll = true): Array<{ id: string; label: string }> {
   return [
-    ...(includeAll ? [{ id: '', label: t('home.groupFilters.all') }] : []),
-    { id: '__default__', label: t('home.groupFilters.default') },
-    ...groups.value.map(group => ({ id: group.id, label: group.name })),
+    ...(includeAll
+      ? [{ id: '', label: groupFilterLabel(t('home.groupFilters.all'), nodeTotal.value) }]
+      : []),
+    {
+      id: '__default__',
+      label: groupFilterLabel(t('home.groupFilters.default'), defaultNodeTotal.value),
+    },
+    ...groups.value.map(group => ({
+      id: group.id,
+      label: groupFilterLabel(group.name, group.nodeCount),
+    })),
   ];
 }
 
@@ -1471,10 +1614,11 @@ function findDuplicateRouteNode(rawUri: string): ProxyNode | null {
 
 function attachNodeToMapping(mapping: PortMapping, nodeId: string): Promise<PortMapping> {
   const nodeIds = Array.from(new Set([...mapping.nodeIds, nodeId]));
-  return updateMapping(mapping.id, {
-    nodeIds,
-    activeNodeId: mapping.activeNodeId || nodeId,
-  });
+  const patch: Partial<PortMapping> = { nodeIds };
+  if (!mappingHasActiveRoute(mapping)) {
+    patch.activeNodeId = nodeId;
+  }
+  return updateMapping(mapping.id, patch);
 }
 
 async function addUriRouteToMapping(
@@ -1546,10 +1690,11 @@ async function saveRouteDialog(): Promise<void> {
       await attachNodeToMapping(mapping, routeNodeForm.existingNodeId);
     } else {
       const groupIds = Array.from(new Set([...mapping.groupIds, routeNodeForm.groupId]));
-      await updateMapping(mapping.id, {
-        groupIds,
-        activeGroupId: mapping.activeGroupId || routeNodeForm.groupId,
-      });
+      const patch: Partial<PortMapping> = { groupIds };
+      if (!mappingHasActiveRoute(mapping)) {
+        patch.activeGroupId = routeNodeForm.groupId;
+      }
+      await updateMapping(mapping.id, patch);
     }
     if (!duplicateRouteNodeDialog.value) closeRouteDialog();
   } catch (error) {
@@ -1612,6 +1757,22 @@ function toggleRouteActionMenu(
 
 function closeRouteActionMenu(): void {
   openRouteActionKey.value = null;
+}
+
+async function switchMappingRoute(
+  mapping: PortMapping,
+  targetType: MappingSwitchTargetType,
+  targetId: string
+): Promise<void> {
+  closeRouteActionMenu();
+  if (mapping.strategy !== 'manual' || isActiveRoute(mapping, targetType, targetId)) return;
+
+  try {
+    await switchMapping(mapping.id, targetType, targetId);
+    importMessage.value = t('home.messages.routeSwitched');
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
 }
 
 function requestRemoveRoute(mapping: PortMapping, target: ProxyNode | ProxyGroup): void {
@@ -2221,6 +2382,8 @@ const homeContext = {
   mappingNodes,
   isRouteActionMenuOpen,
   toggleRouteActionMenu,
+  isActiveRoute,
+  switchMappingRoute,
   openNodeTestDialog,
   requestRemoveRoute,
   protocolLabels,
@@ -2229,6 +2392,10 @@ const homeContext = {
   routeSuccessLabel,
   routeFailureLabel,
   mappingGroups,
+  groupRouteTotalLabel,
+  groupRouteAvailableLabel,
+  groupRouteLatencyLabel,
+  groupRouteHealthTitle,
   openNewMappingDialog,
   nodeSearch,
   hideEmptyNodeGroups,
@@ -2752,9 +2919,7 @@ const homeContext = {
             </h2>
             <p>
               {{
-                editingGroupId
-                  ? t('home.dialogs.editGroupLead')
-                  : t('home.dialogs.addGroupLead')
+                editingGroupId ? t('home.dialogs.editGroupLead') : t('home.dialogs.addGroupLead')
               }}
             </p>
           </div>

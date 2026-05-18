@@ -14,7 +14,9 @@ export type ProxyProtocol =
 
 export type OutboundProtocol = 'mixed' | 'socks5' | 'http';
 
-export type RouteStrategy = 'failover' | 'load-balance' | 'manual';
+export type RouteStrategy = 'failover' | 'load-balance' | 'manual' | 'least-latency';
+
+export type MappingSwitchTargetType = 'node' | 'group';
 
 export type ProxyGroupType = 'manual' | 'subscription';
 

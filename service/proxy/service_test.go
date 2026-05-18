@@ -811,6 +811,145 @@ func TestMappingCreateAssignsAscendingOrderAndListsOldestFirst(t *testing.T) {
 	}
 }
 
+func TestMappingCreateAcceptsLeastLatencyStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10083,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if mapping.Strategy != StrategyLeastLatency {
+		t.Fatalf("mapping strategy = %q, want %q", mapping.Strategy, StrategyLeastLatency)
+	}
+}
+
+func TestMappingSwitchUpdatesActiveRoute(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:    "group",
+		NodeIDs: []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10084,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{node.ID},
+		GroupIDs:         []string{group.ID},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	switched, err := MappingSwitch(ctx, nil, mapping.ID, MappingSwitchRequest{
+		TargetType: MappingSwitchTargetNode,
+		TargetID:   node.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingSwitch(node) error = %v", err)
+	}
+	if switched.ActiveNodeID != node.ID || switched.ActiveGroupID != "" {
+		t.Fatalf("active after node switch = node %q group %q, want node only", switched.ActiveNodeID, switched.ActiveGroupID)
+	}
+
+	switched, err = MappingSwitch(ctx, nil, mapping.ID, MappingSwitchRequest{
+		TargetType: MappingSwitchTargetGroup,
+		TargetID:   group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingSwitch(group) error = %v", err)
+	}
+	if switched.ActiveNodeID != "" || switched.ActiveGroupID != group.ID {
+		t.Fatalf("active after group switch = node %q group %q, want group only", switched.ActiveNodeID, switched.ActiveGroupID)
+	}
+}
+
+func TestMappingSwitchRejectsInvalidTargets(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "node",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(node) error = %v", err)
+	}
+	other, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "other",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(other) error = %v", err)
+	}
+	manual, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10085,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(manual) error = %v", err)
+	}
+	if _, err := MappingSwitch(ctx, nil, manual.ID, MappingSwitchRequest{TargetType: MappingSwitchTargetNode, TargetID: other.ID}); !errors.Is(err, ErrInvalidMappingSwitch) {
+		t.Fatalf("MappingSwitch(non-member) error = %v, want %v", err, ErrInvalidMappingSwitch)
+	}
+
+	loadBalanced, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10086,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLoadBalance,
+		NodeIDs:          []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(load-balanced) error = %v", err)
+	}
+	if _, err := MappingSwitch(ctx, nil, loadBalanced.ID, MappingSwitchRequest{TargetType: MappingSwitchTargetNode, TargetID: node.ID}); !errors.Is(err, ErrInvalidMappingSwitch) {
+		t.Fatalf("MappingSwitch(non-manual) error = %v, want %v", err, ErrInvalidMappingSwitch)
+	}
+}
+
 func TestSettingsImportRoundTripReplacesExistingConfig(t *testing.T) {
 	initProxyInMemoryDB(t)
 	t.Cleanup(func() {

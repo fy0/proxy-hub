@@ -25,9 +25,10 @@ const (
 	OutboundProtocolSOCKS = "socks5"
 	OutboundProtocolHTTP  = "http"
 
-	StrategyFailover    = "failover"
-	StrategyLoadBalance = "load-balance"
-	StrategyManual      = "manual"
+	StrategyFailover     = "failover"
+	StrategyLoadBalance  = "load-balance"
+	StrategyManual       = "manual"
+	StrategyLeastLatency = "least-latency"
 
 	GroupTypeManual       = "manual"
 	GroupTypeSubscription = "subscription"
@@ -304,6 +305,16 @@ type MappingUpsertRequest struct {
 	GroupIDs         []string `json:"groupIds,omitempty"`
 	ActiveGroupID    *string  `json:"activeGroupId,omitempty"`
 	Remark           string   `json:"remark,omitempty" validate:"omitempty,max=500"`
+}
+
+const (
+	MappingSwitchTargetNode  = "node"
+	MappingSwitchTargetGroup = "group"
+)
+
+type MappingSwitchRequest struct {
+	TargetType string `json:"targetType" validate:"required"`
+	TargetID   string `json:"targetId" validate:"required"`
 }
 
 func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {

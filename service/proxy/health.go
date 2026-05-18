@@ -755,6 +755,9 @@ func mappingHasLeastLatencyRoute(ctx context.Context, mapping *tables.PortMappin
 	if mapping == nil {
 		return false
 	}
+	if normalizeStrategy(mapping.Strategy) == StrategyLeastLatency {
+		return true
+	}
 	groups, err := findGroupsByIDs(ctx, nil, decodeStringSlice(mapping.GroupIDsJSON))
 	if err != nil {
 		return false

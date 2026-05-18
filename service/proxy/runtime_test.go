@@ -234,6 +234,26 @@ func TestLeastLatencyGroupUsesLeastLatencyPolicy(t *testing.T) {
 	}
 }
 
+func TestLeastLatencyMappingUsesLeastLatencyPolicy(t *testing.T) {
+	mapping := &tables.PortMappingTable{Strategy: StrategyLeastLatency}
+	policy := policyForMapping(mapping)
+	if policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceLeastLatency)
+	}
+	if policy.ProbeURL == "" {
+		t.Fatalf("policy probe URL is empty")
+	}
+	if policy.ProbeConcurrency <= 0 {
+		t.Fatalf("policy probe concurrency = %d, want positive", policy.ProbeConcurrency)
+	}
+	if policy.ProbeTimeout <= 0 {
+		t.Fatalf("policy probe timeout = %v, want positive", policy.ProbeTimeout)
+	}
+	if policy.FallbackStrategy != singboxcore.BalanceRoundRobin {
+		t.Fatalf("policy fallback strategy = %q, want %q", policy.FallbackStrategy, singboxcore.BalanceRoundRobin)
+	}
+}
+
 func TestSubscriptionURLTestGroupUsesLeastLatencyPolicy(t *testing.T) {
 	group := &tables.ProxyGroupTable{
 		Type:     GroupTypeSubscription,

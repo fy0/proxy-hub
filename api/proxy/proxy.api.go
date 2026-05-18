@@ -274,6 +274,14 @@ func Register(api huma.API) {
 	}, mappingTestHandler)
 
 	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/mappings/{id}/switch",
+		Summary:     "切换端口当前线路",
+		OperationID: "proxy-mapping-switch",
+		Tags:        []string{proxyTag},
+	}, mappingSwitchHandler)
+
+	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
 		Path:        "/runtime/status",
 		Summary:     "代理运行状态",
@@ -908,6 +916,24 @@ func mappingTestHandler(ctx context.Context, input *mappingTestInput) (*proxyTes
 	return &proxyTestOutput{Body: *result}, nil
 }
 
+type mappingSwitchInput struct {
+	ID   string `path:"id"`
+	Body proxyService.MappingSwitchRequest
+}
+
+func mappingSwitchHandler(ctx context.Context, input *mappingSwitchInput) (*mappingOutput, error) {
+	mapping, err := proxyService.MappingSwitch(ctx, nil, input.ID, input.Body)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
+		return nil, err
+	}
+	output := &mappingOutput{}
+	output.Body.Item = proxyService.ToMappingDTO(mapping)
+	return output, nil
+}
+
 type runtimeStatusOutput struct {
 	Body proxyService.RuntimeStatus `json:"body"`
 }
@@ -1012,7 +1038,8 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrInvalidHealthDuration),
 		errors.Is(err, proxyService.ErrInvalidChain),
 		errors.Is(err, proxyService.ErrInvalidSettingsBackup),
-		errors.Is(err, proxyService.ErrInvalidProbeURL):
+		errors.Is(err, proxyService.ErrInvalidProbeURL),
+		errors.Is(err, proxyService.ErrInvalidMappingSwitch):
 		return humanaError(http.StatusBadRequest, err.Error())
 	default:
 		return humanaError(http.StatusInternalServerError, err.Error())

@@ -11,6 +11,7 @@ import {
   getProxyState,
   postProxyGroups,
   postProxyMappings,
+  postProxyMappingsByIdSwitch,
   postProxyMappingsByIdTest,
   postProxyNodes,
   postProxyNodesByIdTest,
@@ -26,6 +27,7 @@ import {
 } from '@/api/generated';
 import type {
   GroupUpsertRequestWritable,
+  MappingSwitchRequestWritable,
   NodeImportPreviewItem,
   NodeImportResult,
   MappingUpsertRequestWritable,
@@ -47,6 +49,7 @@ import type {
   ImportPreviewItem,
   ImportPreviewResult,
   ImportPreviewType,
+  MappingSwitchTargetType,
   PortMapping,
   ProxyGroup,
   ProxyGroupStrategy,
@@ -199,7 +202,12 @@ function normalizeOutboundProtocol(value: string | null | undefined): OutboundPr
 function normalizeStrategy(value: string | null | undefined): RouteStrategy {
   const strategy = value?.toLowerCase() ?? 'manual';
 
-  if (strategy === 'failover' || strategy === 'load-balance' || strategy === 'manual') {
+  if (
+    strategy === 'failover' ||
+    strategy === 'load-balance' ||
+    strategy === 'manual' ||
+    strategy === 'least-latency'
+  ) {
     return strategy;
   }
 
@@ -517,12 +525,12 @@ function runtimeHealthToNodeHealth(item: RuntimeNodeHealth): ProxyNodeHealth | n
     Boolean(item.groupNextProbeAt) ||
     item.latencyCandidate ||
     item.latencyFallback;
-  if (!item.nodeId || !hasRuntimeHealth)
-    return null;
+  if (!item.nodeId || !hasRuntimeHealth) return null;
   const now = new Date().toISOString();
   return {
     nodeId: item.nodeId,
-    available: item.latencyCandidate || item.latencyFallback || (item.lastLatencyMs > 0 && !item.lastError),
+    available:
+      item.latencyCandidate || item.latencyFallback || (item.lastLatencyMs > 0 && !item.lastError),
     failureCount: item.probeFailureCount,
     successCount: item.lastSuccessAt ? 1 : 0,
     blacklisted: false,
@@ -537,14 +545,18 @@ function runtimeHealthToNodeHealth(item: RuntimeNodeHealth): ProxyNodeHealth | n
     nextProbeAt: null,
     source: 'runtime',
     updatedAt:
-      item.lastCheckedAt ?? item.probeStartedAt ?? item.groupLastProbeAt ?? item.groupNextProbeAt ?? now,
+      item.lastCheckedAt ??
+      item.probeStartedAt ??
+      item.groupLastProbeAt ??
+      item.groupNextProbeAt ??
+      now,
   };
 }
 
 function applyRuntimeNodeHealth(status: RuntimeStatus | null): void {
-  const items = (((status as { nodeHealth?: unknown[] } | null)?.nodeHealth ?? [])
+  const items = ((status as { nodeHealth?: unknown[] } | null)?.nodeHealth ?? [])
     .map(toRuntimeNodeHealth)
-    .filter((item): item is RuntimeNodeHealth => Boolean(item)));
+    .filter((item): item is RuntimeNodeHealth => Boolean(item));
   runtimeNodeHealth.value = items;
   cacheNodeHealth(items.map(runtimeHealthToNodeHealth));
 }
@@ -806,6 +818,16 @@ function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
   };
 }
 
+function mappingSwitchToRequest(
+  targetType: MappingSwitchTargetType,
+  targetId: string
+): MappingSwitchRequestWritable {
+  return {
+    targetType,
+    targetId: targetId.trim(),
+  };
+}
+
 function groupToRequest(input: GroupInput): GroupUpsertRequestWritable {
   return {
     name: input.name.trim(),
@@ -925,7 +947,7 @@ export async function refreshProxyHubState(): Promise<void> {
 
   try {
     const { data } = await getProxyState({
-      query: { includeNodes: false, includeGroupMembers: false },
+      query: { includeNodes: false, includeGroupMembers: true },
       throwOnError: true,
     });
     applySnapshot(data);
@@ -1324,6 +1346,25 @@ async function updateMapping(id: string, patch: Partial<MappingInput>): Promise<
   });
 }
 
+async function switchMapping(
+  id: string,
+  targetType: MappingSwitchTargetType,
+  targetId: string
+): Promise<PortMapping> {
+  return runMutation(async () => {
+    const { data } = await postProxyMappingsByIdSwitch({
+      path: { id },
+      body: mappingSwitchToRequest(targetType, targetId),
+      throwOnError: true,
+    });
+    const mapping = toPortMapping(data.item);
+    upsertMapping(mapping);
+    markSaved(mapping.updatedAt);
+    await refreshRuntimeStatus();
+    return mapping;
+  });
+}
+
 async function removeMapping(id: string): Promise<void> {
   await runMutation(async () => {
     await deleteProxyMappingsById({ path: { id }, throwOnError: true });
@@ -1428,6 +1469,7 @@ export function useProxyHubState() {
     removeSubscription,
     addMapping,
     updateMapping,
+    switchMapping,
     removeMapping,
     testMapping,
     resetDemoData,

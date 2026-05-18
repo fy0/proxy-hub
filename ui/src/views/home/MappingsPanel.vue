@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, Edit3, Gauge, MoreVertical, Plus, Power, Trash2 } from 'lucide-vue-next';
+import { Check, Copy, Edit3, Gauge, MoreVertical, Plus, Power, Trash2 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -37,6 +37,8 @@ const {
   mappingNodes,
   isRouteActionMenuOpen,
   toggleRouteActionMenu,
+  isActiveRoute,
+  switchMappingRoute,
   openNodeTestDialog,
   requestRemoveRoute,
   openEditGroupDialog,
@@ -46,6 +48,10 @@ const {
   routeSuccessLabel,
   routeFailureLabel,
   mappingGroups,
+  groupRouteTotalLabel,
+  groupRouteAvailableLabel,
+  groupRouteLatencyLabel,
+  groupRouteHealthTitle,
   openNewMappingDialog,
 } = props.context;
 </script>
@@ -170,7 +176,12 @@ const {
         </div>
 
         <div class="route-card-grid">
-          <article v-for="node in mappingNodes(mapping)" :key="node.id" class="inner-route-card">
+          <article
+            v-for="node in mappingNodes(mapping)"
+            :key="node.id"
+            class="inner-route-card"
+            :class="{ active: isActiveRoute(mapping, 'node', node.id) }"
+          >
             <div class="route-card-actions" @click.stop>
               <ActionTooltip :label="t('home.aria.moreActions')" align="end">
                 <button
@@ -189,6 +200,16 @@ const {
                 class="route-action-menu"
                 role="menu"
               >
+                <button
+                  v-if="mapping.strategy === 'manual' && !isActiveRoute(mapping, 'node', node.id)"
+                  type="button"
+                  class="route-action-menu-item"
+                  role="menuitem"
+                  @click.stop="switchMappingRoute(mapping, 'node', node.id)"
+                >
+                  <Check class="size-4" aria-hidden="true" />
+                  <span>{{ t('common.setActiveRoute') }}</span>
+                </button>
                 <button
                   type="button"
                   class="route-action-menu-item"
@@ -242,6 +263,7 @@ const {
             v-for="group in mappingGroups(mapping)"
             :key="group.id"
             class="inner-route-card group-route-card"
+            :class="{ active: isActiveRoute(mapping, 'group', group.id) }"
           >
             <div class="route-card-actions" @click.stop>
               <ActionTooltip :label="t('home.aria.moreActions')" align="end">
@@ -261,6 +283,16 @@ const {
                 class="route-action-menu"
                 role="menu"
               >
+                <button
+                  v-if="mapping.strategy === 'manual' && !isActiveRoute(mapping, 'group', group.id)"
+                  type="button"
+                  class="route-action-menu-item"
+                  role="menuitem"
+                  @click.stop="switchMappingRoute(mapping, 'group', group.id)"
+                >
+                  <Check class="size-4" aria-hidden="true" />
+                  <span>{{ t('common.setActiveRoute') }}</span>
+                </button>
                 <button
                   v-if="group.type === 'manual'"
                   type="button"
@@ -284,11 +316,26 @@ const {
             </div>
             <div class="route-main">
               <strong>{{ group.name }}</strong>
-              <span class="route-card-meta">
-                <span class="route-kind-badge group">{{ t('home.routeKind.group') }}</span>
-                <span class="route-detail">{{ t(`home.groupStrategy.${group.strategy}`) }}</span>
-              </span>
             </div>
+            <span class="route-card-meta">
+              <span class="route-kind-badge group">{{ t('home.routeKind.group') }}</span>
+              <span class="route-detail">{{ t(`home.groupStrategy.${group.strategy}`) }}</span>
+            </span>
+            <span
+              class="route-health group-route-health"
+              :title="groupRouteHealthTitle(mapping, group)"
+            >
+              <small class="total" :title="t('home.nodeGroupHealth.totalTitle')">
+                {{ groupRouteTotalLabel(mapping, group) }}
+              </small>
+              <small class="success" :title="t('home.nodeGroupHealth.availableTitle')">
+                <i aria-hidden="true"></i>
+                {{ groupRouteAvailableLabel(mapping, group) }}
+              </small>
+              <small class="latency" :title="t('home.nodeGroupHealth.fastestTitle')">
+                {{ groupRouteLatencyLabel(mapping, group) }}
+              </small>
+            </span>
           </article>
 
           <button type="button" class="inner-add-card" @click="openRouteDialog(mapping)">

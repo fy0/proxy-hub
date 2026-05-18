@@ -173,6 +173,118 @@ func TestMappingTestHandlerReturnsDisabledResult(t *testing.T) {
 	}
 }
 
+func TestMappingSwitchHandlerUpdatesActiveRoute(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+	t.Cleanup(func() {
+		_ = proxyService.RuntimeStop()
+	})
+
+	ctx := context.Background()
+	port := uint16(1080)
+	first, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "first",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "second",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	mapping, err := proxyService.MappingCreate(ctx, nil, proxyService.MappingUpsertRequest{
+		Enabled:          false,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10082,
+		OutboundProtocol: proxyService.OutboundProtocolMixed,
+		Strategy:         proxyService.StrategyManual,
+		NodeIDs:          []string{first.ID, second.ID},
+		ActiveNodeID:     &first.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	app, apiGroup := newProxyAPITestApp(t)
+	Register(apiGroup)
+
+	body, err := json.Marshal(proxyService.MappingSwitchRequest{
+		TargetType: proxyService.MappingSwitchTargetNode,
+		TargetID:   second.ID,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal request error = %v", err)
+	}
+	resp := mustProxyAPITestRequest(t, app, http.MethodPost, "/api/v1/proxy/mappings/"+mapping.ID+"/switch", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var output struct {
+		Item *proxyService.PortMappingDTO `json:"item"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&output); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if output.Item == nil || output.Item.ActiveNodeID == nil || *output.Item.ActiveNodeID != second.ID {
+		t.Fatalf("response item = %+v, want active node %q", output.Item, second.ID)
+	}
+}
+
+func TestMappingSwitchHandlerRejectsNonManualMapping(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "first",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	mapping, err := proxyService.MappingCreate(ctx, nil, proxyService.MappingUpsertRequest{
+		Enabled:          false,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10083,
+		OutboundProtocol: proxyService.OutboundProtocolMixed,
+		Strategy:         proxyService.StrategyLeastLatency,
+		NodeIDs:          []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	app, apiGroup := newProxyAPITestApp(t)
+	Register(apiGroup)
+
+	body, err := json.Marshal(proxyService.MappingSwitchRequest{
+		TargetType: proxyService.MappingSwitchTargetNode,
+		TargetID:   node.ID,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal request error = %v", err)
+	}
+	resp := mustProxyAPITestRequest(t, app, http.MethodPost, "/api/v1/proxy/mappings/"+mapping.ID+"/switch", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func TestNodeTestHandlerRejectsInvalidProbeURL(t *testing.T) {
 	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
 		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)

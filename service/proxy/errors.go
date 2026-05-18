@@ -20,4 +20,5 @@ var (
 	ErrInvalidChain          = errors.New("invalid proxy chain")
 	ErrInvalidSettingsBackup = errors.New("invalid proxy settings backup")
 	ErrInvalidProbeURL       = errors.New("invalid proxy test url")
+	ErrInvalidMappingSwitch  = errors.New("invalid mapping switch target")
 )
