@@ -715,6 +715,16 @@ function errorToMessage(error: unknown): string {
   return t('home.messages.requestFailed');
 }
 
+interface MutationOptions {
+  ignoreError?: (error: unknown) => boolean;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  return (error as { name?: unknown }).name === 'AbortError';
+}
+
 function clearBackendError(): void {
   errorMessage.value = '';
   loginRequired.value = false;
@@ -725,14 +735,16 @@ function setBackendError(error: unknown): void {
   loginRequired.value = isAuthCredentialError(error);
 }
 
-async function runMutation<T>(work: () => Promise<T>): Promise<T> {
+async function runMutation<T>(work: () => Promise<T>, options: MutationOptions = {}): Promise<T> {
   activeMutations.value += 1;
   clearBackendError();
 
   try {
     return await work();
   } catch (error) {
-    setBackendError(error);
+    if (!options.ignoreError?.(error)) {
+      setBackendError(error);
+    }
     throw error;
   } finally {
     activeMutations.value = Math.max(0, activeMutations.value - 1);
@@ -1197,12 +1209,13 @@ async function removeNode(id: string): Promise<void> {
   });
 }
 
-async function testNode(id: string, probeUrl = ''): Promise<ProxyTestResult> {
+async function testNode(id: string, probeUrl = '', signal?: AbortSignal): Promise<ProxyTestResult> {
   return runMutation(async () => {
     const { data } = await postProxyNodesByIdTest({
       path: { id },
       body: { probeUrl: probeUrl.trim() || undefined },
       throwOnError: true,
+      signal,
     });
     const result = toProxyTestResult(data);
     if (result.health) {
@@ -1212,7 +1225,7 @@ async function testNode(id: string, probeUrl = ''): Promise<ProxyTestResult> {
       );
     }
     return result;
-  });
+  }, { ignoreError: signal ? isAbortError : undefined });
 }
 
 async function addGroup(input: GroupInput): Promise<ProxyGroup> {
@@ -1374,12 +1387,13 @@ async function removeMapping(id: string): Promise<void> {
   });
 }
 
-async function testMapping(id: string, probeUrl = ''): Promise<ProxyTestResult> {
+async function testMapping(id: string, probeUrl = '', signal?: AbortSignal): Promise<ProxyTestResult> {
   return runMutation(async () => {
     const { data } = await postProxyMappingsByIdTest({
       path: { id },
       body: { probeUrl: probeUrl.trim() || undefined },
       throwOnError: true,
+      signal,
     });
     const result = toProxyTestResult(data);
     if (result.health) {
@@ -1390,7 +1404,7 @@ async function testMapping(id: string, probeUrl = ''): Promise<ProxyTestResult> 
     }
     await refreshRuntimeStatus();
     return result;
-  });
+  }, { ignoreError: signal ? isAbortError : undefined });
 }
 
 async function resetDemoData(): Promise<void> {

@@ -228,6 +228,8 @@ const testDialog = ref<TestDialogState | null>(null);
 const testUrl = ref('https://www.gstatic.com/generate_204');
 const isTesting = ref(false);
 const healthClock = ref(Date.now());
+let currentTestController: AbortController | null = null;
+let currentTestRunId = 0;
 
 const emptyMappingForm = () => ({
   listenAddress: '0.0.0.0',
@@ -798,6 +800,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  cancelCurrentTest();
   if (healthClockTimer !== null) {
     window.clearInterval(healthClockTimer);
     healthClockTimer = null;
@@ -1904,23 +1907,42 @@ function openNodeTestDialog(node: ProxyNode): void {
 }
 
 function closeTestDialog(): void {
-  if (isTesting.value) return;
+  cancelCurrentTest();
   testDialog.value = null;
+}
+
+function cancelCurrentTest(): void {
+  currentTestController?.abort();
+  currentTestController = null;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  return (error as { name?: unknown }).name === 'AbortError';
 }
 
 async function runCurrentTest(): Promise<void> {
   const dialog = testDialog.value;
   if (!dialog) return;
 
+  cancelCurrentTest();
+  const controller = new AbortController();
+  currentTestController = controller;
+  const runId = ++currentTestRunId;
   isTesting.value = true;
   dialog.error = '';
   try {
     const result =
       dialog.targetType === 'mapping'
-        ? await testMapping(dialog.targetId, testUrl.value)
-        : await testNode(dialog.targetId, testUrl.value);
+        ? await testMapping(dialog.targetId, testUrl.value, controller.signal)
+        : await testNode(dialog.targetId, testUrl.value, controller.signal);
+    if (controller.signal.aborted || currentTestRunId !== runId) return;
     testUrl.value = result.probeUrl || testUrl.value;
-    if (testDialog.value?.targetId === dialog.targetId) {
+    if (
+      testDialog.value?.targetId === dialog.targetId &&
+      testDialog.value.targetType === dialog.targetType
+    ) {
       testDialog.value = {
         ...dialog,
         result,
@@ -1928,7 +1950,11 @@ async function runCurrentTest(): Promise<void> {
       };
     }
   } catch (error) {
-    if (testDialog.value?.targetId === dialog.targetId) {
+    if (controller.signal.aborted || isAbortError(error) || currentTestRunId !== runId) return;
+    if (
+      testDialog.value?.targetId === dialog.targetId &&
+      testDialog.value.targetType === dialog.targetType
+    ) {
       testDialog.value = {
         ...dialog,
         result: null,
@@ -1936,7 +1962,12 @@ async function runCurrentTest(): Promise<void> {
       };
     }
   } finally {
-    isTesting.value = false;
+    if (currentTestRunId === runId) {
+      isTesting.value = false;
+      if (currentTestController === controller) {
+        currentTestController = null;
+      }
+    }
   }
 }
 
@@ -3737,7 +3768,6 @@ const homeContext = {
             class="icon-button"
             :aria-label="t('common.close')"
             :title="t('common.close')"
-            :disabled="isTesting"
             @click="closeTestDialog"
           >
             <X class="size-4" aria-hidden="true" />

@@ -37,7 +37,7 @@ func DefaultProxyHealthConfig() ProxyHealthConfig {
 		Enabled:           true,
 		ProbeURL:          "https://www.gstatic.com/generate_204",
 		Interval:          3 * time.Minute,
-		Timeout:           15 * time.Second,
+		Timeout:           5 * time.Second,
 		FailureThreshold:  3,
 		BlacklistDuration: 30 * time.Minute,
 		MaxConcurrency:    20,

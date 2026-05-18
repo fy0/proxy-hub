@@ -34,6 +34,10 @@ export function setupApiClient(): void {
   });
 
   client.interceptors.error.use((error, response, request) => {
+    if (!response) {
+      return error;
+    }
+
     const apiError = new ApiError({
       status: response.status,
       statusText: response.statusText,
