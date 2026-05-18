@@ -54,6 +54,7 @@ export interface NodeGroupFilterOption {
 export interface NodeGroupSummaryItem {
   key: NodeGroupFilterKey;
   groupId?: string;
+  subscriptionId?: string;
   title: string;
   typeLabel: string;
   count: number;

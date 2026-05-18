@@ -1402,6 +1402,102 @@ textarea:focus {
   gap: 14px;
 }
 
+.group-card-search {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 8px;
+}
+
+.group-card-search-box {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0 13px;
+  border: 1px solid rgb(148 163 184 / 0.35);
+  border-radius: 14px;
+  background: #ffffff;
+  color: rgb(100 116 139);
+  box-shadow: 0 10px 24px rgb(15 23 42 / 0.035);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.group-card-search-box:focus-within {
+  border-color: rgb(34 197 94);
+  box-shadow: 0 0 0 3px rgb(34 197 94 / 0.14);
+}
+
+.group-card-search-box input {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.group-card-search-box input:focus {
+  box-shadow: none;
+}
+
+.node-group-section-stack {
+  display: grid;
+  gap: 22px;
+}
+
+.node-group-card-section {
+  display: grid;
+  gap: 12px;
+}
+
+.node-group-card-section-header {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 2px;
+}
+
+.node-group-card-section-header div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.node-group-card-section-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(15 23 42);
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.node-group-card-section-header span,
+.node-group-card-section-header small {
+  flex: 0 0 auto;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.node-group-card-section-empty,
+.node-group-search-empty {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed rgb(148 163 184 / 0.34);
+  border-radius: 14px;
+  background: rgb(248 250 252 / 0.72);
+  color: rgb(100 116 139);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .node-group-summary-card {
   position: relative;
   min-height: 166px;
@@ -2852,6 +2948,21 @@ textarea:focus {
   .import-layout,
   .field-grid.two {
     grid-template-columns: 1fr;
+  }
+
+  .group-card-search {
+    width: 100%;
+  }
+
+  .node-group-card-section-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .node-group-card-section-header div {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .panel {

@@ -842,6 +842,7 @@ const groupSummaryItems = computed<NodeGroupSummaryItem[]>(() => [
     return {
       key: toGroupFilterKey(group.id),
       groupId: group.id,
+      subscriptionId: group.subscriptionId,
       title: group.name,
       typeLabel: t(`home.groupType.${group.type}`),
       count: group.nodeCount,

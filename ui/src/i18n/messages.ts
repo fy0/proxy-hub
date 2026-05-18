@@ -150,6 +150,14 @@ export const messages = {
         subscriptionLabel: '{name}(订阅)',
         virtual: '默认组',
       },
+      groupSections: {
+        cardCount: '{count} 张卡片',
+        empty: '这个订阅下暂无分组卡片。',
+        manual: '手动分组',
+        noMatches: '没有匹配的分组卡片。',
+        searchLabel: '搜索分组卡片',
+        unknownSubscription: '未知订阅',
+      },
       groupStrategy: {
         selector: '手动选择',
         'url-test': '自动测速',
@@ -189,8 +197,7 @@ export const messages = {
         routeNodeRequired: '请填写节点 URI。',
         routeExistingRequired: '请选择已有节点。',
         routeGroupRequired: '请选择已有分组。',
-        routeSwitched:
-          '已切换完成。已建立的连接不会被强制断开，新进入的连接会切换为新节点。',
+        routeSwitched: '已切换完成。已建立的连接不会被强制断开，新进入的连接会切换为新节点。',
         runtimeError: '运行时异常：{message}',
         runtimeFailureDetail: '{port}（{reason}）',
         runtimeFailureReason: '失败原因：{reason}',
@@ -279,6 +286,7 @@ export const messages = {
         socks5: 'SOCKS5',
       },
       placeholders: {
+        groupSearch: '搜索分组名称、策略或过滤规则',
         nodeName: '例如：香港节点',
         nodeUri: 'vless://...、hy2://... 或 ss://...',
         nodeSearch: '按节点名称搜索',
@@ -608,6 +616,14 @@ export const messages = {
         subscriptionLabel: '{name}(subscription)',
         virtual: 'Default',
       },
+      groupSections: {
+        cardCount: '{count} card(s)',
+        empty: 'No group cards under this subscription.',
+        manual: 'Manual groups',
+        noMatches: 'No matching group cards.',
+        searchLabel: 'Search group cards',
+        unknownSubscription: 'Unknown subscription',
+      },
       groupStrategy: {
         selector: 'Manual select',
         'url-test': 'URL test',
@@ -737,6 +753,7 @@ export const messages = {
         socks5: 'SOCKS5',
       },
       placeholders: {
+        groupSearch: 'Search group name, strategy, or filter',
         nodeName: 'e.g. Hong Kong node',
         nodeUri: 'vless://..., hy2://..., or ss://...',
         nodeSearch: 'Search by node name',
