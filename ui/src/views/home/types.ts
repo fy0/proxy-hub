@@ -105,6 +105,7 @@ export interface HomeViewContext {
   mappingGroups: (mapping: PortMapping) => ProxyGroup[];
   groupRouteTotalLabel: (mapping: PortMapping, group: ProxyGroup) => string;
   groupRouteAvailableLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteAvailableUnavailable: (mapping: PortMapping, group: ProxyGroup) => boolean;
   groupRouteLatencyLabel: (mapping: PortMapping, group: ProxyGroup) => string;
   groupRouteHealthTitle: (mapping: PortMapping, group: ProxyGroup) => string;
   openNewMappingDialog: () => void;

@@ -793,7 +793,7 @@
   background: rgb(239 246 255);
   color: rgb(37 99 235);
   font-size: 12px;
-  line-height: 1;
+  line-height: 26px;
   font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1108,6 +1108,10 @@
 
 .route-health .success {
   color: rgb(22 163 74);
+}
+
+.route-health .success.unavailable {
+  color: rgb(220 38 38);
 }
 
 .route-health .total {

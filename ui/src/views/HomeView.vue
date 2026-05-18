@@ -237,7 +237,7 @@ const emptyMappingForm = () => ({
   outboundProtocol: 'mixed' as OutboundProtocol,
   username: '',
   password: '',
-  strategy: 'failover' as RouteStrategy,
+  strategy: 'least-latency' as RouteStrategy,
   remark: '',
 });
 
@@ -609,6 +609,10 @@ function groupRouteAvailableLabel(mapping: PortMapping, group: ProxyGroup): stri
   return t('home.nodeGroupHealth.available', {
     count: groupRouteHealthSummary(mapping, group).available,
   });
+}
+
+function groupRouteAvailableUnavailable(mapping: PortMapping, group: ProxyGroup): boolean {
+  return groupRouteHealthSummary(mapping, group).available === 0;
 }
 
 function groupRouteLatencyLabel(mapping: PortMapping, group: ProxyGroup): string {
@@ -2492,6 +2496,7 @@ const homeContext = {
   mappingGroups,
   groupRouteTotalLabel,
   groupRouteAvailableLabel,
+  groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
   groupRouteHealthTitle,
   openNewMappingDialog,

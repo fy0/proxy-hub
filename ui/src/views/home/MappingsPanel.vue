@@ -48,6 +48,7 @@ const {
   mappingGroups,
   groupRouteTotalLabel,
   groupRouteAvailableLabel,
+  groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
   groupRouteHealthTitle,
   openNewMappingDialog,
@@ -314,7 +315,11 @@ const {
               <small class="total" :title="t('home.nodeGroupHealth.totalTitle')">
                 {{ groupRouteTotalLabel(mapping, group) }}
               </small>
-              <small class="success" :title="t('home.nodeGroupHealth.availableTitle')">
+              <small
+                class="success"
+                :class="{ unavailable: groupRouteAvailableUnavailable(mapping, group) }"
+                :title="t('home.nodeGroupHealth.availableTitle')"
+              >
                 <i aria-hidden="true"></i>
                 {{ groupRouteAvailableLabel(mapping, group) }}
               </small>

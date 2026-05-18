@@ -1382,7 +1382,7 @@ func normalizeStrategy(strategy string) string {
 	case StrategyLeastLatency:
 		return StrategyLeastLatency
 	default:
-		return StrategyManual
+		return StrategyLeastLatency
 	}
 }
 

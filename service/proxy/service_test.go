@@ -830,6 +830,24 @@ func TestMappingCreateAcceptsLeastLatencyStrategy(t *testing.T) {
 	}
 }
 
+func TestMappingCreateDefaultsToLeastLatencyStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10084,
+		OutboundProtocol: OutboundProtocolMixed,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if mapping.Strategy != StrategyLeastLatency {
+		t.Fatalf("mapping strategy = %q, want %q", mapping.Strategy, StrategyLeastLatency)
+	}
+}
+
 func TestMappingSwitchUpdatesActiveRoute(t *testing.T) {
 	initProxyInMemoryDB(t)
 
