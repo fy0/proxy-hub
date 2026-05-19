@@ -972,16 +972,10 @@ func (b *dynamicPlanBuilder) blacklistRevivalNodeIDs(nodeIDs []string, limit int
 	}
 
 	now := time.Now()
-	var rows []*tables.ProxyNodeHealthTable
-	if err := model.GetTx(b.tx).WithContext(b.ctx).
-		Where("node_id IN ? AND blacklisted = ? AND (blacklisted_until IS NULL OR blacklisted_until > ?)", nodeIDs, true, now).
-		Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	healthByNodeID := make(map[string]*tables.ProxyNodeHealthTable, len(rows))
-	for _, row := range rows {
-		if row != nil {
-			healthByNodeID[row.NodeID] = row
+	healthByNodeID := NodeHealthMap(b.ctx, b.tx, nodeIDs)
+	for nodeID, health := range healthByNodeID {
+		if !isHealthBlacklisted(health, now) {
+			delete(healthByNodeID, nodeID)
 		}
 	}
 

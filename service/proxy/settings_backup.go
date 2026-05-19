@@ -87,11 +87,13 @@ func SettingsImport(ctx context.Context, backup SettingsBackupDTO) (*SettingsImp
 		return nil, err
 	}
 
+	discardNodeHealthBatcher()
 	if err := model.Transaction(ctx, func(tx model.DBTx) error {
 		return replaceSettingsRows(ctx, tx, rows)
 	}); err != nil {
 		return nil, err
 	}
+	discardNodeHealthBatcher()
 
 	result := &SettingsImportResultDTO{
 		Message:       "代理设置已导入",

@@ -27,6 +27,7 @@ func initProxyInMemoryDB(t *testing.T) {
 		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
 	}
 	t.Cleanup(model.DBClose)
+	t.Cleanup(HealthStop)
 }
 
 func TestNodeCreateFromRawURI(t *testing.T) {

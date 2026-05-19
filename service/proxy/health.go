@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,8 +18,6 @@ import (
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
@@ -62,7 +59,7 @@ var (
 
 func HealthStart(ctx context.Context, cfg utils.ProxyHealthConfig) {
 	if !cfg.Enabled {
-		HealthStop()
+		stopHealthRunner()
 		return
 	}
 	cfg = normalizeHealthConfig(cfg)
@@ -70,7 +67,7 @@ func HealthStart(ctx context.Context, cfg utils.ProxyHealthConfig) {
 		ctx = context.Background()
 	}
 
-	HealthStop()
+	stopHealthRunner()
 
 	runnerCtx, cancel := context.WithCancel(ctx)
 	runner := &healthRunnerState{
@@ -87,6 +84,11 @@ func HealthStart(ctx context.Context, cfg utils.ProxyHealthConfig) {
 }
 
 func HealthStop() {
+	stopHealthRunner()
+	globalNodeHealthBatcher.stop()
+}
+
+func stopHealthRunner() {
 	healthRunnerMu.Lock()
 	runner := healthRunner
 	healthRunner = nil
@@ -103,13 +105,7 @@ func NodeHealthList(ctx context.Context, tx model.DBTx) ([]*tables.ProxyNodeHeal
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tx = model.GetTx(tx).WithContext(ctx)
-
-	var rows []*tables.ProxyNodeHealthTable
-	if err := tx.Order("updated_at DESC").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return globalNodeHealthBatcher.list(ctx)
 }
 
 func NodeHealthMap(ctx context.Context, tx model.DBTx, nodeIDs []string) map[string]*tables.ProxyNodeHealthTable {
@@ -120,20 +116,12 @@ func NodeHealthMap(ctx context.Context, tx model.DBTx, nodeIDs []string) map[str
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tx = model.GetTx(tx).WithContext(ctx)
-
-	var rows []*tables.ProxyNodeHealthTable
-	if err := tx.Where("node_id IN ?", nodeIDs).Find(&rows).Error; err != nil {
+	rows, err := globalNodeHealthBatcher.mapByNodeIDs(ctx, nodeIDs)
+	if err != nil {
 		utils.Logger.Warn("查询节点健康状态失败", zap.Error(err))
 		return map[string]*tables.ProxyNodeHealthTable{}
 	}
-	result := make(map[string]*tables.ProxyNodeHealthTable, len(rows))
-	for _, row := range rows {
-		if row != nil {
-			result[row.NodeID] = row
-		}
-	}
-	return result
+	return rows
 }
 
 func NodeProbe(ctx context.Context, nodeID string) (*tables.ProxyNodeHealthTable, error) {
@@ -185,16 +173,12 @@ func NodeRelease(ctx context.Context, nodeID string) (*tables.ProxyNodeHealthTab
 		return nil, err
 	}
 
-	now := time.Now()
-	updates := map[string]any{
-		"node_id":                   nodeID,
-		"blacklisted":               false,
-		"blacklisted_until":         nil,
-		"consecutive_failure_count": 0,
-		"last_error":                "",
-		"updated_at":                now,
-	}
-	return upsertNodeHealth(ctx, nil, nodeID, updates)
+	return globalNodeHealthBatcher.updateSnapshot(ctx, nodeID, func(snapshot *tables.ProxyNodeHealthTable, now time.Time) {
+		snapshot.Blacklisted = false
+		snapshot.BlacklistedUntil = nil
+		snapshot.ConsecutiveFailureCount = 0
+		snapshot.LastError = ""
+	})
 }
 
 func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (*tables.ProxyNodeHealthTable, error) {
@@ -211,18 +195,14 @@ func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (
 		return nil, err
 	}
 
-	now := time.Now()
-	until := now.Add(duration)
-	updates := map[string]any{
-		"node_id":                   nodeID,
-		"available":                 false,
-		"blacklisted":               true,
-		"blacklisted_until":         &until,
-		"consecutive_failure_count": 0,
-		"last_error":                "manually blacklisted",
-		"updated_at":                now,
-	}
-	return upsertNodeHealth(ctx, nil, nodeID, updates)
+	return globalNodeHealthBatcher.updateSnapshot(ctx, nodeID, func(snapshot *tables.ProxyNodeHealthTable, now time.Time) {
+		until := now.Add(duration)
+		snapshot.Available = false
+		snapshot.Blacklisted = true
+		snapshot.BlacklistedUntil = &until
+		snapshot.ConsecutiveFailureCount = 0
+		snapshot.LastError = "manually blacklisted"
+	})
 }
 
 func recordNodeHealthResult(ctx context.Context, tx model.DBTx, nodeID string, record nodeHealthResultRecord) (*tables.ProxyNodeHealthTable, error) {
@@ -232,155 +212,7 @@ func recordNodeHealthResult(ctx context.Context, tx model.DBTx, nodeID string, r
 	if strings.TrimSpace(nodeID) == "" {
 		return nil, ErrNodeNotFound
 	}
-	if tx != nil {
-		return recordNodeHealthResultInTx(ctx, tx, nodeID, record)
-	}
-
-	var health *tables.ProxyNodeHealthTable
-	err := model.Transaction(ctx, func(inner model.DBTx) error {
-		row, err := recordNodeHealthResultInTx(ctx, inner, nodeID, record)
-		if err != nil {
-			return err
-		}
-		health = row
-		return nil
-	})
-	return health, err
-}
-
-func recordNodeHealthResultInTx(ctx context.Context, tx model.DBTx, nodeID string, record nodeHealthResultRecord) (*tables.ProxyNodeHealthTable, error) {
-	tx = model.GetTx(tx).WithContext(ctx)
-	if _, err := NodeGet(ctx, tx, nodeID); err != nil {
-		return nil, err
-	}
-	existing, err := getNodeHealth(ctx, tx, nodeID)
-	if err != nil {
-		return nil, err
-	}
-
-	checkedAt := record.CheckedAt
-	if checkedAt.IsZero() {
-		checkedAt = time.Now()
-	}
-	if record.LatencyMs < 0 {
-		record.LatencyMs = 0
-	}
-	source := strings.TrimSpace(record.Source)
-	if source == "" {
-		source = nodeHealthSourceNodeProbe
-	}
-	errorMessage := strings.TrimSpace(record.Error)
-
-	history := &tables.ProxyNodeHealthHistoryTable{
-		NodeID:    nodeID,
-		Source:    source,
-		TargetID:  strings.TrimSpace(record.TargetID),
-		ProbeURL:  strings.TrimSpace(record.ProbeURL),
-		Available: record.Available,
-		LatencyMs: record.LatencyMs,
-		Error:     errorMessage,
-		CheckedAt: checkedAt,
-	}
-	if err := tx.Create(history).Error; err != nil {
-		return nil, err
-	}
-	if err := pruneNodeHealthHistory(ctx, tx, nodeID); err != nil {
-		return nil, err
-	}
-
-	successCount, failureCount, lastSuccessAt, lastFailureAt, err := nodeHealthHistorySummary(ctx, tx, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	consecutiveFailures := 0
-	if existing != nil {
-		consecutiveFailures = existing.ConsecutiveFailureCount
-	}
-	if record.Available {
-		consecutiveFailures = 0
-	} else {
-		consecutiveFailures++
-	}
-
-	cfg := normalizeHealthConfig(currentHealthConfig())
-	updates := map[string]any{
-		"node_id":                   nodeID,
-		"available":                 record.Available,
-		"failure_count":             failureCount,
-		"success_count":             successCount,
-		"consecutive_failure_count": consecutiveFailures,
-		"last_checked_at":           &checkedAt,
-		"last_latency_ms":           record.LatencyMs,
-		"last_error":                errorMessage,
-		"last_success_at":           lastSuccessAt,
-		"last_failure_at":           lastFailureAt,
-		"updated_at":                time.Now(),
-	}
-	if record.Available {
-		updates["blacklisted"] = false
-		updates["blacklisted_until"] = nil
-		updates["last_error"] = ""
-	} else if cfg.FailureThreshold > 0 && consecutiveFailures >= cfg.FailureThreshold {
-		until := checkedAt.Add(cfg.BlacklistDuration)
-		updates["blacklisted"] = true
-		updates["blacklisted_until"] = &until
-	} else if existing != nil && isHealthBlacklisted(existing, checkedAt) {
-		updates["blacklisted"] = existing.Blacklisted
-		updates["blacklisted_until"] = existing.BlacklistedUntil
-	} else {
-		updates["blacklisted"] = false
-		updates["blacklisted_until"] = nil
-	}
-	return upsertNodeHealth(ctx, tx, nodeID, updates)
-}
-
-func pruneNodeHealthHistory(ctx context.Context, tx model.DBTx, nodeID string) error {
-	tx = model.GetTx(tx).WithContext(ctx)
-	var staleIDs []string
-	if err := tx.Model(&tables.ProxyNodeHealthHistoryTable{}).
-		Where("node_id = ?", nodeID).
-		Order("checked_at DESC, created_at DESC, id DESC").
-		Offset(nodeHealthHistoryLimit).
-		Pluck("id", &staleIDs).Error; err != nil {
-		return err
-	}
-	if len(staleIDs) == 0 {
-		return nil
-	}
-	return tx.Unscoped().Where("id IN ?", staleIDs).Delete(&tables.ProxyNodeHealthHistoryTable{}).Error
-}
-
-func nodeHealthHistorySummary(ctx context.Context, tx model.DBTx, nodeID string) (int64, int, *time.Time, *time.Time, error) {
-	tx = model.GetTx(tx).WithContext(ctx)
-	var rows []*tables.ProxyNodeHealthHistoryTable
-	if err := tx.Where("node_id = ?", nodeID).
-		Order("checked_at DESC, created_at DESC, id DESC").
-		Limit(nodeHealthHistoryLimit).
-		Find(&rows).Error; err != nil {
-		return 0, 0, nil, nil, err
-	}
-	var successCount int64
-	failureCount := 0
-	var lastSuccessAt *time.Time
-	var lastFailureAt *time.Time
-	for _, row := range rows {
-		if row == nil {
-			continue
-		}
-		checkedAt := row.CheckedAt
-		if row.Available {
-			successCount++
-			if lastSuccessAt == nil {
-				lastSuccessAt = &checkedAt
-			}
-			continue
-		}
-		failureCount++
-		if lastFailureAt == nil {
-			lastFailureAt = &checkedAt
-		}
-	}
-	return successCount, failureCount, lastSuccessAt, lastFailureAt, nil
+	return globalNodeHealthBatcher.recordProbeResult(ctx, nodeID, record)
 }
 
 func NodeTest(ctx context.Context, nodeID string, req ProxyTestRequest) (*ProxyTestResultDTO, error) {
@@ -509,51 +341,22 @@ func blacklistRuntimeExcludedNode(ctx context.Context, node *tables.ProxyNodeTab
 	}
 
 	cfg := normalizeHealthConfig(currentHealthConfig())
-	now := time.Now()
-	until := now.Add(cfg.BlacklistDuration)
-	updates := map[string]any{
-		"node_id":                   node.ID,
-		"available":                 false,
-		"blacklisted":               true,
-		"blacklisted_until":         &until,
-		"consecutive_failure_count": 0,
-		"last_error":                errorString(runtimeErr),
-		"last_failure_at":           &now,
-		"updated_at":                now,
-	}
-	return upsertNodeHealth(ctx, nil, node.ID, updates)
+	return globalNodeHealthBatcher.updateSnapshot(ctx, node.ID, func(snapshot *tables.ProxyNodeHealthTable, now time.Time) {
+		until := now.Add(cfg.BlacklistDuration)
+		snapshot.Available = false
+		snapshot.Blacklisted = true
+		snapshot.BlacklistedUntil = &until
+		snapshot.ConsecutiveFailureCount = 0
+		snapshot.LastError = errorString(runtimeErr)
+		snapshot.LastFailureAt = cloneTimePtr(&now)
+	})
 }
 
 func nodeHealthBlacklistedIDs(ctx context.Context, tx model.DBTx) (map[string]struct{}, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tx = model.GetTx(tx).WithContext(ctx)
-
-	now := time.Now()
-	if err := tx.Model(&tables.ProxyNodeHealthTable{}).
-		Where("blacklisted = ? AND blacklisted_until IS NOT NULL AND blacklisted_until <= ?", true, now).
-		Updates(map[string]any{
-			"blacklisted":               false,
-			"blacklisted_until":         nil,
-			"consecutive_failure_count": 0,
-			"updated_at":                now,
-		}).Error; err != nil {
-		return nil, err
-	}
-
-	var rows []*tables.ProxyNodeHealthTable
-	if err := tx.Where("blacklisted = ? AND (blacklisted_until IS NULL OR blacklisted_until > ?)", true, now).
-		Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	result := make(map[string]struct{}, len(rows))
-	for _, row := range rows {
-		if row != nil && row.NodeID != "" {
-			result[row.NodeID] = struct{}{}
-		}
-	}
-	return result, nil
+	return globalNodeHealthBatcher.blacklistedIDs(ctx)
 }
 
 func reviveNodeHealthIDs(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
@@ -564,18 +367,7 @@ func reviveNodeHealthIDs(ctx context.Context, tx model.DBTx, nodeIDs []string) e
 	if len(nodeIDs) == 0 {
 		return nil
 	}
-	tx = model.GetTx(tx).WithContext(ctx)
-	now := time.Now()
-	return tx.Model(&tables.ProxyNodeHealthTable{}).
-		Where("node_id IN ?", nodeIDs).
-		Updates(map[string]any{
-			"available":                 true,
-			"blacklisted":               false,
-			"blacklisted_until":         nil,
-			"consecutive_failure_count": 0,
-			"last_error":                "",
-			"updated_at":                now,
-		}).Error
+	return globalNodeHealthBatcher.reviveNodes(ctx, nodeIDs)
 }
 
 func recordRuntimeProbeResult(record singboxcore.ProbeRecord) {
@@ -1120,45 +912,10 @@ func reserveHealthProbePort() (uint16, error) {
 }
 
 func getNodeHealth(ctx context.Context, tx model.DBTx, nodeID string) (*tables.ProxyNodeHealthTable, error) {
-	tx = model.GetTx(tx).WithContext(ctx)
-	var row tables.ProxyNodeHealthTable
-	if err := tx.Where("node_id = ?", nodeID).First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return &row, nil
-}
-
-func upsertNodeHealth(ctx context.Context, tx model.DBTx, nodeID string, updates map[string]any) (*tables.ProxyNodeHealthTable, error) {
-	tx = model.GetTx(tx).WithContext(ctx)
-	if updates == nil {
-		updates = map[string]any{}
-	}
-	updates["node_id"] = nodeID
-	now := time.Now()
-	if _, ok := updates["updated_at"]; !ok {
-		updates["updated_at"] = now
-	}
-
-	row, err := getNodeHealth(ctx, tx, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		row = &tables.ProxyNodeHealthTable{NodeID: nodeID}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "node_id"}},
-			DoUpdates: clause.Assignments(updates),
-		}).Create(row).Error; err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Model(&tables.ProxyNodeHealthTable{}).Where("node_id = ?", nodeID).Updates(updates).Error; err != nil {
-		return nil, err
-	}
-	return getNodeHealth(ctx, tx, nodeID)
+	return globalNodeHealthBatcher.get(ctx, nodeID)
 }
 
 func isHealthBlacklisted(row *tables.ProxyNodeHealthTable, now time.Time) bool {

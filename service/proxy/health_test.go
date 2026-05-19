@@ -44,6 +44,9 @@ func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
 			t.Fatalf("recordNodeHealthResult(%d) error = %v", i, err)
 		}
 	}
+	if err := flushNodeHealthBatcher(ctx); err != nil {
+		t.Fatalf("flushNodeHealthBatcher() error = %v", err)
+	}
 
 	var historyCount int64
 	if err := model.GetTx(nil).Model(&tables.ProxyNodeHealthHistoryTable{}).
