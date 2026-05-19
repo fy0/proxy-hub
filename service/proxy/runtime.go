@@ -935,7 +935,6 @@ func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) 
 	if len(nodeIDs) == 0 {
 		return false, nil
 	}
-	reviveIDs := make([]string, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		if _, excluded := b.excludedNodeIDs[nodeID]; excluded {
 			return false, nil
@@ -943,7 +942,10 @@ func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) 
 		if _, blacklisted := b.blacklistedNodeIDs[nodeID]; !blacklisted {
 			return false, nil
 		}
-		reviveIDs = append(reviveIDs, nodeID)
+	}
+	reviveIDs, err := b.blacklistRevivalNodeIDs(nodeIDs, singboxcore.DefaultBlacklistRevivalLimit)
+	if err != nil {
+		return false, err
 	}
 	if len(reviveIDs) == 0 {
 		return false, nil
@@ -955,6 +957,162 @@ func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) 
 		delete(b.blacklistedNodeIDs, nodeID)
 	}
 	return true, nil
+}
+
+func (b *dynamicPlanBuilder) blacklistRevivalNodeIDs(nodeIDs []string, limit int) ([]string, error) {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = singboxcore.DefaultBlacklistRevivalLimit
+	}
+	if limit > len(nodeIDs) {
+		limit = len(nodeIDs)
+	}
+
+	now := time.Now()
+	var rows []*tables.ProxyNodeHealthTable
+	if err := model.GetTx(b.tx).WithContext(b.ctx).
+		Where("node_id IN ? AND blacklisted = ? AND (blacklisted_until IS NULL OR blacklisted_until > ?)", nodeIDs, true, now).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	healthByNodeID := make(map[string]*tables.ProxyNodeHealthTable, len(rows))
+	for _, row := range rows {
+		if row != nil {
+			healthByNodeID[row.NodeID] = row
+		}
+	}
+
+	candidates := make([]healthBlacklistRevivalCandidate, 0, len(nodeIDs))
+	for order, nodeID := range nodeIDs {
+		health := healthByNodeID[nodeID]
+		if health == nil {
+			continue
+		}
+		candidates = append(candidates, healthBlacklistRevivalCandidate{
+			nodeID: nodeID,
+			health: health,
+			order:  order,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return healthBlacklistRevivalCandidateLess(candidates[i], candidates[j])
+	})
+
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	reviveIDs := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		reviveIDs = append(reviveIDs, candidates[i].nodeID)
+	}
+	return reviveIDs, nil
+}
+
+type healthBlacklistRevivalCandidate struct {
+	nodeID string
+	health *tables.ProxyNodeHealthTable
+	order  int
+}
+
+func healthBlacklistRevivalCandidateLess(left, right healthBlacklistRevivalCandidate) bool {
+	leftHealth := left.health
+	rightHealth := right.health
+	if leftHealth == nil || rightHealth == nil {
+		return rightHealth == nil && leftHealth != nil
+	}
+	if leftHealth.ConsecutiveFailureCount != rightHealth.ConsecutiveFailureCount {
+		return leftHealth.ConsecutiveFailureCount < rightHealth.ConsecutiveFailureCount
+	}
+	if cmp := compareHealthSuccessRatio(leftHealth, rightHealth); cmp != 0 {
+		return cmp > 0
+	}
+	if !nullableTimeEqual(leftHealth.LastSuccessAt, rightHealth.LastSuccessAt) {
+		return nullableTimeAfter(leftHealth.LastSuccessAt, rightHealth.LastSuccessAt)
+	}
+	if cmp := compareLatencyMs(leftHealth.LastLatencyMs, rightHealth.LastLatencyMs); cmp != 0 {
+		return cmp < 0
+	}
+	if !nullableTimeEqual(leftHealth.LastCheckedAt, rightHealth.LastCheckedAt) {
+		return nullableTimeBefore(leftHealth.LastCheckedAt, rightHealth.LastCheckedAt)
+	}
+	if !nullableTimeEqual(leftHealth.LastFailureAt, rightHealth.LastFailureAt) {
+		return nullableTimeBefore(leftHealth.LastFailureAt, rightHealth.LastFailureAt)
+	}
+	if !nullableTimeEqual(leftHealth.BlacklistedUntil, rightHealth.BlacklistedUntil) {
+		return nullableTimeBefore(leftHealth.BlacklistedUntil, rightHealth.BlacklistedUntil)
+	}
+	return left.order < right.order
+}
+
+func compareHealthSuccessRatio(left, right *tables.ProxyNodeHealthTable) int {
+	leftTotal := int64(left.FailureCount) + left.SuccessCount
+	rightTotal := int64(right.FailureCount) + right.SuccessCount
+	if leftTotal == 0 || rightTotal == 0 {
+		switch {
+		case leftTotal > 0 && rightTotal == 0:
+			return 1
+		case leftTotal == 0 && rightTotal > 0:
+			return -1
+		default:
+			return 0
+		}
+	}
+	leftScore := left.SuccessCount * rightTotal
+	rightScore := right.SuccessCount * leftTotal
+	switch {
+	case leftScore > rightScore:
+		return 1
+	case leftScore < rightScore:
+		return -1
+	default:
+		return 0
+	}
+}
+
+func compareLatencyMs(left, right int64) int {
+	leftHasLatency := left > 0
+	rightHasLatency := right > 0
+	if leftHasLatency != rightHasLatency {
+		if leftHasLatency {
+			return -1
+		}
+		return 1
+	}
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func nullableTimeEqual(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+func nullableTimeAfter(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	return left.After(*right)
+}
+
+func nullableTimeBefore(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left != nil && right == nil
+	}
+	return left.Before(*right)
 }
 
 func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamicMemberPlan, error) {
@@ -1102,6 +1260,7 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 		ProbeConcurrency:         minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
 		MaxLatency:               healthConfig.Timeout,
 		SlowThreshold:            healthConfig.FailureThreshold,
+		BlacklistRevivalLimit:    singboxcore.DefaultBlacklistRevivalLimit,
 		FallbackStrategy:         singboxcore.BalanceRoundRobin,
 		ProbeResultCallback:      recordRuntimeProbeResult,
 		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
@@ -1128,6 +1287,7 @@ func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 		ProbeConcurrency:         minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
 		MaxLatency:               healthConfig.Timeout,
 		SlowThreshold:            healthConfig.FailureThreshold,
+		BlacklistRevivalLimit:    singboxcore.DefaultBlacklistRevivalLimit,
 		FallbackStrategy:         singboxcore.BalanceRoundRobin,
 		ProbeResultCallback:      recordRuntimeProbeResult,
 		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,

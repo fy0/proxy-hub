@@ -36,6 +36,7 @@ type NodeState struct {
 	mu               sync.RWMutex
 	enabled          bool
 	health           HealthState
+	blacklistedAt    time.Time
 	blacklistedUntil time.Time
 	blacklistReason  string
 	tombstoned       bool
@@ -182,6 +183,7 @@ func (n *NodeState) markAlive() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.health = HealthAlive
+	n.blacklistedAt = time.Time{}
 	n.blacklistedUntil = time.Time{}
 	n.blacklistReason = ""
 	n.lastError = ""
@@ -191,10 +193,13 @@ func (n *NodeState) markFailed(ttl time.Duration, reason string, now time.Time) 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.lastError = reason
+	n.leastLatencyLastCheckedAt = now
+	n.leastLatencyFailureCount++
 	n.leastLatencyCandidate = false
 	n.leastLatencyStaleFallback = !n.leastLatencyLastSuccessAt.IsZero()
 	if ttl > 0 {
 		n.health = HealthBlacklisted
+		n.blacklistedAt = now
 		n.blacklistedUntil = now.Add(ttl)
 		n.blacklistReason = reason
 		return
@@ -232,6 +237,7 @@ func (n *NodeState) recordLeastLatencyProbeSuccess(latency time.Duration, maxLat
 	n.leastLatencyLastProbeError = ""
 	n.leastLatencyFailureCount = 0
 	n.health = HealthAlive
+	n.blacklistedAt = time.Time{}
 	n.blacklistedUntil = time.Time{}
 	n.blacklistReason = ""
 	n.lastError = ""
@@ -274,6 +280,7 @@ func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time,
 	n.lastError = reason
 	if policy.threshold > 0 && n.leastLatencyFailureCount >= policy.threshold {
 		n.health = HealthBlacklisted
+		n.blacklistedAt = now
 		if policy.ttl > 0 {
 			n.blacklistedUntil = now.Add(policy.ttl)
 		} else {
@@ -299,10 +306,11 @@ func (n *NodeState) reviveBlacklist() bool {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.health != HealthBlacklisted {
+	if !n.enabled || n.tombstoned || n.health != HealthBlacklisted {
 		return false
 	}
 	n.health = HealthAlive
+	n.blacklistedAt = time.Time{}
 	n.blacklistedUntil = time.Time{}
 	n.blacklistReason = ""
 	n.lastError = ""
@@ -312,6 +320,46 @@ func (n *NodeState) reviveBlacklist() bool {
 	n.leastLatencyCandidate = true
 	n.leastLatencyStaleFallback = false
 	return true
+}
+
+type blacklistRevivalCandidate struct {
+	node             *NodeState
+	order            int
+	failureCount     int
+	hasSuccess       bool
+	lastSuccessAt    time.Time
+	hasLatency       bool
+	latencyMs        int64
+	lastCheckedAt    time.Time
+	blacklistedAt    time.Time
+	blacklistedUntil time.Time
+}
+
+func (n *NodeState) blacklistRevivalCandidate(now time.Time, order int) (blacklistRevivalCandidate, bool) {
+	if n == nil {
+		return blacklistRevivalCandidate{}, false
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if !n.enabled || n.tombstoned || n.health != HealthBlacklisted {
+		return blacklistRevivalCandidate{}, false
+	}
+	if !n.blacklistedUntil.IsZero() && !n.blacklistedUntil.After(now) {
+		return blacklistRevivalCandidate{}, false
+	}
+	latencyMs := n.lastLatency.Load()
+	return blacklistRevivalCandidate{
+		node:             n,
+		order:            order,
+		failureCount:     n.leastLatencyFailureCount,
+		hasSuccess:       !n.leastLatencyLastSuccessAt.IsZero(),
+		lastSuccessAt:    n.leastLatencyLastSuccessAt,
+		hasLatency:       latencyMs > 0,
+		latencyMs:        latencyMs,
+		lastCheckedAt:    n.leastLatencyLastCheckedAt,
+		blacklistedAt:    n.blacklistedAt,
+		blacklistedUntil: n.blacklistedUntil,
+	}, true
 }
 
 func (n *NodeState) removeReady(now time.Time) bool {

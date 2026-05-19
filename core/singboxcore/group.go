@@ -26,6 +26,7 @@ const (
 	DefaultLeastLatencyProbeConcurrency = 5
 	DefaultLeastLatencyMaxLatency       = 3 * time.Second
 	DefaultLeastLatencySlowThreshold    = 3
+	DefaultBlacklistRevivalLimit        = 3
 )
 
 type ProbeRecord struct {
@@ -59,6 +60,7 @@ type Policy struct {
 	ProbeConcurrency         int
 	MaxLatency               time.Duration
 	SlowThreshold            int
+	BlacklistRevivalLimit    int
 	FallbackStrategy         BalanceStrategy
 	ProbeResultCallback      ProbeResultCallback      `json:"-"`
 	BlacklistRevivalCallback BlacklistRevivalCallback `json:"-"`
@@ -94,6 +96,9 @@ func (p Policy) normalized() Policy {
 	}
 	if p.SlowThreshold <= 0 {
 		p.SlowThreshold = DefaultLeastLatencySlowThreshold
+	}
+	if p.BlacklistRevivalLimit <= 0 {
+		p.BlacklistRevivalLimit = DefaultBlacklistRevivalLimit
 	}
 	if p.FallbackStrategy == "" {
 		p.FallbackStrategy = BalanceRoundRobin
@@ -505,13 +510,33 @@ func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
 	groupTag := g.Tag()
 	g.mu.RUnlock()
 
-	revivedIDs := make([]string, 0)
-	for _, node := range nodes {
+	candidates := make([]blacklistRevivalCandidate, 0, len(nodes))
+	for order, node := range nodes {
 		if node.Eligible(now) {
 			continue
 		}
-		if node.reviveBlacklist() {
-			revivedIDs = append(revivedIDs, node.ID)
+		candidate, ok := node.blacklistRevivalCandidate(now, order)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	sortBlacklistRevivalCandidates(candidates)
+	limit := policy.BlacklistRevivalLimit
+	if limit <= 0 {
+		limit = DefaultBlacklistRevivalLimit
+	}
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+
+	revivedIDs := make([]string, 0)
+	for i := 0; i < limit; i++ {
+		if candidates[i].node.reviveBlacklist() {
+			revivedIDs = append(revivedIDs, candidates[i].node.ID)
 		}
 	}
 	if len(revivedIDs) == 0 {
@@ -525,6 +550,58 @@ func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
 		})
 	}
 	return true
+}
+
+func sortBlacklistRevivalCandidates(candidates []blacklistRevivalCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return blacklistRevivalCandidateLess(candidates[i], candidates[j])
+	})
+}
+
+func blacklistRevivalCandidateLess(left, right blacklistRevivalCandidate) bool {
+	if left.failureCount != right.failureCount {
+		return left.failureCount < right.failureCount
+	}
+	if left.hasSuccess != right.hasSuccess {
+		return left.hasSuccess
+	}
+	if !left.lastSuccessAt.Equal(right.lastSuccessAt) {
+		return left.lastSuccessAt.After(right.lastSuccessAt)
+	}
+	if left.hasLatency != right.hasLatency {
+		return left.hasLatency
+	}
+	if left.latencyMs != right.latencyMs {
+		return left.latencyMs < right.latencyMs
+	}
+	if !left.lastCheckedAt.Equal(right.lastCheckedAt) {
+		if left.lastCheckedAt.IsZero() {
+			return true
+		}
+		if right.lastCheckedAt.IsZero() {
+			return false
+		}
+		return left.lastCheckedAt.Before(right.lastCheckedAt)
+	}
+	if !left.blacklistedAt.Equal(right.blacklistedAt) {
+		if left.blacklistedAt.IsZero() {
+			return false
+		}
+		if right.blacklistedAt.IsZero() {
+			return true
+		}
+		return left.blacklistedAt.Before(right.blacklistedAt)
+	}
+	if !left.blacklistedUntil.Equal(right.blacklistedUntil) {
+		if left.blacklistedUntil.IsZero() {
+			return false
+		}
+		if right.blacklistedUntil.IsZero() {
+			return true
+		}
+		return left.blacklistedUntil.Before(right.blacklistedUntil)
+	}
+	return left.order < right.order
 }
 
 func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, fallbackStrategy BalanceStrategy) []*NodeState {

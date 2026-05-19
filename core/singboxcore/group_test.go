@@ -284,6 +284,79 @@ func TestLeastLatencyRevivesAllBlacklistedNodes(t *testing.T) {
 	}
 }
 
+func TestBlacklistRevivalRestoresTopHealthyNodes(t *testing.T) {
+	group := NewDynamicGroup("group-latency", nil, Policy{
+		Strategy:              BalanceManual,
+		BlacklistRevivalLimit: 3,
+	})
+	nodes := []*NodeState{
+		NewNodeState("a", "node-a", option.Outbound{}),
+		NewNodeState("b", "node-b", option.Outbound{}),
+		NewNodeState("c", "node-c", option.Outbound{}),
+		NewNodeState("d", "node-d", option.Outbound{}),
+		NewNodeState("e", "node-e", option.Outbound{}),
+	}
+	for _, node := range nodes {
+		if err := group.AddNode(node); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", node.ID, err)
+		}
+	}
+
+	now := time.Now()
+	nodes[0].recordLeastLatencyProbeSuccess(10*time.Millisecond, 3*time.Second, 3, now.Add(-5*time.Minute))
+	nodes[1].recordLeastLatencyProbeSuccess(20*time.Millisecond, 3*time.Second, 3, now.Add(-10*time.Minute))
+	nodes[3].recordLeastLatencyProbeSuccess(5*time.Millisecond, 3*time.Second, 3, now.Add(-time.Minute))
+	for index, node := range nodes {
+		failures := 3
+		if node.ID == "d" {
+			failures = 4
+		}
+		if node.ID == "e" {
+			failures = 5
+		}
+		for i := 0; i < failures; i++ {
+			node.recordLeastLatencyProbeFailure("probe failed", now.Add(time.Duration(index*10+i)*time.Second), probeFailurePolicy{
+				threshold: 3,
+				ttl:       time.Hour,
+			})
+		}
+	}
+
+	if got := candidateIDs(group); !sameStrings(got, []string{"a", "b", "c"}) {
+		t.Fatalf("candidates after top-K revival = %v, want a,b,c", got)
+	}
+	blacklisted := blacklistedSnapshotIDs(group)
+	if !sameStrings(blacklisted, []string{"d", "e"}) {
+		t.Fatalf("blacklisted after top-K revival = %v, want d,e", blacklisted)
+	}
+}
+
+func TestBlacklistRevivalSkipsIneligibleNodes(t *testing.T) {
+	group := NewDynamicGroup("group-auto", nil, Policy{Strategy: BalanceManual})
+	now := time.Now()
+	disabled := NewNodeState("disabled", "node-disabled", option.Outbound{})
+	tombstoned := NewNodeState("tombstoned", "node-tombstoned", option.Outbound{})
+	dead := NewNodeState("dead", "node-dead", option.Outbound{})
+	for _, node := range []*NodeState{disabled, tombstoned, dead} {
+		if err := group.AddNode(node); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", node.ID, err)
+		}
+	}
+	disabled.markFailed(time.Hour, "dial failed", now)
+	disabled.disable()
+	tombstoned.markFailed(time.Hour, "dial failed", now)
+	tombstoned.markTombstone(time.Hour, now)
+	dead.markFailed(0, "dial failed", now)
+
+	if got := candidateIDs(group); len(got) != 0 {
+		t.Fatalf("candidates after ineligible revival = %v, want none", got)
+	}
+	blacklisted := blacklistedSnapshotIDs(group)
+	if !sameStrings(blacklisted, []string{"disabled", "tombstoned"}) {
+		t.Fatalf("blacklisted after ineligible revival = %v, want disabled,tombstoned", blacklisted)
+	}
+}
+
 func TestUpdatePolicyToLeastLatencyDoesNotDeadlock(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -320,6 +393,17 @@ func candidateIDs(group *DynamicGroup) []string {
 	ids := make([]string, 0, len(candidates))
 	for _, node := range candidates {
 		ids = append(ids, node.ID)
+	}
+	return ids
+}
+
+func blacklistedSnapshotIDs(group *DynamicGroup) []string {
+	snapshot := group.Snapshot()
+	ids := make([]string, 0, len(snapshot.Nodes))
+	for _, node := range snapshot.Nodes {
+		if node.Blacklisted {
+			ids = append(ids, node.ID)
+		}
 	}
 	return ids
 }

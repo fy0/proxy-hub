@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
@@ -273,6 +274,156 @@ func TestManualURLTestGroupKeepsRoundRobinPolicy(t *testing.T) {
 	policy := policyForGroup(group)
 	if policy.Strategy != singboxcore.BalanceRoundRobin {
 		t.Fatalf("manual url-test policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRoundRobin)
+	}
+}
+
+func TestRuntimeRevivesTopHealthyBlacklistedCandidates(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	nodes := make([]*tables.ProxyNodeTable, 0, 5)
+	for i, name := range []string{"a", "b", "c", "d", "e"} {
+		node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+			Name:     name,
+			Protocol: ProtocolSOCKS5,
+			Server:   "127.0.0.1",
+			Port:     &port,
+		})
+		if err != nil {
+			t.Fatalf("NodeCreate(%s) error = %v", name, err)
+		}
+		nodes = append(nodes, node)
+		recordRuntimeRevivalHealthSeries(t, ctx, node.ID, time.Now().Add(-5*time.Minute).Add(time.Duration(i)*time.Second), []int{8, 5, 2, 0, 0}[i], []int{3, 3, 3, 3, 4}[i])
+	}
+
+	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("nodeHealthBlacklistedIDs() error = %v", err)
+	}
+	builder := &dynamicPlanBuilder{
+		ctx:                ctx,
+		tx:                 model.GetTx(nil),
+		blacklistedNodeIDs: blacklistedNodeIDs,
+		excludedNodeIDs:    map[string]struct{}{},
+	}
+	revived, err := builder.reviveIfAllCandidatesBlacklisted([]string{
+		nodes[4].ID,
+		nodes[3].ID,
+		nodes[2].ID,
+		nodes[1].ID,
+		nodes[0].ID,
+	})
+	if err != nil {
+		t.Fatalf("reviveIfAllCandidatesBlacklisted() error = %v", err)
+	}
+	if !revived {
+		t.Fatalf("reviveIfAllCandidatesBlacklisted() = false, want true")
+	}
+
+	healthByNodeID := NodeHealthMap(ctx, nil, nodeIDsFromNodes(nodes))
+	for _, node := range nodes[:3] {
+		health := healthByNodeID[node.ID]
+		if health == nil || health.Blacklisted {
+			t.Fatalf("node %s health = %+v, want revived", node.Name, health)
+		}
+		if _, blacklisted := builder.blacklistedNodeIDs[node.ID]; blacklisted {
+			t.Fatalf("node %s remained in runtime blacklist map", node.Name)
+		}
+	}
+	for _, node := range nodes[3:] {
+		health := healthByNodeID[node.ID]
+		if health == nil || !health.Blacklisted {
+			t.Fatalf("node %s health = %+v, want still blacklisted", node.Name, health)
+		}
+		if _, blacklisted := builder.blacklistedNodeIDs[node.ID]; !blacklisted {
+			t.Fatalf("node %s was removed from runtime blacklist map", node.Name)
+		}
+	}
+}
+
+func TestRuntimeRevivalDoesNotReleaseExcludedCandidate(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	recordRuntimeRevivalHealthSeries(t, ctx, first.ID, time.Now().Add(-5*time.Minute), 3, 3)
+	recordRuntimeRevivalHealthSeries(t, ctx, second.ID, time.Now().Add(-5*time.Minute), 3, 3)
+
+	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("nodeHealthBlacklistedIDs() error = %v", err)
+	}
+	builder := &dynamicPlanBuilder{
+		ctx:                ctx,
+		tx:                 model.GetTx(nil),
+		blacklistedNodeIDs: blacklistedNodeIDs,
+		excludedNodeIDs: map[string]struct{}{
+			second.ID: {},
+		},
+	}
+	revived, err := builder.reviveIfAllCandidatesBlacklisted([]string{first.ID, second.ID})
+	if err != nil {
+		t.Fatalf("reviveIfAllCandidatesBlacklisted() error = %v", err)
+	}
+	if revived {
+		t.Fatalf("reviveIfAllCandidatesBlacklisted() = true, want false")
+	}
+
+	healthByNodeID := NodeHealthMap(ctx, nil, []string{first.ID, second.ID})
+	for _, node := range []*tables.ProxyNodeTable{first, second} {
+		health := healthByNodeID[node.ID]
+		if health == nil || !health.Blacklisted {
+			t.Fatalf("node %s health = %+v, want still blacklisted", node.Name, health)
+		}
+	}
+}
+
+func recordRuntimeRevivalHealthSeries(t *testing.T, ctx context.Context, nodeID string, base time.Time, successes, failures int) {
+	t.Helper()
+	sequence := 0
+	for i := 0; i < successes; i++ {
+		if _, err := recordNodeHealthResult(ctx, nil, nodeID, nodeHealthResultRecord{
+			Source:    nodeHealthSourceNodeTest,
+			TargetID:  nodeID,
+			Available: true,
+			LatencyMs: int64(10 + i),
+			CheckedAt: base.Add(time.Duration(sequence) * time.Second),
+		}); err != nil {
+			t.Fatalf("record success %d for %s error = %v", i, nodeID, err)
+		}
+		sequence++
+	}
+	for i := 0; i < failures; i++ {
+		if _, err := recordNodeHealthResult(ctx, nil, nodeID, nodeHealthResultRecord{
+			Source:    nodeHealthSourceNodeTest,
+			TargetID:  nodeID,
+			Available: false,
+			LatencyMs: int64(200 + i),
+			Error:     "probe failed",
+			CheckedAt: base.Add(time.Duration(sequence) * time.Second),
+		}); err != nil {
+			t.Fatalf("record failure %d for %s error = %v", i, nodeID, err)
+		}
+		sequence++
 	}
 }
 
