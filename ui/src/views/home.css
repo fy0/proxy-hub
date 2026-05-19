@@ -602,12 +602,12 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 36px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .port-card,
 .add-port-card {
-  min-height: 286px;
+  min-height: 24rem;
   border: 1px solid rgb(99 102 241 / 0.22);
   border-radius: 18px;
   background: rgb(255 255 255 / 0.9);
@@ -618,7 +618,7 @@
   overflow: hidden;
   padding: 28px 28px 18px;
   display: grid;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto 1fr auto;
   gap: 14px;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.92),
@@ -1212,7 +1212,6 @@
 }
 
 .add-port-card {
-  min-height: 260px;
   font-size: 21px;
 }
 
