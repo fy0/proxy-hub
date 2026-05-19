@@ -709,31 +709,30 @@
 .switch-button {
   width: 56px;
   height: 56px;
+  margin-top: 20px;
+  border: 1px solid #eee;
   border-radius: 18px;
   display: grid;
   place-items: center;
   background: linear-gradient(135deg, rgb(134 239 172), rgb(74 222 128));
   color: #ffffff;
   flex-shrink: 0;
-  box-shadow: 0 14px 30px rgb(22 163 74 / 0.18);
+  box-shadow: none;
 }
 
 .switch-button.status-failed {
   background: linear-gradient(135deg, rgb(252 165 165), rgb(220 38 38));
   color: #ffffff;
-  box-shadow: 0 14px 30px rgb(220 38 38 / 0.16);
 }
 
 .switch-button.status-closed {
   background: linear-gradient(135deg, rgb(226 232 240), rgb(148 163 184));
   color: #ffffff;
-  box-shadow: 0 14px 30px rgb(100 116 139 / 0.12);
 }
 
 .switch-button.status-notRunning {
   background: linear-gradient(135deg, rgb(226 232 240), rgb(148 163 184));
   color: #ffffff;
-  box-shadow: 0 14px 30px rgb(100 116 139 / 0.12);
 }
 
 .port-title {
@@ -3117,6 +3116,7 @@ textarea:focus {
   .switch-button {
     width: 48px;
     height: 48px;
+    margin-top: 0;
   }
 
   .port-title strong {
