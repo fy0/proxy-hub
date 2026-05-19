@@ -1,1 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 261.76 226.69"><path d="M161.096.001l-30.225 52.351L100.647.001H-.005l130.877 226.688L261.749.001z" fill="#41b883"/><path d="M161.096.001l-30.225 52.351L100.647.001H52.346l78.526 136.01L209.398.001z" fill="#34495e"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="ProxyHub app icon gradient">
+  <defs>
+    <linearGradient id="app-gradient" x1="92" y1="92" x2="932" y2="932" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#42d9b4"/>
+      <stop offset="1" stop-color="#2f72ff"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="92" y="92" width="840" height="840" rx="220" fill="url(#app-gradient)"/>
+
+  <g transform="translate(154 200) scale(1.45)">
+    <g fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="butt" stroke-linejoin="round">
+      <path d="M345 182 421 106"/>
+      <path d="M345 248 421 324"/>
+      <path d="M102 215H267" stroke-linecap="round"/>
+    </g>
+
+    <path d="M315 45 462 130 462 300 315 385 168 300 168 130Z"
+          fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <circle cx="409" cy="118" r="25" fill="#ffffff"/>
+    <circle cx="409" cy="312" r="25" fill="#ffffff"/>
+
+    <g fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M56 130H106"/>
+      <path d="M32 215H68"/>
+      <path d="M56 300H106"/>
+    </g>
+
+    <circle cx="315" cy="215" r="40" fill="none" stroke="#ffffff" stroke-width="30"/>
+  </g>
+</svg>

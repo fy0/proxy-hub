@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, LogIn, ShieldCheck } from 'lucide-vue-next';
+import { ArrowLeft, LogIn } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { getApiBaseUrl } from '@/api';
 import { postUserSignin } from '@/api/generated';
 import type { AuthResponse } from '@/api/generated';
 import { setAccessToken } from '@/api/auth';
+import proxyHubLogoUrl from '@/assets/logo.svg';
 import { useI18n } from '@/i18n';
 import './login.css';
 
@@ -124,9 +125,7 @@ async function handleSkipLogin(): Promise<void> {
       </RouterLink>
 
       <div class="login-heading">
-        <span class="login-icon">
-          <ShieldCheck class="size-5" aria-hidden="true" />
-        </span>
+        <img class="login-icon" :src="proxyHubLogoUrl" alt="" aria-hidden="true" />
         <h1 id="login-title">{{ t('login.title') }}</h1>
       </div>
 

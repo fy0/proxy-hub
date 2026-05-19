@@ -28,41 +28,16 @@
 .settings-brand-lockup {
   display: inline-flex;
   align-items: center;
-  gap: 14px;
+  gap: 4px;
   min-width: 0;
 }
 
 .settings-brand-logo {
-  position: relative;
-  width: 36px;
-  height: 36px;
+  width: 52px;
+  height: 42px;
   flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  transform: rotate(30deg);
-}
-
-.settings-brand-logo::before,
-.settings-brand-logo::after,
-.settings-brand-logo-core {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 8px;
-}
-
-.settings-brand-logo::before {
-  background: linear-gradient(145deg, rgb(74 222 128), rgb(37 99 235));
-}
-
-.settings-brand-logo::after {
-  inset: 5px;
-  background: rgb(233 246 255);
-}
-
-.settings-brand-logo-core {
-  inset: 11px;
-  background: linear-gradient(145deg, rgb(45 212 191), rgb(59 130 246));
+  display: block;
+  object-fit: contain;
 }
 
 .settings-brand-name {
@@ -322,8 +297,8 @@
   }
 
   .settings-brand-logo {
-    width: 30px;
-    height: 30px;
+    width: 38px;
+    height: 31px;
   }
 
   .settings-brand-name {

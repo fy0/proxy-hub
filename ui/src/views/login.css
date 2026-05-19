@@ -39,13 +39,10 @@
 }
 
 .login-icon {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: rgb(220 252 231);
-  color: rgb(22 163 74);
+  width: 52px;
+  height: 52px;
+  display: block;
+  object-fit: contain;
 }
 
 .login-heading h1 {

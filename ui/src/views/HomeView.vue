@@ -42,6 +42,7 @@ import type {
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
 import { useI18n } from '@/i18n';
 import type { LocalePreference } from '@/i18n';
+import proxyHubMarkUrl from '@/assets/mark-large.png';
 import { useAppStore } from '@/stores/app';
 import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import type {
@@ -2739,9 +2740,7 @@ const homeContext = {
     <section class="shell-header">
       <header class="brand-bar">
         <div class="brand-lockup">
-          <span class="brand-logo" aria-hidden="true">
-            <span class="brand-logo-core"></span>
-          </span>
+          <img class="brand-logo" :src="proxyHubMarkUrl" alt="" aria-hidden="true" />
           <span class="brand-name">{{ t('app.name') }}</span>
           <span class="brand-version">v{{ displayAppVersion }}</span>
         </div>

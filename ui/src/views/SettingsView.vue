@@ -5,6 +5,7 @@ import { ArrowLeft, Download, FileJson, RefreshCw, Upload } from 'lucide-vue-nex
 import { getProxySettingsExport, postProxySettingsImport } from '@/api/generated';
 import type { SettingsBackupDto, SettingsBackupDtoWritable } from '@/api/generated';
 import { Button } from '@/components/ui/button';
+import proxyHubMarkUrl from '@/assets/mark-large.png';
 import { useI18n } from '@/i18n';
 import { useAppStore } from '@/stores/app';
 import { formatVersionForDisplay } from '@/utils/versionDisplay';
@@ -196,9 +197,7 @@ async function handleImport(): Promise<void> {
     <section class="settings-header">
       <header class="settings-brand-bar">
         <RouterLink class="settings-brand-lockup" :to="{ name: 'home' }">
-          <span class="settings-brand-logo" aria-hidden="true">
-            <span class="settings-brand-logo-core"></span>
-          </span>
+          <img class="settings-brand-logo" :src="proxyHubMarkUrl" alt="" aria-hidden="true" />
           <span class="settings-brand-name">{{ t('app.name') }}</span>
           <span class="settings-brand-version">v{{ displayAppVersion }}</span>
         </RouterLink>
