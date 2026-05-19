@@ -47,8 +47,7 @@ const {
   routeSuccessLabel,
   routeFailureLabel,
   mappingGroups,
-  groupRouteTotalLabel,
-  groupRouteAvailableLabel,
+  groupRouteAvailabilityLabel,
   groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
   groupRouteHealthState,
@@ -318,16 +317,13 @@ const {
               class="route-health group-route-health"
               :title="groupRouteHealthTitle(mapping, group)"
             >
-              <small class="total" :title="t('home.nodeGroupHealth.totalTitle')">
-                {{ groupRouteTotalLabel(mapping, group) }}
-              </small>
               <small
                 class="success"
                 :class="{ unavailable: groupRouteAvailableUnavailable(mapping, group) }"
                 :title="t('home.nodeGroupHealth.availableTitle')"
               >
                 <i aria-hidden="true"></i>
-                {{ groupRouteAvailableLabel(mapping, group) }}
+                {{ groupRouteAvailabilityLabel(mapping, group) }}
               </small>
               <small class="latency" :title="t('home.nodeGroupHealth.fastestTitle')">
                 {{ groupRouteLatencyLabel(mapping, group) }}

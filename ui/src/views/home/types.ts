@@ -105,8 +105,7 @@ export interface HomeViewContext {
   routeSuccessLabel: (node: ProxyNode) => string;
   routeFailureLabel: (node: ProxyNode) => string;
   mappingGroups: (mapping: PortMapping) => ProxyGroup[];
-  groupRouteTotalLabel: (mapping: PortMapping, group: ProxyGroup) => string;
-  groupRouteAvailableLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupRouteAvailabilityLabel: (mapping: PortMapping, group: ProxyGroup) => string;
   groupRouteAvailableUnavailable: (mapping: PortMapping, group: ProxyGroup) => boolean;
   groupRouteLatencyLabel: (mapping: PortMapping, group: ProxyGroup) => string;
   groupRouteHealthState: (

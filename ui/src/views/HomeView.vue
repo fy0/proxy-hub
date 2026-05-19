@@ -649,15 +649,11 @@ function groupRouteHealthSummary(mapping: PortMapping, group: ProxyGroup) {
   return { available, fastestLatencyMs, known, probing, total };
 }
 
-function groupRouteTotalLabel(mapping: PortMapping, group: ProxyGroup): string {
-  return t('home.nodeGroupHealth.total', {
-    count: groupRouteHealthSummary(mapping, group).total,
-  });
-}
-
-function groupRouteAvailableLabel(mapping: PortMapping, group: ProxyGroup): string {
-  return t('home.nodeGroupHealth.available', {
-    count: groupRouteHealthSummary(mapping, group).available,
+function groupRouteAvailabilityLabel(mapping: PortMapping, group: ProxyGroup): string {
+  const summary = groupRouteHealthSummary(mapping, group);
+  return t('home.nodeGroupHealth.availableRatio', {
+    available: summary.available,
+    total: summary.total,
   });
 }
 
@@ -2649,8 +2645,7 @@ const homeContext = {
   routeSuccessLabel,
   routeFailureLabel,
   mappingGroups,
-  groupRouteTotalLabel,
-  groupRouteAvailableLabel,
+  groupRouteAvailabilityLabel,
   groupRouteAvailableUnavailable,
   groupRouteLatencyLabel,
   groupRouteHealthState,

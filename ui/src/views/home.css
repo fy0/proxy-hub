@@ -1129,10 +1129,6 @@
   color: rgb(220 38 38);
 }
 
-.route-health .total {
-  color: rgb(37 99 235);
-}
-
 .route-health .failure {
   color: rgb(220 38 38);
 }
