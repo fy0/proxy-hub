@@ -5,8 +5,13 @@ import { readonly, ref } from 'vue';
 import { fallbackLocale, messages, type Locale } from './messages';
 
 type MessageParams = Record<string, number | string>;
+export type LocalePreference = 'system' | Locale;
 
-const currentLocale = ref<Locale>(detectLocale());
+const LOCALE_PREFERENCE_STORAGE_KEY = 'proxy_hub_locale_preference';
+const defaultLocalePreference: LocalePreference = 'system';
+
+const currentLocalePreference = ref<LocalePreference>(readStoredLocalePreference());
+const currentLocale = ref<Locale>(resolveLocalePreference(currentLocalePreference.value));
 let initialized = false;
 let languageChangeListenerAttached = false;
 
@@ -47,6 +52,41 @@ export function detectLocale(): Locale {
   return fallbackLocale;
 }
 
+function normalizeLocalePreference(value: string | null | undefined): LocalePreference | null {
+  const preference = value?.trim();
+  if (!preference) return null;
+  if (preference === 'system') return 'system';
+
+  return normalizeLocaleTag(preference);
+}
+
+function readStoredLocalePreference(): LocalePreference {
+  if (typeof localStorage === 'undefined') return defaultLocalePreference;
+
+  try {
+    return (
+      normalizeLocalePreference(localStorage.getItem(LOCALE_PREFERENCE_STORAGE_KEY)) ??
+      defaultLocalePreference
+    );
+  } catch {
+    return defaultLocalePreference;
+  }
+}
+
+function writeStoredLocalePreference(nextPreference: LocalePreference): void {
+  if (typeof localStorage === 'undefined') return;
+
+  try {
+    localStorage.setItem(LOCALE_PREFERENCE_STORAGE_KEY, nextPreference);
+  } catch {
+    // Storage may be unavailable in hardened browser modes.
+  }
+}
+
+function resolveLocalePreference(preference: LocalePreference): Locale {
+  return preference === 'system' ? detectLocale() : preference;
+}
+
 function applyLocale(nextLocale: Locale): void {
   if (typeof document !== 'undefined') {
     document.documentElement.lang = nextLocale;
@@ -64,16 +104,33 @@ export function setLocale(nextLocale: Locale): void {
   applyLocale(nextLocale);
 }
 
+function applyLocalePreference(): void {
+  setLocale(resolveLocalePreference(currentLocalePreference.value));
+}
+
+export function setLocalePreference(nextPreference: LocalePreference): void {
+  const normalizedPreference = normalizeLocalePreference(nextPreference) ?? defaultLocalePreference;
+  if (currentLocalePreference.value !== normalizedPreference) {
+    currentLocalePreference.value = normalizedPreference;
+  }
+
+  writeStoredLocalePreference(normalizedPreference);
+  applyLocalePreference();
+}
+
 export function syncLocaleWithSystem(): void {
   setLocale(detectLocale());
 }
 
 function onLanguageChange(): void {
-  syncLocaleWithSystem();
+  if (currentLocalePreference.value === 'system') {
+    syncLocaleWithSystem();
+  }
 }
 
 export function initI18n(): Locale {
-  syncLocaleWithSystem();
+  currentLocalePreference.value = readStoredLocalePreference();
+  applyLocalePreference();
 
   if (!languageChangeListenerAttached && typeof window !== 'undefined') {
     window.addEventListener('languagechange', onLanguageChange);
@@ -125,7 +182,9 @@ export function useI18n() {
   return {
     formatDateTime,
     locale: readonly(currentLocale),
+    localePreference: readonly(currentLocalePreference),
     setLocale,
+    setLocalePreference,
     t,
   };
 }

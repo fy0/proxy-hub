@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Download,
   Gauge,
+  Languages,
   Link2,
   Plus,
   RefreshCw,
@@ -40,6 +41,7 @@ import type {
 } from './home/types';
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
 import { useI18n } from '@/i18n';
+import type { LocalePreference } from '@/i18n';
 import { useAppStore } from '@/stores/app';
 import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import type {
@@ -84,7 +86,7 @@ interface TestDialogState {
 type AddNodeDialogMode = 'uri' | 'chain' | 'import';
 type ToastVariant = 'default' | 'success';
 
-const { formatDateTime, t } = useI18n();
+const { formatDateTime, locale, localePreference, setLocalePreference, t } = useI18n();
 const props = defineProps<{
   tab?: TabKey;
 }>();
@@ -94,6 +96,24 @@ const appStore = useAppStore();
 const clipboard = useClipboard({
   legacy: true,
 });
+
+const languagePreferenceOptions = computed<Array<{ label: string; value: LocalePreference }>>(
+  () => [
+    { label: t('common.languageSystem'), value: 'system' },
+    { label: t('common.languageChinese'), value: 'zh-CN' },
+    { label: t('common.languageEnglish'), value: 'en-US' },
+  ]
+);
+
+const currentLocaleLabel = computed(() =>
+  locale.value === 'zh-CN' ? t('common.languageChinese') : t('common.languageEnglish')
+);
+
+const currentLanguageTitle = computed(() =>
+  localePreference.value === 'system'
+    ? `${t('common.language')}: ${t('common.languageSystem')} (${currentLocaleLabel.value})`
+    : `${t('common.language')}: ${currentLocaleLabel.value}`
+);
 
 const protocolLabels = computed<Record<ProxyProtocol, string>>(() => ({
   vless: t('home.protocol.vless'),
@@ -2727,6 +2747,39 @@ const homeContext = {
         </div>
 
         <div class="brand-actions">
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                class="language-menu-trigger"
+                :aria-label="currentLanguageTitle"
+                :title="currentLanguageTitle"
+              >
+                <Languages class="size-4" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" :side-offset="8" class="language-menu">
+              <DropdownMenuItem
+                v-for="option in languagePreferenceOptions"
+                :key="option.value"
+                :class="[
+                  'language-menu-item',
+                  { active: localePreference === option.value },
+                ]"
+                @select="setLocalePreference(option.value)"
+              >
+                <Check
+                  v-if="localePreference === option.value"
+                  class="size-4"
+                  aria-hidden="true"
+                />
+                <span v-else class="language-menu-check-placeholder" aria-hidden="true"></span>
+                <span>{{ option.label }}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <RouterLink
             class="settings-link"
             :to="{ name: 'settings' }"
