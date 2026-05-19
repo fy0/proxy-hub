@@ -446,10 +446,6 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		result.Error = "port mapping runtime is not running"
 		return result, nil
 	}
-	if runtimeStatusHasLeastLatencyRoute(status, mapping.ID) {
-		probeRuntimeLeastLatencyGroups(mapping.ID)
-		status = RuntimeStatusGet()
-	}
 	if node, ok := runtimeSelectedRouteNode(status, mapping.ID); ok {
 		result.NodeName = node.NodeName
 		result.NodeTag = node.NodeTag
@@ -914,22 +910,6 @@ func testResultFromHealth(targetType, targetID, targetName, probeURL string, che
 		result.NodeError = health.LastError
 	}
 	return result
-}
-
-func probeRuntimeLeastLatencyGroups(mappingID string) {
-	instance := runtimeInstanceForMapping(mappingID)
-	if instance == nil || instance.core == nil {
-		return
-	}
-	state := instance.core.Snapshot()
-	for _, group := range state.Groups {
-		if group.Policy.Strategy != singboxcore.BalanceLeastLatency {
-			continue
-		}
-		if err := instance.core.ProbeLeastLatencyGroup(group.Tag); err != nil {
-			utils.Logger.Warn("least-latency 手动测速探测失败", zap.String("mappingId", mappingID), zap.String("groupTag", group.Tag), zap.Error(err))
-		}
-	}
 }
 
 func runtimeNodeErrorFromProbe(nodeTag string, fallback string) string {

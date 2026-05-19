@@ -418,7 +418,8 @@ func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []
 	if err != nil {
 		return option.Options{}, nil, err
 	}
-	return buildSingBoxOptionsFromMappings(ctx, tx, mappings)
+	options, inbounds, _, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, tx, mappings, nil)
+	return options, inbounds, err
 }
 
 func enabledRuntimeMappings(ctx context.Context, tx model.DBTx) ([]*tables.PortMappingTable, error) {
@@ -432,15 +433,6 @@ func enabledRuntimeMappings(ctx context.Context, tx model.DBTx) ([]*tables.PortM
 		return nil, err
 	}
 	return mappings, nil
-}
-
-func buildSingBoxOptionsFromMappings(
-	ctx context.Context,
-	tx model.DBTx,
-	mappings []*tables.PortMappingTable,
-) (option.Options, []RuntimeInbound, error) {
-	options, inbounds, _, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, tx, mappings, nil)
-	return options, inbounds, err
 }
 
 func buildSingBoxOptionsFromMappingsWithExcludedNodes(
@@ -2305,15 +2297,6 @@ func resolveSelectedRuntimeRouteNode(group singboxcore.GroupSnapshot, groups map
 		return &routeNode
 	}
 	return nil
-}
-
-func runtimeStatusHasLeastLatencyRoute(status RuntimeStatus, mappingID string) bool {
-	for _, route := range status.Routes {
-		if route.MappingID == mappingID && route.Strategy == string(singboxcore.BalanceLeastLatency) {
-			return true
-		}
-	}
-	return false
 }
 
 func runtimeSelectedRouteNode(status RuntimeStatus, mappingID string) (RuntimeRouteNode, bool) {
