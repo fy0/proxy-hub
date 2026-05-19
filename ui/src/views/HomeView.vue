@@ -27,6 +27,7 @@ import { useRoute, useRouter } from 'vue-router';
 import HomeTabs from './home/HomeTabs.vue';
 import GroupsPanel from './home/GroupsPanel.vue';
 import MappingsPanel from './home/MappingsPanel.vue';
+import NodeGroupFilterSelect from './home/NodeGroupFilterSelect.vue';
 import NodesPanel from './home/NodesPanel.vue';
 import type {
   NodeGroupFilterKey,
@@ -3030,11 +3031,11 @@ const homeContext = {
                 autocomplete="off"
                 :placeholder="t('home.placeholders.nodeSearch')"
               />
-              <select v-model="chainNodeGroupId">
-                <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                  {{ group.label }}
-                </option>
-              </select>
+              <NodeGroupFilterSelect
+                v-model="chainNodeGroupId"
+                :options="groupFilterOptions()"
+                :aria-label="t('home.form.nodeGroup')"
+              />
             </div>
             <div class="chain-node-options">
               <label
@@ -3213,11 +3214,11 @@ const homeContext = {
                   autocomplete="off"
                   :placeholder="t('home.placeholders.nodeSearch')"
                 />
-                <select v-model="manualGroupNodeGroupId">
-                  <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                    {{ group.label }}
-                  </option>
-                </select>
+                <NodeGroupFilterSelect
+                  v-model="manualGroupNodeGroupId"
+                  :options="groupFilterOptions()"
+                  :aria-label="t('home.form.nodeGroup')"
+                />
               </div>
               <div class="chain-node-options compact">
                 <label
@@ -3567,11 +3568,11 @@ const homeContext = {
                   autocomplete="off"
                   :placeholder="t('home.placeholders.nodeSearch')"
                 />
-                <select v-model="routeNodeGroupId">
-                  <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                    {{ group.label }}
-                  </option>
-                </select>
+                <NodeGroupFilterSelect
+                  v-model="routeNodeGroupId"
+                  :options="groupFilterOptions()"
+                  :aria-label="t('home.form.nodeGroup')"
+                />
               </div>
               <div class="route-node-option-list">
                 <button
@@ -3687,11 +3688,11 @@ const homeContext = {
                 autocomplete="off"
                 :placeholder="t('home.placeholders.nodeSearch')"
               />
-              <select v-model="editChainNodeGroupId">
-                <option v-for="group in groupFilterOptions()" :key="group.id" :value="group.id">
-                  {{ group.label }}
-                </option>
-              </select>
+              <NodeGroupFilterSelect
+                v-model="editChainNodeGroupId"
+                :options="groupFilterOptions()"
+                :aria-label="t('home.form.nodeGroup')"
+              />
             </div>
             <div class="chain-node-options">
               <label
