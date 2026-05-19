@@ -6,6 +6,14 @@ export const messages = {
   'zh-CN': {
     app: {
       name: 'ProxyHub',
+      pageTitles: {
+        about: '关于',
+        groups: '节点分组',
+        login: '登录',
+        mappings: '本地端口',
+        nodes: '节点库',
+        settings: '设置',
+      },
     },
     common: {
       add: '添加',
@@ -471,6 +479,14 @@ export const messages = {
   'en-US': {
     app: {
       name: 'ProxyHub',
+      pageTitles: {
+        about: 'About',
+        groups: 'Node groups',
+        login: 'Sign in',
+        mappings: 'Local ports',
+        nodes: 'Nodes',
+        settings: 'Settings',
+      },
     },
     common: {
       add: 'Add',
