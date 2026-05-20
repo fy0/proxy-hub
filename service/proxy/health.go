@@ -741,7 +741,7 @@ func singBoxLogPath() string {
 	if logPath := strings.TrimSpace(os.Getenv("PROXYHUB_SING_BOX_LOG")); logPath != "" {
 		return logPath
 	}
-	return "data/sing-box.log"
+	return filepath.Join(utils.GetDataDir(), "sing-box.log")
 }
 
 func singBoxLogOutputPath() string {

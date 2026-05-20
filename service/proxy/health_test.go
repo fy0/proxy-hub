@@ -3,11 +3,13 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/utils"
 )
 
 func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
@@ -96,6 +98,25 @@ func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
 	}
 	if historyCount != nodeHealthHistoryLimit {
 		t.Fatalf("unscoped history count = %d, want %d", historyCount, nodeHealthHistoryLimit)
+	}
+}
+
+func TestSingBoxLogPathDefaultsToRuntimeDataDir(t *testing.T) {
+	t.Setenv("PROXYHUB_SING_BOX_LOG", "")
+
+	got := singBoxLogPath()
+	want := filepath.Join(utils.GetDataDir(), "sing-box.log")
+	if got != want {
+		t.Fatalf("singBoxLogPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSingBoxLogPathHonorsEnvOverride(t *testing.T) {
+	overridePath := filepath.Join(t.TempDir(), "custom.log")
+	t.Setenv("PROXYHUB_SING_BOX_LOG", overridePath)
+
+	if got := singBoxLogPath(); got != overridePath {
+		t.Fatalf("singBoxLogPath() = %q, want %q", got, overridePath)
 	}
 }
 

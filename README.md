@@ -86,14 +86,17 @@ Download the latest archive from [GitHub Releases](https://github.com/fy0/proxy-
 
 ## Configuration
 
-ProxyHub reads runtime settings from `data/config.yaml`.
+ProxyHub reads runtime settings from the active data directory:
+
+- npm global install: `~/.proxy-hub/config.yaml`
+- source/local binary direct run: `./data/config.yaml`
 
 Common keys:
 
 | Key | Purpose |
 | --- | --- |
 | `serveAt` | Service listen address, default `:3020`. |
-| `dbUrl` | Database DSN, default `./data/data.db`. |
+| `dbUrl` | Database DSN, default `data.db` under the active data directory. |
 | `logLevel` | Service log level. |
 
 Only SQLite DSNs are supported.

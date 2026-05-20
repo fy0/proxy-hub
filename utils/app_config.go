@@ -68,10 +68,13 @@ type AppConfig struct {
 }
 
 var configStore = koanf.New(".")
-var configPath = filepath.Join(".", "data", "config.yaml")
+var configPath string
 
-// ReadConfig 会加载 data/config.yaml，若不存在则写入默认配置。
+// ReadConfig 会加载当前数据目录下的 config.yaml，若不存在则写入默认配置。
 func ReadConfig() *AppConfig {
+	dataDir := GetDataDir()
+	configPath = filepath.Join(dataDir, "config.yaml")
+
 	defaults := AppConfig{
 		ServeAt:             ":3020",
 		Domain:              "127.0.0.1:3020",
@@ -79,7 +82,7 @@ func ReadConfig() *AppConfig {
 		WebUrl:              "/",
 		AttachmentSizeLimit: 65536,
 		ImageCompress:       true,
-		LogFile:             "./data/service.log",
+		LogFile:             filepath.Join(dataDir, "service.log"),
 		LogLevel:            "info",
 		CorsAllowOrigins:    "*",
 		AutoMigrate:         true,
@@ -91,10 +94,11 @@ func ReadConfig() *AppConfig {
 			UseS3: false,
 		},
 		ProxyHealth: DefaultProxyHealthConfig(),
-		DSN:         "./data/data.db",
+		DSN:         filepath.Join(dataDir, "data.db"),
 		PrintConfig: true,
 	}
 
+	configStore = koanf.New(".")
 	lo.Must0(configStore.Load(structs.Provider(&defaults, "yaml"), nil))
 
 	provider := file.Provider(configPath)
@@ -132,11 +136,16 @@ func WriteConfig(config *AppConfig) {
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+	targetPath := configPath
+	if targetPath == "" {
+		targetPath = filepath.Join(GetDataDir(), "config.yaml")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		fmt.Println("写入配置失败: 无法创建目录")
 		return
 	}
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+	if err := os.WriteFile(targetPath, content, 0o644); err != nil {
 		fmt.Println("写入配置失败: 无法写入文件")
 	}
 }

@@ -145,24 +145,28 @@ func (b *nodeHealthBatcher) ensureStarted() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	b.ctx = ctx
 	b.cancel = cancel
-	b.done = make(chan struct{})
+	b.done = done
 	b.started = true
 	b.flushOnStop = true
 
-	go b.run()
+	go b.run(ctx, done)
 }
 
-func (b *nodeHealthBatcher) run() {
+func (b *nodeHealthBatcher) run(ctx context.Context, done chan struct{}) {
 	ticker := time.NewTicker(nodeHealthFlushInterval)
 	defer ticker.Stop()
-	defer close(b.done)
+	defer close(done)
 
 	for {
 		select {
-		case <-b.ctx.Done():
-			if b.flushOnStop {
+		case <-ctx.Done():
+			b.startMu.Lock()
+			flushOnStop := b.flushOnStop
+			b.startMu.Unlock()
+			if flushOnStop {
 				flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = b.flush(flushCtx)
 				cancel()

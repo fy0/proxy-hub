@@ -86,14 +86,17 @@ http://127.0.0.1:3020
 
 ## 配置
 
-ProxyHub 从 `data/config.yaml` 读取运行配置。
+ProxyHub 从当前数据目录读取运行配置：
+
+- npm 全局安装：`~/.proxy-hub/config.yaml`
+- 源码/本地二进制直接运行：`./data/config.yaml`
 
 常用配置：
 
 | 配置项 | 用途 |
 | --- | --- |
 | `serveAt` | 服务监听地址，默认 `:3020`。 |
-| `dbUrl` | 数据库 DSN，默认 `./data/data.db`。 |
+| `dbUrl` | 数据库 DSN，默认位于当前数据目录下的 `data.db`。 |
 | `logLevel` | 服务日志级别。 |
 
 仅支持 SQLite DSN。
