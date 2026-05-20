@@ -1,57 +1,74 @@
-# Proxy Hub
+<div align="center">
+  <img src="media/readme/proxyhub-pool-flow-en.png" alt="ProxyHub proxy format flow" width="680">
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+  <h1>ProxyHub</h1>
+  <p><strong>Simple proxy format conversion tool</strong></p>
+  <p>Import common proxy links and turn them into ready-to-use local SOCKS5/HTTP endpoints.</p>
 
-Proxy Hub is a backend and frontend foundation for a proxy management platform, built with a GORM data layer, zap logging, koanf configuration, and the Fiber + Huma API framework.
+  <p>
+    <a href="README.md">English</a> ·
+    <a href="README.zh-CN.md">简体中文</a>
+  </p>
+</div>
 
-## Feature Overview
-- **Configuration center**: `utils/app_config.go` reads and writes `data/config.yaml`, and provides switches for log levels, OpenAPI, Huma docs paths, and related options.
-- **Logging system**: `utils/logger.go` uses zap and supports both console and file output.
-- **Data layer**:
-  - `model/tables` contains GORM table declarations (the default examples are `UserTable` and `UserAccessTokenTable`).
-  - `model` wraps the GORM initialization, migration, shutdown, and related lifecycle methods.
-- **API framework**: `api/api.go` includes the Fiber + Huma integration and automatically mounts OpenAPI JSON plus the custom docs path.
-- **Utilities**: common components such as ID generation are kept for reuse.
+## What It Solves
 
-## Getting Started
-1. Initialize dependencies: `go mod tidy`
-2. Update `data/config.yaml` for your environment, including the database DSN and log output.
-3. Start the service: `go run -tags with_utls .`
-   - To force migrations, append `-m` or `--migrate`.
+ProxyHub focuses on everyday proxy link handling: import, preview, convert, probe, and expose stable local SOCKS5/HTTP ports.
 
-## Frontend
-- Install dependencies: `pnpm -C ui install --frozen-lockfile`
-- Generate the OpenAPI client: `pnpm -C ui run generate-api`
-- Build the frontend: `pnpm -C ui run build`
+## Highlights
 
-## Testing
-- Run all tests: `go test -tags with_utls ./...`
-- Data-layer tests use an in-memory SQLite database by default (DSN `:memory:`) for fast end-to-end flow validation.
+| Feature | Why it matters |
+| --- | --- |
+| Format conversion | Import common proxy links and output local proxy endpoints. |
+| Smart routing | Prefer low latency, fail over, balance, or switch manually. |
+| Health guard | Probe latency and automatically exclude broken routes. |
+| Chain nodes | Build multi-hop paths without hand-editing configs. |
+| Bulk import | Paste links or subscriptions, preview, then import. |
+| Backup | Move the proxy setup with one JSON file. |
 
-## Supported DSNs
-`utils/model_base.DBInit` automatically selects the database driver based on the DSN:
-- Postgres: `postgres://...` / `postgresql://...`
-- MySQL: `mysql://...` or a DSN containing `@tcp(`
-- SQLite: `./data/data.db` / `file:...` / `:memory:`
+## Screenshots
 
-SQLite uses `github.com/ncruces/go-sqlite3/gormlite` and does not require CGO.
+| Local ports | Add node |
+| --- | --- |
+| ![Local ports](media/readme/proxyhub-local-ports-en.png) | ![Add node](media/readme/proxyhub-add-node-en.png) |
 
-## Directory Layout
-- `api/`: HTTP and Huma implementation.
-- `model/`: data layer, including GORM tables and initialization.
-- `utils/`: shared modules for configuration, logging, IDs, and related helpers.
-- `static/`, `docs/`, `data/`: placeholders for static assets, custom documentation, and runtime data.
+| Chain node | Batch import |
+| --- | --- |
+| ![Add chain node](media/readme/proxyhub-chain-node-en.png) | ![Batch import nodes](media/readme/proxyhub-batch-import-en.png) |
 
-## Windows Service Commands
-- Install: `go run -tags with_utls . -i`
-- Uninstall: `go run -tags with_utls . --uninstall`
+## Quick Start
 
-You can later replace the sample user model or add proxy nodes, subscriptions, health checks, and other modules according to Proxy Hub business requirements.
+### Docker
 
-## Docker / CI
-- Build a local image: `docker build -t proxy-hub:local .`
-- Run a local container: `docker run --rm -p 3020:3020 -v ${PWD}/data:/app/data proxy-hub:local`
-- To customize configuration, mount the host `data/` directory to `/app/data` inside the container.
-- `Dockerfile` generates OpenAPI output, builds the frontend, and embeds `static/` into the Go binary during the build stage.
-- `.github/workflows/docker-image.yml` builds images on `master`, `v*` tags, PRs, or manual runs, and pushes to `ghcr.io` outside PR contexts.
-- `.github/workflows/release-dev.yml` creates a `dev` prerelease archive on `master` pushes or manual runs, then uploads it to GitHub Releases.
+```bash
+docker run -d \
+  --name proxyhub \
+  -p 3020:3020 \
+  -v proxyhub-data:/app/data \
+  ghcr.io/fy0/proxy-hub:latest
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3020
+```
+
+### Binary
+
+Download the latest archive from [GitHub Releases](https://github.com/fy0/proxy-hub/releases), extract it, then run `proxy-hub` or `proxy-hub.exe`.
+
+## Configuration
+
+ProxyHub reads runtime settings from `data/config.yaml`.
+
+Common keys:
+
+| Key | Purpose |
+| --- | --- |
+| `serveAt` | Service listen address, default `:3020`. |
+| `dbUrl` | Database DSN, default `./data/data.db`. |
+| `logLevel` | Service log level. |
+| `registerOpen` | Whether registration is open. |
+
+SQLite, PostgreSQL, and MySQL DSNs are supported.

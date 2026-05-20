@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 350" width="660" height="350" role="img" aria-label="ProxyHub proxy pool flow">
+  <rect width="660" height="350" fill="#fff"/>
+
+  <defs>
+    <linearGradient id="proxyhub-mark-gradient" x1="48" y1="72" x2="472" y2="386" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#42d9b4"/>
+      <stop offset="0.52" stop-color="#36afd8"/>
+      <stop offset="1" stop-color="#2f72ff"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(60 95) scale(1.08)" fill="none" stroke="#a9a9a9" stroke-width="10" stroke-linecap="round">
+    <path d="M38 24h58"/>
+    <path d="M38 60h58"/>
+    <path d="M38 96h58"/>
+  </g>
+  <g transform="translate(60 95) scale(1.08)" fill="#a9a9a9">
+    <circle cx="16" cy="24" r="7"/>
+    <circle cx="16" cy="60" r="7"/>
+    <circle cx="16" cy="96" r="7"/>
+  </g>
+
+  <g transform="translate(170 125)">
+    <path d="M10 32h62M52 14l22 18-22 18" fill="none" stroke="#a9a9a9" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(245 102) scale(0.31)">
+    <g fill="none" stroke="url(#proxyhub-mark-gradient)" stroke-width="30" stroke-linecap="butt" stroke-linejoin="round">
+      <path d="M345 182 421 106"/>
+      <path d="M345 248 421 324"/>
+      <path d="M102 215H267" stroke-linecap="round"/>
+    </g>
+    <path d="M315 45 462 130 462 300 315 385 168 300 168 130Z"
+          fill="none" stroke="url(#proxyhub-mark-gradient)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="409" cy="118" r="25" fill="url(#proxyhub-mark-gradient)"/>
+    <circle cx="409" cy="312" r="25" fill="url(#proxyhub-mark-gradient)"/>
+    <g fill="none" stroke="url(#proxyhub-mark-gradient)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M56 130H106"/>
+      <path d="M32 215H68"/>
+      <path d="M56 300H106"/>
+    </g>
+    <circle cx="315" cy="215" r="40" fill="none" stroke="url(#proxyhub-mark-gradient)" stroke-width="30"/>
+  </g>
+
+  <g transform="translate(415 125)">
+    <path d="M10 32h62M52 14l22 18-22 18" fill="none" stroke="#a9a9a9" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(505 102) scale(0.82)">
+    <rect x="0" y="0" width="150" height="52" rx="10" fill="#e6e6e6"/>
+    <text x="75" y="34" text-anchor="middle" fill="#616161" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="24" font-weight="600">SOCKS5</text>
+  </g>
+  <g transform="translate(505 172) scale(0.82)">
+    <rect x="0" y="0" width="150" height="52" rx="10" fill="#e6e6e6"/>
+    <text x="75" y="34" text-anchor="middle" fill="#616161" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="24" font-weight="600">HTTP</text>
+  </g>
+
+  <text x="112" y="285" text-anchor="middle" fill="#777" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="24">Proxy Links</text>
+  <text x="343" y="285" text-anchor="middle" fill="#777" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="24">ProxyHub</text>
+  <text x="558" y="285" text-anchor="middle" fill="#777" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="23">Local Proxy Pool</text>
+</svg>
