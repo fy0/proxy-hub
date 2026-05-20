@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -120,6 +122,89 @@ func TestSettingsExportImportHandlersRoundTrip(t *testing.T) {
 	importResp := mustProxyAPITestRequest(t, app, http.MethodPost, "/api/v1/proxy/settings/import", body)
 	if importResp.StatusCode != http.StatusOK {
 		t.Fatalf("import status = %d, want %d", importResp.StatusCode, http.StatusOK)
+	}
+	if _, err := proxyService.NodeGet(ctx, nil, extra.ID); err != proxyService.ErrNodeNotFound {
+		t.Fatalf("NodeGet(extra) error = %v, want %v", err, proxyService.ErrNodeNotFound)
+	}
+}
+
+func TestSettingsExportImportZipHandlersRoundTrip(t *testing.T) {
+	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
+		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
+	}
+	t.Cleanup(model.DBClose)
+	t.Cleanup(func() {
+		_ = proxyService.RuntimeStop()
+	})
+
+	ctx := context.Background()
+	node, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	_, err = proxyService.MappingCreate(ctx, nil, proxyService.MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10092,
+		OutboundProtocol: proxyService.OutboundProtocolMixed,
+		Strategy:         proxyService.StrategyManual,
+		NodeIDs:          []string{node.ID},
+		ActiveNodeID:     &node.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	app, apiGroup := newProxyAPITestApp(t)
+	Register(apiGroup)
+
+	exportResp := mustProxyAPITestRequest(t, app, http.MethodGet, "/api/v1/proxy/settings/export/zip", nil)
+	if exportResp.StatusCode != http.StatusOK {
+		t.Fatalf("export zip status = %d, want %d", exportResp.StatusCode, http.StatusOK)
+	}
+	if contentType := exportResp.Header.Get("Content-Type"); !strings.Contains(contentType, "application/zip") {
+		t.Fatalf("Content-Type = %q, want application/zip", contentType)
+	}
+	if disposition := exportResp.Header.Get("Content-Disposition"); !strings.Contains(disposition, ".zip") {
+		t.Fatalf("Content-Disposition = %q, want zip filename", disposition)
+	}
+	rawZip, err := io.ReadAll(exportResp.Body)
+	if err != nil {
+		t.Fatalf("read zip response: %v", err)
+	}
+	backup, err := proxyService.SettingsBackupFromZip(rawZip)
+	if err != nil {
+		t.Fatalf("SettingsBackupFromZip() error = %v", err)
+	}
+	if backup.Kind != proxyService.SettingsBackupKind || len(backup.Data.Nodes) != 1 || len(backup.Data.Mappings) != 1 {
+		t.Fatalf("backup = %+v, want exported node and mapping", backup)
+	}
+
+	extra, err := proxyService.NodeCreate(ctx, nil, proxyService.NodeUpsertRequest{
+		Name:     "extra",
+		Protocol: proxyService.ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(extra) error = %v", err)
+	}
+
+	importResp := mustProxyAPITestRequestWithContentType(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/proxy/settings/import/zip",
+		rawZip,
+		"application/zip",
+	)
+	if importResp.StatusCode != http.StatusOK {
+		t.Fatalf("import zip status = %d, want %d", importResp.StatusCode, http.StatusOK)
 	}
 	if _, err := proxyService.NodeGet(ctx, nil, extra.ID); err != proxyService.ErrNodeNotFound {
 		t.Fatalf("NodeGet(extra) error = %v, want %v", err, proxyService.ErrNodeNotFound)
@@ -327,6 +412,11 @@ func newProxyAPITestApp(t *testing.T) (*fiber.App, huma.API) {
 
 func mustProxyAPITestRequest(t *testing.T, app *fiber.App, method string, target string, body []byte) *http.Response {
 	t.Helper()
+	return mustProxyAPITestRequestWithContentType(t, app, method, target, body, "application/json")
+}
+
+func mustProxyAPITestRequestWithContentType(t *testing.T, app *fiber.App, method string, target string, body []byte, contentType string) *http.Response {
+	t.Helper()
 	var reader *bytes.Reader
 	if body == nil {
 		reader = bytes.NewReader(nil)
@@ -338,7 +428,7 @@ func mustProxyAPITestRequest(t *testing.T, app *fiber.App, method string, target
 		t.Fatalf("new request %s %s: %v", method, target, err)
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := app.Test(req)
 	if err != nil {

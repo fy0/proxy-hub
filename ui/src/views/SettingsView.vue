@@ -9,8 +9,9 @@ import {
   SlidersHorizontal,
   Upload,
 } from 'lucide-vue-next';
-import { getProxySettingsExport, postProxySettingsImport } from '@/api/generated';
-import type { SettingsBackupDto, SettingsBackupDtoWritable } from '@/api/generated';
+import { postProxySettingsImport } from '@/api/generated';
+import { client } from '@/api/generated/client.gen';
+import type { SettingsBackupDto, SettingsBackupDtoWritable, SettingsImportResultDto } from '@/api/generated';
 import { Button } from '@/components/ui/button';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
 import { useI18n } from '@/i18n';
@@ -35,6 +36,7 @@ const { extraUiInfoPreference, setExtraUiInfoPreference } = useUiPreferences();
 
 const selectedFileName = ref('');
 const selectedBackup = ref<SettingsBackupDtoWritable | null>(null);
+const selectedZipBackup = ref<File | null>(null);
 const parseMessage = ref('');
 const operationMessage = ref('');
 const isExporting = ref(false);
@@ -51,6 +53,7 @@ const extraUiInfoPreferenceOptions = computed<Array<{ label: string; value: Extr
 
 const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
 const isBusy = computed(() => isExporting.value || isImporting.value);
+const hasSelectedBackup = computed(() => selectedBackup.value !== null || selectedZipBackup.value !== null);
 const parsedSummary = computed<ParsedBackupSummary | null>(() => {
   const backup = selectedBackup.value;
   if (!backup) return null;
@@ -114,31 +117,45 @@ function errorToMessage(error: unknown): string {
   return t('settings.messages.requestFailed');
 }
 
-function buildExportFileName(): string {
+function buildExportFileName(extension = 'zip'): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-');
-  return `proxyhub-settings-${stamp}.json`;
+  return `proxyhub-settings-${stamp}.${extension}`;
 }
 
-function downloadJson(backup: SettingsBackupDto): void {
-  const blob = new Blob([JSON.stringify(backup, null, 2)], {
-    type: 'application/json;charset=utf-8',
-  });
+function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = buildExportFileName();
+  link.download = fileName;
   document.body.append(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
 }
 
+function fileNameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+  return header.match(/filename="?([^";]+)"?/i)?.[1] ?? null;
+}
+
 async function handleExport(): Promise<void> {
   isExporting.value = true;
   operationMessage.value = '';
   try {
-    const { data } = await getProxySettingsExport({ throwOnError: true });
-    downloadJson(data);
+    const { data, response } = await client.get<{ 200: Blob }, unknown, true>({
+      url: '/api/v1/proxy/settings/export/zip',
+      parseAs: 'blob',
+      throwOnError: true,
+    });
+    downloadBlob(data, fileNameFromContentDisposition(response.headers.get('Content-Disposition')) ?? buildExportFileName());
     operationMessage.value = t('settings.messages.exported');
   } catch (error) {
     operationMessage.value = errorToMessage(error);
@@ -151,14 +168,24 @@ async function handleFileChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   selectedBackup.value = null;
+  selectedZipBackup.value = null;
   selectedFileName.value = file?.name ?? '';
   parseMessage.value = '';
   operationMessage.value = '';
   confirmOverwrite.value = false;
 
   if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.json')) {
+  const fileName = file.name.toLowerCase();
+  const isJson = fileName.endsWith('.json');
+  const isZip = fileName.endsWith('.zip');
+  if (!isJson && !isZip) {
     parseMessage.value = t('settings.messages.fileType');
+    return;
+  }
+
+  if (isZip) {
+    selectedZipBackup.value = file;
+    parseMessage.value = t('settings.messages.zipFileReady');
     return;
   }
 
@@ -170,8 +197,27 @@ async function handleFileChange(event: Event): Promise<void> {
   }
 }
 
+function formatImportResult(data: SettingsImportResultDto): string {
+  return data.runtimeReloadWarning
+    ? t('settings.messages.importedWithWarning', { warning: data.runtimeReloadWarning })
+    : t('settings.messages.imported', {
+        nodes: data.nodes,
+        groups: data.groups,
+        subscriptions: data.subscriptions,
+        mappings: data.mappings,
+      });
+}
+
+function clearSelectedImport(): void {
+  selectedBackup.value = null;
+  selectedZipBackup.value = null;
+  selectedFileName.value = '';
+  confirmOverwrite.value = false;
+  if (fileInput.value) fileInput.value.value = '';
+}
+
 async function handleImport(): Promise<void> {
-  if (!selectedBackup.value) {
+  if (!hasSelectedBackup.value) {
     parseMessage.value = t('settings.messages.selectFile');
     return;
   }
@@ -184,22 +230,21 @@ async function handleImport(): Promise<void> {
   operationMessage.value = '';
   parseMessage.value = '';
   try {
-    const { data } = await postProxySettingsImport({
-      body: selectedBackup.value,
-      throwOnError: true,
-    });
-    operationMessage.value = data.runtimeReloadWarning
-      ? t('settings.messages.importedWithWarning', { warning: data.runtimeReloadWarning })
-      : t('settings.messages.imported', {
-          nodes: data.nodes,
-          groups: data.groups,
-          subscriptions: data.subscriptions,
-          mappings: data.mappings,
+    const result = selectedZipBackup.value
+      ? await client.post<{ 200: SettingsImportResultDto }, unknown, true>({
+          url: '/api/v1/proxy/settings/import/zip',
+          body: selectedZipBackup.value,
+          bodySerializer: null,
+          headers: { 'Content-Type': 'application/zip' },
+          parseAs: 'json',
+          throwOnError: true,
+        })
+      : await postProxySettingsImport({
+          body: selectedBackup.value as SettingsBackupDtoWritable,
+          throwOnError: true,
         });
-    selectedBackup.value = null;
-    selectedFileName.value = '';
-    confirmOverwrite.value = false;
-    if (fileInput.value) fileInput.value.value = '';
+    operationMessage.value = formatImportResult(result.data);
+    clearSelectedImport();
   } catch (error) {
     operationMessage.value = errorToMessage(error);
   } finally {
@@ -302,7 +347,12 @@ async function handleImport(): Promise<void> {
           <label class="settings-file-picker">
             <FileJson class="size-5" aria-hidden="true" />
             <span>{{ selectedFileName || t('settings.import.selectFile') }}</span>
-            <input ref="fileInput" type="file" accept="application/json,.json" @change="handleFileChange" />
+            <input
+              ref="fileInput"
+              type="file"
+              accept="application/json,application/zip,.json,.zip"
+              @change="handleFileChange"
+            />
           </label>
 
           <div v-if="parsedSummary" class="settings-import-summary">
@@ -313,14 +363,14 @@ async function handleImport(): Promise<void> {
           </div>
 
           <label class="settings-confirm">
-            <input v-model="confirmOverwrite" type="checkbox" :disabled="!selectedBackup || isBusy" />
+            <input v-model="confirmOverwrite" type="checkbox" :disabled="!hasSelectedBackup || isBusy" />
             <span>{{ t('settings.import.confirmOverwrite') }}</span>
           </label>
 
           <Button
             type="button"
             class="settings-primary-action"
-            :disabled="!selectedBackup || !confirmOverwrite || isBusy"
+            :disabled="!hasSelectedBackup || !confirmOverwrite || isBusy"
             @click="handleImport"
           >
             <RefreshCw v-if="isImporting" class="size-4 spin-icon" aria-hidden="true" />

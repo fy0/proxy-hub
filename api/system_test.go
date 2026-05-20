@@ -85,3 +85,25 @@ func TestGenOpenAPIIncludesSystemRoutes(t *testing.T) {
 		t.Fatalf("OpenAPI schema missing distTag field")
 	}
 }
+
+func TestRequestBodyLimitBytesDefaultsTo64MB(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *utils.AppConfig
+		want int
+	}{
+		{name: "nil config", cfg: nil, want: defaultBodyLimitBytes},
+		{name: "zero limit", cfg: &utils.AppConfig{}, want: defaultBodyLimitBytes},
+		{name: "below default", cfg: &utils.AppConfig{AttachmentSizeLimit: 8192}, want: defaultBodyLimitBytes},
+		{name: "at default", cfg: &utils.AppConfig{AttachmentSizeLimit: 65536}, want: defaultBodyLimitBytes},
+		{name: "above default", cfg: &utils.AppConfig{AttachmentSizeLimit: 131072}, want: 128 * 1024 * 1024},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestBodyLimitBytes(tt.cfg); got != tt.want {
+				t.Fatalf("requestBodyLimitBytes() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

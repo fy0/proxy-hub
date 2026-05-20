@@ -27,7 +27,10 @@ import (
 	"proxy-hub/utils"
 )
 
-const staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
+const (
+	staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
+	defaultBodyLimitBytes    = 64 * 1024 * 1024
+)
 
 // AppInfo contains build-time application metadata exposed by system routes.
 type AppInfo struct {
@@ -45,13 +48,8 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, info *AppI
 	appInfo = info
 	theLogger := utils.Logger
 
-	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
-	if bodyLimit < 1*1024*1024 {
-		bodyLimit = 1 * 1024 * 1024
-	}
-
 	app := fiber.New(fiber.Config{
-		BodyLimit:             bodyLimit,
+		BodyLimit:             requestBodyLimitBytes(cfg),
 		DisableStartupMessage: true,
 		Immutable:             true,
 	})
@@ -238,6 +236,17 @@ func setNoCacheHeaders(c *fiber.Ctx) {
 	c.Set(fiber.HeaderExpires, "0")
 }
 
+func requestBodyLimitBytes(cfg *utils.AppConfig) int {
+	if cfg == nil || cfg.AttachmentSizeLimit <= 0 {
+		return defaultBodyLimitBytes
+	}
+	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
+	if bodyLimit < defaultBodyLimitBytes {
+		return defaultBodyLimitBytes
+	}
+	return bodyLimit
+}
+
 // GenOpenAPI 生成 OpenAPI JSON/YAML 文件
 func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outputPath string, info *AppInfo) {
 	_ = ctx
@@ -245,13 +254,8 @@ func GenOpenAPI(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, outp
 	appInfo = info
 	theLogger := utils.Logger
 
-	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
-	if bodyLimit < 1*1024*1024 {
-		bodyLimit = 1 * 1024 * 1024
-	}
-
 	app := fiber.New(fiber.Config{
-		BodyLimit:             bodyLimit,
+		BodyLimit:             requestBodyLimitBytes(cfg),
 		DisableStartupMessage: true,
 		Immutable:             true,
 	})

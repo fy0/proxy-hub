@@ -77,7 +77,7 @@ func ReadConfig() *AppConfig {
 		Domain:              "127.0.0.1:3020",
 		RegisterOpen:        true,
 		WebUrl:              "/",
-		AttachmentSizeLimit: 8192,
+		AttachmentSizeLimit: 65536,
 		ImageCompress:       true,
 		LogFile:             "./data/service.log",
 		LogLevel:            "info",

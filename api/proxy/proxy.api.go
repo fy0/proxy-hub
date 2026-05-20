@@ -41,6 +41,14 @@ func Register(api huma.API) {
 	}, settingsExportHandler)
 
 	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodGet,
+		Path:        "/settings/export/zip",
+		Summary:     "导出代理设置 ZIP",
+		OperationID: "proxy-settings-export-zip",
+		Tags:        []string{proxyTag},
+	}, settingsExportZipHandler)
+
+	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPost,
 		Path:        "/settings/import",
 		Summary:     "导入代理设置",
@@ -48,6 +56,15 @@ func Register(api huma.API) {
 		OperationID: "proxy-settings-import",
 		Tags:        []string{proxyTag},
 	}, settingsImportHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
+		Path:        "/settings/import/zip",
+		Summary:     "导入代理设置 ZIP",
+		Description: "上传 ZIP 备份并覆盖恢复节点、节点组、订阅和端口映射配置。",
+		OperationID: "proxy-settings-import-zip",
+		Tags:        []string{proxyTag},
+	}, settingsImportZipHandler)
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodGet,
@@ -330,6 +347,28 @@ func settingsExportHandler(ctx context.Context, _ *struct{}) (*settingsExportOut
 	return &settingsExportOutput{Body: *backup}, nil
 }
 
+type settingsExportZipOutput struct {
+	ContentType        string `header:"Content-Type"`
+	ContentDisposition string `header:"Content-Disposition"`
+	Body               []byte `json:"body"`
+}
+
+func settingsExportZipHandler(ctx context.Context, _ *struct{}) (*settingsExportZipOutput, error) {
+	backup, err := proxyService.SettingsExport(ctx, nil)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	body, err := proxyService.SettingsBackupToZip(backup)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &settingsExportZipOutput{
+		ContentType:        "application/zip",
+		ContentDisposition: "attachment; filename=" + settingsBackupZipFileName(backup.ExportedAt),
+		Body:               body,
+	}, nil
+}
+
 type settingsImportInput struct {
 	Body proxyService.SettingsBackupDTO
 }
@@ -344,6 +383,25 @@ func settingsImportHandler(ctx context.Context, input *settingsImportInput) (*se
 		return nil, mapError(err)
 	}
 	return &settingsImportOutput{Body: *result}, nil
+}
+
+type settingsImportZipInput struct {
+	RawBody []byte `contentType:"application/zip"`
+}
+
+func settingsImportZipHandler(ctx context.Context, input *settingsImportZipInput) (*settingsImportOutput, error) {
+	result, err := proxyService.SettingsImportZip(ctx, input.RawBody)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &settingsImportOutput{Body: *result}, nil
+}
+
+func settingsBackupZipFileName(exportedAt time.Time) string {
+	if exportedAt.IsZero() {
+		exportedAt = time.Now().UTC()
+	}
+	return "proxyhub-settings-" + exportedAt.UTC().Format("20060102-150405") + ".zip"
 }
 
 type nodeListInput struct {
