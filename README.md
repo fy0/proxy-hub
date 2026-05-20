@@ -47,6 +47,25 @@ ProxyHub focuses on everyday proxy link handling: import, preview, convert, prob
 
 ## Quick Start
 
+### npm
+
+```bash
+npm install -g proxy-hub
+proxy-hub
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3020
+```
+
+Use the same command to update to the latest stable release:
+
+```bash
+npm install -g proxy-hub@latest
+```
+
 ### Docker
 
 ```bash

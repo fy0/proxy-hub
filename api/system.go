@@ -25,7 +25,10 @@ type checkUpdateResponse struct {
 		CurrentVersion string `json:"currentVersion" doc:"当前版本"`
 		LatestVersion  string `json:"latestVersion" doc:"最新版本"`
 		HasUpdate      bool   `json:"hasUpdate" doc:"是否有更新"`
+		Channel        string `json:"channel" doc:"更新频道"`
+		DistTag        string `json:"distTag" doc:"npm dist-tag"`
 		UpdateURL      string `json:"updateUrl,omitempty" doc:"更新地址"`
+		UpdateCommand  string `json:"updateCommand,omitempty" doc:"更新命令"`
 		Message        string `json:"message,omitempty" doc:"提示信息"`
 	} `json:"body"`
 }
@@ -43,7 +46,7 @@ func registerSystemRoutes(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        "/system/check-update",
 		Summary:     "检查版本更新",
-		Description: "使用 npm registry 占位机制检查版本更新",
+		Description: "使用 npm registry dist-tag 检查版本更新",
 		OperationID: "system-check-update",
 		Tags:        []string{systemTag},
 	}, systemCheckUpdateHandler)
@@ -67,20 +70,24 @@ func systemCheckUpdateHandler(ctx context.Context, _ *struct{}) (*checkUpdateRes
 	resp := &checkUpdateResponse{}
 	resp.Body.CurrentVersion = info.Version
 
-	checker := utils.NewVersionChecker(info.Version, info.PackageName)
-	latestVersion, hasUpdate, err := checker.CheckUpdate()
+	checker := utils.NewVersionCheckerWithChannel(info.Version, info.PackageName, info.Channel)
+	update, err := checker.CheckUpdateInfo()
 	if err != nil {
 		resp.Body.LatestVersion = info.Version
 		resp.Body.HasUpdate = false
+		resp.Body.Channel = info.Channel
 		resp.Body.Message = "无法检查更新: " + err.Error()
 		return resp, nil
 	}
 
-	resp.Body.LatestVersion = latestVersion
-	resp.Body.HasUpdate = hasUpdate
-	if hasUpdate {
-		resp.Body.UpdateURL = "https://www.npmjs.com/package/" + info.PackageName
-		resp.Body.Message = "发现新版本，请使用 npm install -g " + info.PackageName + "@latest 更新"
+	resp.Body.LatestVersion = update.LatestVersion
+	resp.Body.HasUpdate = update.HasUpdate
+	resp.Body.Channel = update.Channel
+	resp.Body.DistTag = update.DistTag
+	resp.Body.UpdateURL = update.UpdateURL
+	resp.Body.UpdateCommand = update.UpdateCommand
+	if update.HasUpdate {
+		resp.Body.Message = "发现新版本，请使用 " + update.UpdateCommand + " 更新"
 	} else {
 		resp.Body.Message = "当前已是最新版本"
 	}

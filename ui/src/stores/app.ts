@@ -11,8 +11,8 @@ export interface AppInfo {
 
 const defaultAppInfo: AppInfo = {
   name: 'ProxyHub',
-  version: '0.1.0-alpha',
-  channel: 'dev',
+  version: '1.0.0',
+  channel: 'stable',
 };
 
 export const useAppStore = defineStore('app', () => {

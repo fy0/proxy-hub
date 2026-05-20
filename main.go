@@ -92,7 +92,7 @@ func run(forceMigrate, migrateOnly, compactDB bool, genOpenAPI string) {
 	}
 
 	logger.Info("服务启动中", zap.String("listen", cfg.ServeAt))
-	checker := utils.NewVersionChecker(VERSION.String(), PACKAGE_NAME)
+	checker := utils.NewVersionCheckerWithChannel(VERSION.String(), PACKAGE_NAME, APP_CHANNEL)
 	checker.CheckAsync()
 
 	if err := api.Init(context.Background(), cfg, embedStatic, defaultAppInfo()); err != nil {

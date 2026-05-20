@@ -1,0 +1,38 @@
+{
+  "name": "proxy-hub",
+  "version": "1.0.0",
+  "description": "Simple proxy format conversion tool with local SOCKS5/HTTP endpoints.",
+  "bin": {
+    "proxy-hub": "npm-bin/proxy-hub.js"
+  },
+  "scripts": {
+    "npm:build": "python build-npm-multipackage.py",
+    "npm:publish:all": "python publish-all-packages.py",
+    "npm:pack:dry-run": "npm pack --dry-run"
+  },
+  "optionalDependencies": {
+    "@proxy-hub/win32-x64": "1.0.0",
+    "@proxy-hub/darwin-x64": "1.0.0",
+    "@proxy-hub/darwin-arm64": "1.0.0",
+    "@proxy-hub/linux-x64": "1.0.0",
+    "@proxy-hub/linux-arm64": "1.0.0"
+  },
+  "keywords": [
+    "proxy",
+    "proxy-hub",
+    "socks5",
+    "http-proxy",
+    "sing-box",
+    "developer-tools"
+  ],
+  "author": "fy0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fy0/proxy-hub"
+  },
+  "homepage": "https://github.com/fy0/proxy-hub#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

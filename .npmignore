@@ -1,0 +1,57 @@
+# Go source and backend internals
+*.go
+go.mod
+go.sum
+api/
+model/
+service/
+utils/
+
+# Frontend source and generated static payload
+ui/
+static/
+
+# Development and CI files
+.git/
+.github/
+.idea/
+.vscode/
+.playwright-mcp/
+docs/
+screenshots/
+brand-assets/
+tmp/
+temp/
+
+# Build and release tooling
+build-npm.py
+build-npm-multipackage.py
+publish-all-packages.py
+Dockerfile
+.dockerignore
+.air.toml
+.goreleaser.yml
+npm-packages/
+binary/
+dist/
+*.tgz
+*.exe
+
+# Runtime data and local config
+data/
+configs/
+config.yaml
+version.yaml
+data.db
+info.db
+record.log
+*.testbak
+
+# Test files
+*_test.go
+test/
+
+# Keep publish-facing docs
+*.md
+!README.md
+!README.zh-CN.md

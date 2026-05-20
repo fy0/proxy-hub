@@ -78,4 +78,10 @@ func TestGenOpenAPIIncludesSystemRoutes(t *testing.T) {
 	if !strings.Contains(spec, "/api/v1/system/check-update") {
 		t.Fatalf("OpenAPI paths missing system check-update route")
 	}
+	if !strings.Contains(spec, "updateCommand") {
+		t.Fatalf("OpenAPI schema missing updateCommand field")
+	}
+	if !strings.Contains(spec, "distTag") {
+		t.Fatalf("OpenAPI schema missing distTag field")
+	}
 }

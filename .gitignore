@@ -39,6 +39,10 @@ openapi.json
 # Package manager (use pnpm)
 package-lock.json
 
+# NPM release outputs
+npm-packages/
+*.tgz
+
 # Local scratch
 nul
 tmp/
