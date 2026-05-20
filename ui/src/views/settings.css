@@ -70,11 +70,13 @@
   font-size: 14px;
   font-weight: 650;
   transition:
+    transform 150ms ease,
     color 150ms ease,
     background 150ms ease;
 }
 
 .settings-back-link:hover {
+  transform: translateY(-1px);
   color: rgb(37 99 235);
   background: rgb(243 247 255);
 }
@@ -123,6 +125,16 @@
   border-radius: 16px;
   background: #ffffff;
   box-shadow: 0 16px 38px rgb(15 23 42 / 0.06);
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.settings-action-card:hover {
+  transform: translateY(-1px);
+  border-color: rgb(37 99 235 / 0.18);
+  box-shadow: 0 20px 46px rgb(15 23 42 / 0.08);
 }
 
 .settings-card-heading {
@@ -156,6 +168,46 @@
   border-radius: 12px;
   color: rgb(37 99 235);
   background: rgb(239 246 255);
+}
+
+.settings-preference-card {
+  grid-column: 1 / -1;
+}
+
+.settings-preference-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgb(217 226 239);
+  border-radius: 14px;
+  background: rgb(248 250 252);
+}
+
+.settings-preference-button[data-slot='button'] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border-color: rgb(207 218 237);
+  border-radius: 12px;
+  background: #ffffff;
+  color: rgb(51 65 85);
+  font-size: 14px;
+  font-weight: 750;
+  box-shadow: none;
+}
+
+.settings-preference-button[data-slot='button']:hover {
+  border-color: rgb(148 184 255);
+  background: rgb(248 250 255);
+  color: rgb(29 78 216);
+}
+
+.settings-preference-button.active[data-slot='button'] {
+  border-color: rgb(37 99 235);
+  background: rgb(37 99 235);
+  color: #ffffff;
+  box-shadow: 0 12px 24px rgb(37 99 235 / 0.14);
 }
 
 .settings-summary-list {
@@ -195,6 +247,16 @@
   border-radius: 12px;
   background: rgb(37 99 235);
   color: #ffffff;
+  transition:
+    transform 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.settings-primary-action[data-slot='button']:hover {
+  transform: translateY(-1px);
+  background: rgb(29 78 216);
+  box-shadow: 0 12px 26px rgb(37 99 235 / 0.18);
 }
 
 .settings-file-picker {
@@ -208,6 +270,17 @@
   color: rgb(51 65 85);
   background: rgb(250 252 255);
   cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.settings-file-picker:hover,
+.settings-file-picker:focus-within {
+  border-color: rgb(37 99 235 / 0.42);
+  background: rgb(248 250 255);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12);
 }
 
 .settings-file-picker span {
@@ -246,20 +319,39 @@
 }
 
 .settings-confirm {
-  display: flex;
-  align-items: flex-start;
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
   color: rgb(51 65 85);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.35;
   font-weight: 650;
+  cursor: pointer;
 }
 
 .settings-confirm input {
+  flex: 0 0 16px;
   width: 16px;
   height: 16px;
-  margin-top: 2px;
+  min-height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
   accent-color: rgb(37 99 235);
+  cursor: pointer;
+}
+
+.settings-confirm input:disabled {
+  cursor: not-allowed;
+}
+
+.settings-confirm span {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 
 .settings-message {
@@ -317,6 +409,17 @@
     font-size: 28px;
   }
 
+  .settings-preference-control {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .settings-preference-button[data-slot='button'] {
+    min-height: 42px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+
   .settings-primary-action[data-slot='button'],
   .settings-back-link {
     width: 100%;
@@ -334,5 +437,13 @@
 
   .settings-summary-list dd {
     text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-back-link:hover,
+  .settings-action-card:hover,
+  .settings-primary-action[data-slot='button']:hover {
+    transform: none;
   }
 }

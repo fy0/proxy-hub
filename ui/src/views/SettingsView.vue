@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { ArrowLeft, Download, FileJson, RefreshCw, Upload } from 'lucide-vue-next';
+import {
+  ArrowLeft,
+  Download,
+  FileJson,
+  RefreshCw,
+  SlidersHorizontal,
+  Upload,
+} from 'lucide-vue-next';
 import { getProxySettingsExport, postProxySettingsImport } from '@/api/generated';
 import type { SettingsBackupDto, SettingsBackupDtoWritable } from '@/api/generated';
 import { Button } from '@/components/ui/button';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
 import { useI18n } from '@/i18n';
 import { useAppStore } from '@/stores/app';
+import { useUiPreferences, type ExtraUiInfoPreference } from '@/composables/useUiPreferences';
 import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import './settings.css';
 
@@ -23,6 +31,7 @@ const settingsSchemaVersion = 1;
 
 const { t } = useI18n();
 const appStore = useAppStore();
+const { extraUiInfoPreference, setExtraUiInfoPreference } = useUiPreferences();
 
 const selectedFileName = ref('');
 const selectedBackup = ref<SettingsBackupDtoWritable | null>(null);
@@ -32,6 +41,13 @@ const isExporting = ref(false);
 const isImporting = ref(false);
 const confirmOverwrite = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+const extraUiInfoPreferenceOptions = computed<Array<{ label: string; value: ExtraUiInfoPreference }>>(
+  () => [
+    { label: t('settings.extraUiInfo.default'), value: 'default' },
+    { label: t('settings.extraUiInfo.off'), value: 'off' },
+    { label: t('settings.extraUiInfo.on'), value: 'on' },
+  ]
+);
 
 const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
 const isBusy = computed(() => isExporting.value || isImporting.value);
@@ -218,6 +234,33 @@ async function handleImport(): Promise<void> {
       </header>
 
       <section class="settings-actions-grid">
+        <article class="settings-action-card settings-preference-card">
+          <div class="settings-card-heading">
+            <span class="settings-card-icon" aria-hidden="true">
+              <SlidersHorizontal class="size-5" />
+            </span>
+            <div>
+              <h2>{{ t('settings.extraUiInfo.title') }}</h2>
+              <p>{{ t('settings.extraUiInfo.lead') }}</p>
+            </div>
+          </div>
+
+          <div class="settings-preference-control" role="group" :aria-label="t('settings.extraUiInfo.title')">
+            <Button
+              v-for="option in extraUiInfoPreferenceOptions"
+              :key="option.value"
+              type="button"
+              variant="outline"
+              class="settings-preference-button"
+              :class="{ active: extraUiInfoPreference === option.value }"
+              :aria-pressed="extraUiInfoPreference === option.value"
+              @click="setExtraUiInfoPreference(option.value)"
+            >
+              {{ option.label }}
+            </Button>
+          </div>
+        </article>
+
         <article class="settings-action-card">
           <div class="settings-card-heading">
             <span class="settings-card-icon" aria-hidden="true">

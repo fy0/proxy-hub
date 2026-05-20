@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Download,
   Gauge,
+  Github,
   Languages,
   Link2,
   Plus,
@@ -40,6 +41,7 @@ import type {
   HomeViewContext,
 } from './home/types';
 import { inferNodeNameFromUri, useProxyHubState } from '@/composables/useProxyHubState';
+import { useUiPreferences } from '@/composables/useUiPreferences';
 import { useI18n } from '@/i18n';
 import type { LocalePreference } from '@/i18n';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
@@ -58,7 +60,6 @@ import type {
   ProxyTestResult,
   ProxyProtocol,
   RouteStrategy,
-  RuntimeExcludedNode,
   RuntimeRoute,
   RuntimeRouteNode,
 } from '@/types/proxyHub';
@@ -94,6 +95,7 @@ const props = defineProps<{
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
+const { showExtraUiInfo } = useUiPreferences();
 const clipboard = useClipboard({
   legacy: true,
 });
@@ -347,12 +349,6 @@ const runtimeFailuresByMappingId = computed(
   () => new Map((runtime.value?.failures ?? []).map(failure => [failure.mappingId, failure]))
 );
 
-const runtimeExcludedNodes = computed<RuntimeExcludedNode[]>(() => {
-  const excludedNodes = (runtime.value as { excludedNodes?: RuntimeExcludedNode[] } | null)
-    ?.excludedNodes;
-  return excludedNodes ?? [];
-});
-
 function runtimeFailureReason(error: string | null | undefined): string {
   const reason = error?.trim();
   return reason || t('home.messages.runtimeFailureUnknown');
@@ -384,11 +380,16 @@ const portStripItems = computed(() =>
 
 const runtimeInboundCount = computed(() => runtime.value?.inbounds?.length ?? 0);
 const hasNoticeError = computed(() => Boolean(errorMessage.value) || Boolean(runtime.value?.error));
-const runtimeExcludedNodeCount = computed(() => runtimeExcludedNodes.value.length);
 
-const runtimeExcludedNodeNotice = computed(() => {
-  if (runtimeExcludedNodeCount.value === 0) return '';
-  return t('home.messages.runtimeExcludedNodes', { count: runtimeExcludedNodeCount.value });
+const availableNodeNotice = computed(() => {
+  const total = nodeTotal.value;
+  if (total <= 0) return '';
+
+  const healthItems = Object.values(nodeHealthById.value);
+  if (healthItems.length === 0) return '';
+
+  const available = healthItems.filter(isAvailableNodeHealth).length;
+  return t('home.messages.availableNodes', { available, total });
 });
 
 const backendNotice = computed(() => {
@@ -399,8 +400,8 @@ const backendNotice = computed(() => {
     return t('home.messages.runtimeError', { message: runtime.value.error });
   if (runtime.value?.running) {
     const runningMessage = t('home.messages.runtimeRunning', { count: runtimeInboundCount.value });
-    return runtimeExcludedNodeNotice.value
-      ? `${runningMessage} ${runtimeExcludedNodeNotice.value}`
+    return availableNodeNotice.value
+      ? `${runningMessage} ${availableNodeNotice.value}`
       : runningMessage;
   }
   if (runtime.value) return t('home.messages.runtimeStopped');
@@ -416,9 +417,22 @@ const loginRoute = computed(() => ({
 }));
 
 const nodesTabLabel = computed(() => t('home.tabs.nodesWithCount', { count: nodeTotal.value }));
+const nodesTabCompactLabel = computed(() => {
+  const count = nodeTotal.value;
+  return t('home.tabs.nodesCompactWithCount', {
+    count: count > 999 ? '999+' : count.toString(),
+  });
+});
 const groupsTabLabel = computed(() =>
   t('home.tabs.groupsWithCount', { count: groups.value.length + 1 })
 );
+const groupsTabCompactLabel = computed(() => {
+  const count = groups.value.length + 1;
+  return t('home.tabs.groupsCompactWithCount', {
+    count: count > 99 ? '99+' : count.toString(),
+  });
+});
+const mappingsTabCompactLabel = computed(() => t('home.tabs.mappingsCompact'));
 const mappingCountLabel = computed(
   () => `${enabledMappings.value.length}/${mappings.value.length}`
 );
@@ -2757,6 +2771,7 @@ const homeContext = {
                 :title="currentLanguageTitle"
               >
                 <Languages class="size-4" aria-hidden="true" />
+                <span>{{ t('common.language') }}</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" :side-offset="8" class="language-menu">
@@ -2779,6 +2794,17 @@ const homeContext = {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <a
+            class="github-link"
+            href="https://github.com/fy0/proxy-hub"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub"
+            title="GitHub"
+          >
+            <Github class="size-4" aria-hidden="true" />
+            <span>GitHub</span>
+          </a>
           <RouterLink
             class="settings-link"
             :to="{ name: 'settings' }"
@@ -2807,7 +2833,12 @@ const homeContext = {
         </div>
       </header>
 
-      <section class="notice-bar" :class="{ error: hasNoticeError }" role="status">
+      <section
+        v-if="showExtraUiInfo"
+        class="notice-bar"
+        :class="{ error: hasNoticeError }"
+        role="status"
+      >
         <span class="notice-icon" aria-hidden="true"></span>
         <span class="notice-message">{{ backendNotice }}</span>
         <RouterLink v-if="loginRequired" class="notice-link" :to="loginRoute">
@@ -2817,7 +2848,7 @@ const homeContext = {
     </section>
 
     <section class="workspace-panel">
-      <header class="workspace-header">
+      <header v-if="showExtraUiInfo" class="workspace-header">
         <div class="workspace-copy">
           <div class="workspace-title-row">
             <h1>{{ workspaceTitle }}</h1>
@@ -2854,6 +2885,9 @@ const homeContext = {
           :current-tab="currentTab"
           :groups-label="groupsTabLabel"
           :nodes-label="nodesTabLabel"
+          :compact-groups-label="groupsTabCompactLabel"
+          :compact-nodes-label="nodesTabCompactLabel"
+          :compact-mappings-label="mappingsTabCompactLabel"
           @select="openTab"
         />
 
@@ -2910,17 +2944,21 @@ const homeContext = {
         </Button>
       </div>
 
-      <MappingsPanel v-if="currentTab === 'mappings'" :context="homeContext" />
-      <NodesPanel v-else-if="currentTab === 'nodes'" :context="homeContext" />
-      <GroupsPanel v-else-if="currentTab === 'groups'" :context="homeContext" />
+      <Transition name="workspace-switch" mode="out-in">
+        <MappingsPanel v-if="currentTab === 'mappings'" key="mappings" :context="homeContext" />
+        <NodesPanel v-else-if="currentTab === 'nodes'" key="nodes" :context="homeContext" />
+        <GroupsPanel v-else-if="currentTab === 'groups'" key="groups" :context="homeContext" />
+      </Transition>
     </section>
 
-    <div
-      v-if="addNodeDialogMode === 'uri'"
-      class="modal-backdrop"
-      role="presentation"
-      @click.self="closeAddNodeDialog"
-    >
+    <TransitionGroup name="modal-pop" tag="div" class="modal-layer">
+      <div
+        v-if="addNodeDialogMode === 'uri'"
+        key="add-node-uri"
+        class="modal-backdrop"
+        role="presentation"
+        @click.self="closeAddNodeDialog"
+      >
       <form
         class="modal-card node-create-modal"
         role="dialog"
@@ -3035,6 +3073,7 @@ const homeContext = {
 
     <div
       v-if="addNodeDialogMode === 'chain'"
+      key="add-node-chain"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeAddNodeDialog"
@@ -3207,6 +3246,7 @@ const homeContext = {
 
     <div
       v-if="isGroupDialogOpen"
+      key="group-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeGroupDialog"
@@ -3349,6 +3389,7 @@ const homeContext = {
 
     <div
       v-if="addNodeDialogMode === 'import'"
+      key="add-node-import"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeAddNodeDialog"
@@ -3430,6 +3471,7 @@ const homeContext = {
 
     <div
       v-if="isMappingDialogOpen"
+      key="mapping-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeMappingDialog"
@@ -3541,6 +3583,7 @@ const homeContext = {
 
     <div
       v-if="routeTargetMapping"
+      key="route-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeRouteDialog"
@@ -3681,6 +3724,7 @@ const homeContext = {
 
     <div
       v-if="editingNode"
+      key="node-edit-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeNodeEditDialog"
@@ -3866,6 +3910,7 @@ const homeContext = {
 
     <div
       v-if="confirmationDialog"
+      key="confirmation-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeConfirmationDialog"
@@ -3906,6 +3951,7 @@ const homeContext = {
 
     <div
       v-if="duplicateRouteNodeDialog"
+      key="duplicate-route-dialog"
       class="modal-backdrop"
       role="presentation"
       @click.self="closeDuplicateRouteNodeDialog"
@@ -3953,7 +3999,13 @@ const homeContext = {
       </section>
     </div>
 
-    <div v-if="testDialog" class="modal-backdrop" role="presentation" @click.self="closeTestDialog">
+      <div
+        v-if="testDialog"
+        key="test-dialog"
+        class="modal-backdrop"
+        role="presentation"
+        @click.self="closeTestDialog"
+      >
       <section
         class="modal-card test-modal"
         role="dialog"
@@ -4046,14 +4098,17 @@ const homeContext = {
         </div>
       </section>
     </div>
+    </TransitionGroup>
 
-    <p
-      v-if="copyMessage"
-      class="toast-message"
-      :class="`toast-${copyMessageVariant}`"
-      role="status"
-    >
-      {{ copyMessage }}
-    </p>
+    <Transition name="toast-slide">
+      <p
+        v-if="copyMessage"
+        class="toast-message"
+        :class="`toast-${copyMessageVariant}`"
+        role="status"
+      >
+        {{ copyMessage }}
+      </p>
+    </Transition>
   </main>
 </template>

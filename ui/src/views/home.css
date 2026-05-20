@@ -13,6 +13,68 @@
     linear-gradient(180deg, rgb(253 254 255) 0%, rgb(249 251 254) 100%);
 }
 
+.workspace-switch-enter-active,
+.workspace-switch-leave-active {
+  transition:
+    opacity var(--motion-medium) var(--motion-ease),
+    transform var(--motion-medium) var(--motion-ease);
+}
+
+.workspace-switch-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.workspace-switch-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.modal-layer {
+  display: contents;
+}
+
+.modal-pop-enter-active,
+.modal-pop-leave-active {
+  transition: opacity var(--motion-medium) var(--motion-ease);
+}
+
+.modal-pop-enter-from,
+.modal-pop-leave-to {
+  opacity: 0;
+}
+
+.modal-pop-enter-active .modal-card,
+.modal-pop-leave-active .modal-card {
+  transition:
+    opacity var(--motion-medium) var(--motion-ease),
+    transform var(--motion-medium) var(--motion-ease);
+}
+
+.modal-pop-enter-from .modal-card,
+.modal-pop-leave-to .modal-card {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+.toast-slide-enter-active,
+.toast-slide-leave-active {
+  transition:
+    opacity 180ms var(--motion-ease),
+    transform 180ms var(--motion-ease);
+}
+
+.toast-slide-enter-from,
+.toast-slide-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.toast-slide-enter-from.toast-success,
+.toast-slide-leave-to.toast-success {
+  transform: translate(-50%, -6px);
+}
+
 .icon-sm {
   width: 16px;
   height: 16px;
@@ -78,11 +140,13 @@
 
 .language-menu-trigger[data-slot='button'] {
   flex: 0 0 auto;
-  width: 40px;
   min-height: 40px;
-  padding: 0;
+  gap: 7px;
+  padding: 0 10px;
   border-radius: 12px;
   color: rgb(76 89 117);
+  font-size: 14px;
+  font-weight: 650;
   background: transparent;
   box-shadow: none;
 }
@@ -111,6 +175,7 @@
   flex: 0 0 auto;
 }
 
+.github-link,
 .settings-link {
   min-height: 40px;
   display: inline-flex;
@@ -127,6 +192,7 @@
     background 150ms ease;
 }
 
+.github-link:hover,
 .settings-link:hover {
   color: rgb(37 99 235);
   background: rgb(243 247 255);
@@ -353,22 +419,30 @@
   font-size: 15px;
   font-weight: 700;
   color: rgb(75 85 107);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 0.03);
   transition:
     border-color 160ms ease,
     background-color 160ms ease,
-    color 160ms ease;
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.tab-label-compact {
+  display: none;
 }
 
 .tab-bar button:hover {
   border-color: rgb(191 204 228);
   color: rgb(37 99 235);
   background: rgb(250 252 255);
+  box-shadow: 0 12px 26px rgb(37 99 235 / 0.08);
 }
 
 .tab-bar button.active {
   border-color: rgb(37 99 235);
   background: rgb(37 99 235);
   color: #ffffff;
+  box-shadow: 0 14px 30px rgb(37 99 235 / 0.16);
 }
 
 .tab-bar button.active svg {
@@ -388,12 +462,21 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.9),
     0 10px 24px rgb(79 70 229 / 0.08);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .top-add-port-button[data-slot='button']:hover {
+  transform: translateY(-1px);
   border-color: rgb(99 102 241 / 0.52);
   background: rgb(248 250 255);
   color: rgb(79 70 229);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.92),
+    0 14px 30px rgb(79 70 229 / 0.12);
 }
 
 .top-add-port-button[data-slot='button'] svg {
@@ -413,6 +496,16 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.9),
     0 10px 24px rgb(37 99 235 / 0.06);
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.top-add-node-control:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.92),
+    0 14px 30px rgb(37 99 235 / 0.1);
 }
 
 .top-add-node-button[data-slot='button'],
@@ -424,6 +517,11 @@
   font-size: 15px;
   font-weight: 800;
   box-shadow: none;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
 }
 
 .top-add-node-button[data-slot='button'] {
@@ -468,12 +566,21 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.9),
     0 10px 24px rgb(37 99 235 / 0.06);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .top-add-group-button[data-slot='button']:hover {
+  transform: translateY(-1px);
   border-color: rgb(148 184 255);
   background: rgb(248 250 255);
   color: rgb(29 78 216);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.92),
+    0 14px 30px rgb(37 99 235 / 0.1);
 }
 
 .top-add-group-button[data-slot='button'] svg {
@@ -621,6 +728,11 @@
   border: 1px solid rgb(99 102 241 / 0.22);
   border-radius: 18px;
   background: rgb(255 255 255 / 0.9);
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
 }
 
 .port-card {
@@ -633,6 +745,10 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.92),
     0 18px 46px rgb(79 70 229 / 0.07);
+}
+
+.port-card:hover {
+  transform: translateY(-1px);
 }
 
 .port-card::before {
@@ -728,6 +844,16 @@
   color: #ffffff;
   flex-shrink: 0;
   box-shadow: none;
+  transition:
+    transform 160ms ease,
+    filter 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.switch-button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+  box-shadow: 0 10px 22px rgb(15 23 42 / 0.08);
 }
 
 .switch-button.status-failed {
@@ -1358,6 +1484,7 @@ textarea:focus {
   background: rgb(248 250 252);
   color: rgb(51 65 85);
   transition:
+    transform 160ms ease,
     background-color 160ms ease,
     border-color 160ms ease,
     color 160ms ease;
@@ -1384,6 +1511,7 @@ textarea:focus {
 }
 
 .node-filter-bar button:hover {
+  transform: translateY(-1px);
   border-color: rgb(34 197 94 / 0.28);
   background: rgb(240 253 244);
 }
@@ -1570,12 +1698,15 @@ textarea:focus {
   color: rgb(15 23 42);
   transition:
     transform 160ms ease,
-    border-color 160ms ease;
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .node-group-summary-card:hover {
   transform: translateY(-1px);
   border-color: rgb(34 197 94 / 0.34);
+  box-shadow: 0 14px 32px rgb(15 23 42 / 0.07);
 }
 
 .node-group-summary-card.unavailable {
@@ -1755,6 +1886,17 @@ textarea:focus {
   gap: 12px;
   align-items: start;
   border-radius: 14px;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.node-row:hover {
+  transform: translateY(-1px);
+  border-color: rgb(34 197 94 / 0.28);
+  box-shadow: 0 14px 32px rgb(15 23 42 / 0.07);
 }
 
 .group-row .node-protocol {
@@ -2462,7 +2604,6 @@ textarea:focus {
   box-shadow: 0 10px 24px rgb(15 23 42 / 0.12);
   overflow-wrap: anywhere;
   line-height: 1.5;
-  animation: toast-pop 160ms ease-out;
 }
 
 .toast-message.toast-success {
@@ -2480,31 +2621,6 @@ textarea:focus {
   border-left: 5px solid rgb(22 163 74);
   box-shadow: 0 18px 38px rgb(22 163 74 / 0.24);
   transform: translateX(-50%);
-  animation: toast-success-pop 160ms ease-out;
-}
-
-@keyframes toast-pop {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes toast-success-pop {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
 }
 
 .modal-backdrop {
@@ -2985,6 +3101,7 @@ textarea:focus {
   }
 
   .language-menu-trigger[data-slot='button'],
+  .github-link,
   .status-refresh[data-slot='button'] {
     width: auto;
     justify-content: center;
@@ -2995,6 +3112,7 @@ textarea:focus {
   }
 
   .language-menu-trigger[data-slot='button'],
+  .github-link,
   .settings-link,
   .status-refresh[data-slot='button'] {
     flex: 1 1 0;
@@ -3050,14 +3168,42 @@ textarea:focus {
     gap: 12px;
   }
 
+  .workspace-header {
+    display: none;
+  }
+
+  .notice-bar {
+    display: none;
+  }
+
   .tab-bar {
-    gap: 10px;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .tab-bar button {
+    width: 100%;
+    min-width: 0;
     min-height: 42px;
-    padding: 0 14px;
-    font-size: 13px;
+    padding: 0 10px;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .tab-bar button span {
+    min-width: 0;
+  }
+
+  .tab-label-full {
+    display: none;
+  }
+
+  .tab-label-compact {
+    display: inline;
   }
 
   .top-add-port-button[data-slot='button'] {
@@ -3143,14 +3289,7 @@ textarea:focus {
   }
 
   .port-strip {
-    justify-content: flex-start;
-  }
-
-  .port-strip span {
-    min-height: 38px;
-    padding: 7px 11px;
-    border-radius: 11px;
-    font-size: 13px;
+    display: none;
   }
 
   .card-actions {
@@ -3235,5 +3374,35 @@ textarea:focus {
 
   .route-source-options {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-switch-enter-from,
+  .workspace-switch-leave-to,
+  .modal-pop-enter-from .modal-card,
+  .modal-pop-leave-to .modal-card,
+  .toast-slide-enter-from,
+  .toast-slide-leave-to {
+    transform: none;
+  }
+
+  .toast-slide-enter-from.toast-success,
+  .toast-slide-leave-to.toast-success {
+    transform: translateX(-50%);
+  }
+
+  .tab-bar button:hover,
+  .top-add-port-button[data-slot='button']:hover,
+  .top-add-node-control:hover,
+  .top-add-group-button[data-slot='button']:hover,
+  .port-card:hover,
+  .add-port-card:hover,
+  .inner-add-card:hover,
+  .switch-button:hover,
+  .node-filter-bar button:hover,
+  .node-group-summary-card:hover,
+  .node-row:hover {
+    transform: none;
   }
 }

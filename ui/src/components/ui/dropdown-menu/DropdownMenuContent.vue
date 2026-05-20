@@ -35,7 +35,7 @@ defineOptions({
       v-bind="forwarded"
       :class="
         cn(
-          'z-50 min-w-40 overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg outline-none',
+          'dropdown-menu-content z-50 min-w-40 overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg outline-none',
           props.class
         )
       "

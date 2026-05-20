@@ -17,6 +17,14 @@
   border-radius: 18px;
   background: #ffffff;
   box-shadow: 0 26px 80px rgb(15 23 42 / 0.12);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.login-panel:focus-within {
+  border-color: rgb(37 99 235 / 0.18);
+  box-shadow: 0 28px 86px rgb(15 23 42 / 0.14);
 }
 
 .login-back-link {
@@ -27,9 +35,13 @@
   color: rgb(71 85 105);
   font-size: 13px;
   font-weight: 700;
+  transition:
+    transform 150ms ease,
+    color 150ms ease;
 }
 
 .login-back-link:hover {
+  transform: translateY(-1px);
   color: rgb(15 23 42);
 }
 
@@ -80,10 +92,16 @@
   border-radius: 11px;
   background: rgb(15 23 42);
   color: #ffffff;
+  transition:
+    transform 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .login-submit:hover {
+  transform: translateY(-1px);
   background: rgb(30 41 59);
+  box-shadow: 0 12px 26px rgb(15 23 42 / 0.16);
 }
 
 .skip-login-button {
@@ -94,9 +112,15 @@
   color: rgb(71 85 105);
   font-size: 14px;
   font-weight: 800;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease;
 }
 
 .skip-login-button:hover {
+  transform: translateY(-1px);
   border-color: rgb(15 23 42 / 0.22);
   color: rgb(15 23 42);
   background: rgb(248 250 252);
@@ -116,5 +140,13 @@
   .login-panel {
     align-self: center;
     padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-back-link:hover,
+  .login-submit:hover,
+  .skip-login-button:hover {
+    transform: none;
   }
 }
