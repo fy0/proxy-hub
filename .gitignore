@@ -45,3 +45,7 @@ tmp/
 .playwright-mcp/
 proxyhub-port-status-desktop.png
 brand-assets/
+
+# Local documentation drafts and raw captures
+/docs/
+/screenshots/
