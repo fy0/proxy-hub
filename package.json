@@ -11,11 +11,11 @@
     "npm:pack:dry-run": "npm pack --dry-run"
   },
   "optionalDependencies": {
-    "@proxy-hub/win32-x64": "1.0.0",
+    "@proxy-hub/linux-x64": "1.0.0",
+    "@proxy-hub/linux-arm64": "1.0.0",
     "@proxy-hub/darwin-x64": "1.0.0",
     "@proxy-hub/darwin-arm64": "1.0.0",
-    "@proxy-hub/linux-x64": "1.0.0",
-    "@proxy-hub/linux-arm64": "1.0.0"
+    "@proxy-hub/win32-x64": "1.0.0"
   },
   "keywords": [
     "proxy",

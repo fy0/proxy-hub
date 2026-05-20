@@ -27,24 +27,6 @@ ProxyHub focuses on everyday proxy link handling: import, preview, convert, prob
 | Bulk import | Paste links or subscriptions, preview, then import. |
 | Backup | Move the proxy setup with one JSON file. |
 
-## Screenshots
-
-### Local Ports
-
-<img src="media/readme/proxyhub-local-ports-en.png" alt="Local ports" width="860">
-
-### Add Node
-
-<img src="media/readme/proxyhub-add-node-en.png" alt="Add node" width="860">
-
-### Chain Node
-
-<img src="media/readme/proxyhub-chain-node-en.png" alt="Add chain node" width="860">
-
-### Batch Import
-
-<img src="media/readme/proxyhub-batch-import-en.png" alt="Batch import nodes" width="860">
-
 ## Quick Start
 
 ### npm
@@ -81,6 +63,24 @@ http://127.0.0.1:3020
 ### Binary
 
 Download the latest archive from [GitHub Releases](https://github.com/fy0/proxy-hub/releases), extract it, then run `proxy-hub` or `proxy-hub.exe`.
+
+## Screenshots
+
+### Local Ports
+
+<img src="media/readme/proxyhub-local-ports-en.png" alt="Local ports" width="860">
+
+### Add Node
+
+<img src="media/readme/proxyhub-add-node-en.png" alt="Add node" width="860">
+
+### Chain Node
+
+<img src="media/readme/proxyhub-chain-node-en.png" alt="Add chain node" width="860">
+
+### Batch Import
+
+<img src="media/readme/proxyhub-batch-import-en.png" alt="Batch import nodes" width="860">
 
 ## Configuration
 

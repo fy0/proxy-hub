@@ -3,7 +3,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The entry point `main.go` wires CLI flags, service installation, and HTTP startup via `server.go`. HTTP handlers live in `api/` with Huma schemas under `api/h`. Data access code resides in `model/`, where `tables/` hosts GORM models. Shared helpers, configuration loaders, and logging adapters are kept in `utils/` (see `app_config.go` for defaults). Static assets and generated docs land under `static/` and `docs/`, both served via the embedded filesystem. Keep project-wide settings in `data/config.yaml`.
+The entry point `main.go` wires CLI flags, service installation, and HTTP startup via `server.go`. HTTP handlers live in `api/` with Huma schemas under `api/h`. Data access code resides in `model/`, where `tables/` hosts GORM models. Shared helpers, configuration loaders, and logging adapters are kept in `utils/` (see `app_config.go` for defaults). Generated UI build output lands under `static/` and is served via the embedded filesystem; do not commit generated `static/index.html` or `static/assets/`. Keep project-wide settings in `data/config.yaml`.
 
 ## Build, Test, and Development Commands
 - `go mod tidy` syncs dependencies with the module definition.

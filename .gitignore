@@ -24,6 +24,7 @@ pegtest/
 temp/
 
 dist/
+static/index.html
 static/assets/
 config.yaml
 version.yaml
@@ -52,4 +53,5 @@ brand-assets/
 
 # Local documentation drafts and raw captures
 /docs/
+/tools/
 /screenshots/
