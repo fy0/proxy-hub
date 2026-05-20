@@ -32,9 +32,11 @@ ProxyHub focuses on everyday proxy link handling: import, preview, convert, prob
 ### npm
 
 ```bash
-npm install -g proxy-hub
-proxy-hub
+npm install -g pxhub
+pxhub
 ```
+
+The `proxy-hub` command is also installed as a compatibility alias.
 
 Then open:
 
@@ -45,7 +47,7 @@ http://127.0.0.1:3020
 Use the same command to update to the latest stable release:
 
 ```bash
-npm install -g proxy-hub@latest
+npm install -g pxhub@latest
 ```
 
 ### Docker

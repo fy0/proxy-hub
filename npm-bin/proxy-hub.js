@@ -32,8 +32,8 @@ try {
   console.error(`Make sure ${packageName} is installed.`);
   console.error('');
   console.error('Try one of the following:');
-  console.error('  npm uninstall -g proxy-hub && npm install -g proxy-hub');
-  console.error('  pnpm uninstall -g proxy-hub && pnpm install -g proxy-hub');
+  console.error('  npm uninstall -g pxhub && npm install -g pxhub');
+  console.error('  pnpm uninstall -g pxhub && pnpm install -g pxhub');
   process.exit(1);
 }
 

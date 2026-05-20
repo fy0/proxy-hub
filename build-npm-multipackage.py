@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 
-PACKAGE_NAME = "proxy-hub"
+PACKAGE_NAME = "pxhub"
+PLATFORM_PACKAGE_SCOPE = "@proxy-hub"
 APP_NAME = "ProxyHub"
 REPOSITORY_URL = "https://github.com/fy0/proxy-hub"
 HOMEPAGE_URL = "https://github.com/fy0/proxy-hub#readme"
@@ -69,9 +70,8 @@ def copy_dist_to_static(dist_dir: Path, static_dir: Path) -> bool:
 
 
 def platform_package_name(base_name: str, platform_key: str) -> str:
-    if base_name.startswith("@"):
-        return f"{base_name}-{platform_key}"
-    return f"@{base_name}/{platform_key}"
+    _ = base_name
+    return f"{PLATFORM_PACKAGE_SCOPE}/{platform_key}"
 
 
 def make_ldflags(version_main: str, version_prerelease: str, version_build_metadata: str, app_channel: str) -> str:
@@ -246,6 +246,7 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
         "version": version,
         "description": DESCRIPTION,
         "bin": {
+            "pxhub": "npm-bin/proxy-hub.js",
             "proxy-hub": "npm-bin/proxy-hub.js",
         },
         "scripts": {
@@ -256,6 +257,7 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
         "optionalDependencies": optional_deps,
         "keywords": [
             "proxy",
+            "pxhub",
             "proxy-hub",
             "socks5",
             "http-proxy",
@@ -281,9 +283,9 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build ProxyHub npm packages")
-    parser.add_argument("--version", default="1.0.0", help="npm package version")
+    parser.add_argument("--version", default="1.0.1", help="npm package version")
     parser.add_argument("--package-name", default=PACKAGE_NAME, help="main npm package name")
-    parser.add_argument("--version-main", default="1.0.0", help="VERSION_MAIN injected into the Go binary")
+    parser.add_argument("--version-main", default="1.0.1", help="VERSION_MAIN injected into the Go binary")
     parser.add_argument("--version-prerelease", default="", help="VERSION_PRERELEASE injected into the Go binary")
     parser.add_argument("--version-build-metadata", default="", help="VERSION_BUILD_METADATA injected into the Go binary")
     parser.add_argument("--app-channel", default="stable", help="APP_CHANNEL injected into the Go binary")

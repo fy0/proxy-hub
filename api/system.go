@@ -100,7 +100,7 @@ func currentAppInfo() AppInfo {
 			Name:        "ProxyHub",
 			Version:     "0.0.0",
 			Channel:     "unknown",
-			PackageName: "proxy-hub",
+			PackageName: "pxhub",
 		}
 	}
 	return *appInfo

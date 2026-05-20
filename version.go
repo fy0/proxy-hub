@@ -7,7 +7,7 @@ var (
 	VERSION = semver.MustParse(VERSION_MAIN + VERSION_PRERELEASE + VERSION_BUILD_METADATA)
 
 	// VERSION_MAIN is the main semantic version.
-	VERSION_MAIN = "1.0.0"
+	VERSION_MAIN = "1.0.1"
 	// VERSION_PRERELEASE is the semantic version prerelease suffix.
 	VERSION_PRERELEASE = ""
 	// VERSION_BUILD_METADATA is the semantic version build metadata suffix.
@@ -17,5 +17,5 @@ var (
 	APP_CHANNEL = "stable" //nolint:revive
 
 	// PACKAGE_NAME is used by the placeholder npm-style update checker.
-	PACKAGE_NAME = "proxy-hub"
+	PACKAGE_NAME = "pxhub"
 )

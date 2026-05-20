@@ -21,7 +21,7 @@ func TestNewVersionCheckerWithChannelUsesDistTag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			checker := NewVersionCheckerWithChannel("1.0.0", "proxy-hub", tt.channel)
+			checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", tt.channel)
 			if checker.channel != tt.wantChannel {
 				t.Fatalf("channel = %q, want %q", checker.channel, tt.wantChannel)
 			}
@@ -33,7 +33,7 @@ func TestNewVersionCheckerWithChannelUsesDistTag(t *testing.T) {
 }
 
 func TestVersionCheckerUpdateInfo(t *testing.T) {
-	checker := NewVersionCheckerWithChannel("1.0.0", "proxy-hub", "stable")
+	checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", "stable")
 	info := checker.updateInfo("1.0.1", "latest", true)
 
 	if !info.HasUpdate {
@@ -45,21 +45,21 @@ func TestVersionCheckerUpdateInfo(t *testing.T) {
 	if info.Channel != "stable" || info.DistTag != "latest" {
 		t.Fatalf("channel info = %+v", info)
 	}
-	if info.UpdateCommand != "npm install -g proxy-hub@latest" {
+	if info.UpdateCommand != "npm install -g pxhub@latest" {
 		t.Fatalf("UpdateCommand = %q", info.UpdateCommand)
 	}
-	if info.UpdateURL != "https://www.npmjs.com/package/proxy-hub" {
+	if info.UpdateURL != "https://www.npmjs.com/package/pxhub" {
 		t.Fatalf("UpdateURL = %q", info.UpdateURL)
 	}
 }
 
 func TestVersionCheckerShouldCheckIncludesPackageAndChannel(t *testing.T) {
-	checker := NewVersionCheckerWithChannel("1.0.0", "proxy-hub", "stable")
+	checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", "stable")
 	currentCache := &versionCache{
 		LastCheck:  time.Now(),
 		LatestVer:  "1.0.0",
 		CurrentVer: "1.0.0",
-		Package:    "proxy-hub",
+		Package:    "pxhub",
 		Channel:    "stable",
 		DistTag:    "latest",
 	}
