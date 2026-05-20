@@ -162,7 +162,7 @@ def create_platform_packages(npm_packages_dir: Path, version: str, base_name: st
                 "url": REPOSITORY_URL,
             },
             "author": "fy0",
-            "license": "Apache-2.0",
+            "license": "GPL-3.0-or-later",
         }
         with (platform_dir / "package.json").open("w", encoding="utf-8", newline="\n") as f:
             json.dump(pkg, f, indent=2, ensure_ascii=False)
@@ -263,7 +263,7 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
             "developer-tools",
         ],
         "author": "fy0",
-        "license": "Apache-2.0",
+        "license": "GPL-3.0-or-later",
         "repository": {
             "type": "git",
             "url": REPOSITORY_URL,

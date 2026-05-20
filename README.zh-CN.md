@@ -95,3 +95,8 @@ ProxyHub 从 `data/config.yaml` 读取运行配置。
 | `logLevel` | 服务日志级别。 |
 
 支持 SQLite、PostgreSQL、MySQL DSN。
+
+## 许可证
+
+ProxyHub 按 GPL-3.0-or-later 分发，因为发布产物链接了 SagerNet
+sing/sing-box。

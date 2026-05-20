@@ -95,3 +95,8 @@ Common keys:
 | `logLevel` | Service log level. |
 
 SQLite, PostgreSQL, and MySQL DSNs are supported.
+
+## License
+
+ProxyHub is distributed under GPL-3.0-or-later because the released
+application links against SagerNet sing/sing-box.
