@@ -94,7 +94,7 @@ ProxyHub 从 `data/config.yaml` 读取运行配置。
 | `dbUrl` | 数据库 DSN，默认 `./data/data.db`。 |
 | `logLevel` | 服务日志级别。 |
 
-支持 SQLite、PostgreSQL、MySQL DSN。
+仅支持 SQLite DSN。
 
 ## 许可证
 

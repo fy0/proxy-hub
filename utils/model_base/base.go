@@ -11,8 +11,6 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
-	"gorm.io/driver/mysql"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -48,24 +46,13 @@ func (m *StringPKBaseModel) BeforeCreate(tx *gorm.DB) error {
 }
 
 func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
-	var dialector gorm.Dialector
-	isSQLite := false
-	isSQLiteMemory := false
-
-	switch {
-	case strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://"):
-		dialector = postgres.Open(dsn)
-	case strings.HasPrefix(dsn, "mysql://") || strings.Contains(dsn, "@tcp("):
-		dialector = mysql.Open(strings.TrimPrefix(dsn, "mysql://"))
-	case strings.HasSuffix(dsn, ".db") || strings.HasPrefix(dsn, "file:") || strings.HasPrefix(dsn, ":memory:"):
-		dialector = gormlite.Open(dsn)
-		isSQLite = true
-		isSQLiteMemory = isSQLiteMemoryDSN(dsn)
-	default:
-		return nil, fmt.Errorf("无法识别的数据库类型: %s", dsn)
+	if !isSQLiteDSN(dsn) {
+		return nil, fmt.Errorf("仅支持 SQLite 数据库 DSN: %s", dsn)
 	}
 
-	db, err := gorm.Open(dialector, &gorm.Config{
+	isSQLiteMemory := isSQLiteMemoryDSN(dsn)
+
+	db, err := gorm.Open(gormlite.Open(dsn), &gorm.Config{
 		TranslateError: true,
 		Logger: logger.New(
 			log.New(os.Stdout, "\r\n", log.LstdFlags),
@@ -80,19 +67,21 @@ func DBInit(dsn string, logLevel logger.LogLevel) (*gorm.DB, error) {
 	}
 
 	// SQLite 模式下开启 WAL 提升并发性能；内存模式仅保留单连接，避免多连接导致表/数据丢失。
-	if isSQLite {
-		if sqlDB, err := db.DB(); err == nil {
-			if isSQLiteMemory {
-				sqlDB.SetMaxOpenConns(1)
-				sqlDB.SetMaxIdleConns(1)
-			}
+	if sqlDB, err := db.DB(); err == nil {
+		if isSQLiteMemory {
+			sqlDB.SetMaxOpenConns(1)
+			sqlDB.SetMaxIdleConns(1)
 		}
-		if !isSQLiteMemory {
-			_ = db.Exec("PRAGMA journal_mode=WAL").Error
-		}
+	}
+	if !isSQLiteMemory {
+		_ = db.Exec("PRAGMA journal_mode=WAL").Error
 	}
 
 	return db, nil
+}
+
+func isSQLiteDSN(dsn string) bool {
+	return strings.HasSuffix(dsn, ".db") || strings.HasPrefix(dsn, "file:") || strings.HasPrefix(dsn, ":memory:")
 }
 
 func isSQLiteMemoryDSN(dsn string) bool {

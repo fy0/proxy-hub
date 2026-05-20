@@ -94,7 +94,7 @@ Common keys:
 | `dbUrl` | Database DSN, default `./data/data.db`. |
 | `logLevel` | Service log level. |
 
-SQLite, PostgreSQL, and MySQL DSNs are supported.
+Only SQLite DSNs are supported.
 
 ## License
 

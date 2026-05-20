@@ -6,7 +6,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v2"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"proxy-hub/utils"
 )
@@ -50,27 +49,6 @@ func NewAPI(app *fiber.App, cfg *utils.AppConfig) (huma.API, *huma.Group) {
 }
 
 func HumaTypesRegister() {
-	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Text{}), func(huma.Registry) *huma.Schema {
-		return &huma.Schema{
-			Type:     "string",
-			Nullable: true,
-		}
-	})
-
-	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Bool{}), func(huma.Registry) *huma.Schema {
-		return &huma.Schema{
-			Type:     "boolean",
-			Nullable: true,
-		}
-	})
-
-	huma.RegisterTypeSchema(reflect.TypeOf(pgtype.Int8{}), func(huma.Registry) *huma.Schema {
-		return &huma.Schema{
-			Type:     "integer",
-			Nullable: true,
-		}
-	})
-
 	// 注册 any 接口类型的 Schema，使其在文档中表现为任意对象
 	huma.RegisterTypeSchema(reflect.TypeOf((*any)(nil)).Elem(), func(huma.Registry) *huma.Schema {
 		return &huma.Schema{
