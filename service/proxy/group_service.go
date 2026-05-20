@@ -136,7 +136,7 @@ func groupDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 	}).Error; err != nil {
 		return err
 	}
-	return tx.Delete(&group).Error
+	return tx.Unscoped().Delete(&group).Error
 }
 
 func normalizeGroupRequest(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*GroupUpsertRequest, error) {

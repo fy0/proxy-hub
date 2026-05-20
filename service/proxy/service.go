@@ -228,13 +228,13 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		}
 	}
 
-	if err := tx.Where("node_id = ?", id).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
+	if err := tx.Where("node_id = ?", id).Unscoped().Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
 		return err
 	}
-	if err := tx.Where("node_id = ?", id).Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
+	if err := tx.Where("node_id = ?", id).Unscoped().Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
 		return err
 	}
-	return tx.Delete(&node).Error
+	return tx.Unscoped().Delete(&node).Error
 }
 
 func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*NodeImportResult, error) {
@@ -778,7 +778,7 @@ func MappingDelete(ctx context.Context, tx model.DBTx, id string) error {
 		}
 		return err
 	}
-	return tx.Delete(&mapping).Error
+	return tx.Unscoped().Delete(&mapping).Error
 }
 
 func StateSnapshot(ctx context.Context, tx model.DBTx, options ...StateSnapshotOptions) (*StateSnapshotDTO, error) {

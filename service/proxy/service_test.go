@@ -30,6 +30,18 @@ func initProxyInMemoryDB(t *testing.T) {
 	t.Cleanup(HealthStop)
 }
 
+func assertUnscopedRowCount(t *testing.T, table any, query string, value any, want int64) {
+	t.Helper()
+
+	var count int64
+	if err := model.GetTx(nil).Unscoped().Model(table).Where(query, value).Count(&count).Error; err != nil {
+		t.Fatalf("count %T error = %v", table, err)
+	}
+	if count != want {
+		t.Fatalf("count %T = %d, want %d", table, count, want)
+	}
+}
+
 func TestNodeCreateFromRawURI(t *testing.T) {
 	initProxyInMemoryDB(t)
 
@@ -47,6 +59,42 @@ func TestNodeCreateFromRawURI(t *testing.T) {
 	if node.RawURI != raw {
 		t.Fatalf("RawURI = %q, want original raw URI", node.RawURI)
 	}
+}
+
+func TestNodeDeleteHardDeletesNodeHealthRows(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	if _, err := recordNodeHealthResult(ctx, nil, node.ID, nodeHealthResultRecord{
+		Source:    nodeHealthSourceNodeTest,
+		TargetID:  node.ID,
+		ProbeURL:  "https://example.com/generate_204",
+		Available: true,
+		LatencyMs: 42,
+		CheckedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("recordNodeHealthResult() error = %v", err)
+	}
+	if err := flushNodeHealthBatcher(ctx); err != nil {
+		t.Fatalf("flushNodeHealthBatcher() error = %v", err)
+	}
+	if err := NodeDelete(ctx, nil, node.ID); err != nil {
+		t.Fatalf("NodeDelete() error = %v", err)
+	}
+
+	assertUnscopedRowCount(t, &tables.ProxyNodeTable{}, "id = ?", node.ID, 0)
+	assertUnscopedRowCount(t, &tables.ProxyNodeHealthTable{}, "node_id = ?", node.ID, 0)
+	assertUnscopedRowCount(t, &tables.ProxyNodeHealthHistoryTable{}, "node_id = ?", node.ID, 0)
 }
 
 func TestNodeImportExpandsBase64Subscription(t *testing.T) {
@@ -515,6 +563,8 @@ proxy-groups:
 	if len(mappings) != 1 || len(decodeStringSlice(mappings[0].GroupIDsJSON)) != 0 || mappings[0].ActiveGroupID != "" {
 		t.Fatalf("mapping group refs = %+v, want cleaned deleted group", mappings[0])
 	}
+	assertUnscopedRowCount(t, &tables.ProxyNodeTable{}, "name = ?", "us", 0)
+	assertUnscopedRowCount(t, &tables.ProxyGroupTable{}, "name = ?", "all", 0)
 }
 
 func TestSubscriptionSyncSkipsRulesetPolicyGroupAndGroupOnlyDirect(t *testing.T) {

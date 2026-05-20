@@ -191,7 +191,7 @@ func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error
 		return err
 	}
 	if len(groupIDs) > 0 {
-		if err := tx.Where("id IN ?", groupIDs).Delete(&tables.ProxyGroupTable{}).Error; err != nil {
+		if err := tx.Where("id IN ?", groupIDs).Unscoped().Delete(&tables.ProxyGroupTable{}).Error; err != nil {
 			return err
 		}
 	}
@@ -209,7 +209,7 @@ func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error
 	if err := deleteSubscriptionNodesBulk(ctx, tx, nodeIDs); err != nil {
 		return err
 	}
-	return tx.Delete(&subscription).Error
+	return tx.Unscoped().Delete(&subscription).Error
 }
 
 func SubscriptionPreview(ctx context.Context, tx model.DBTx, req SubscriptionUpsertRequest) (*NodeImportResult, error) {
@@ -446,7 +446,7 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		return result, err
 	}
 	if len(deletedGroupIDs) > 0 {
-		if err := tx.Where("id IN ?", deletedGroupIDs).Delete(&tables.ProxyGroupTable{}).Error; err != nil {
+		if err := tx.Where("id IN ?", deletedGroupIDs).Unscoped().Delete(&tables.ProxyGroupTable{}).Error; err != nil {
 			return result, err
 		}
 		result.Deleted += len(deletedGroupIDs)
@@ -521,13 +521,13 @@ func deleteSubscriptionNodesBulk(ctx context.Context, tx model.DBTx, nodeIDs []s
 	if err := cleanupNodeReferences(ctx, tx, nodeIDs); err != nil {
 		return err
 	}
-	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
+	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Unscoped().Delete(&tables.ProxyNodeHealthTable{}).Error; err != nil {
 		return err
 	}
-	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
+	if err := tx.WithContext(ctx).Where("node_id IN ?", nodeIDs).Unscoped().Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
 		return err
 	}
-	return tx.WithContext(ctx).Where("id IN ?", nodeIDs).Delete(&tables.ProxyNodeTable{}).Error
+	return tx.WithContext(ctx).Where("id IN ?", nodeIDs).Unscoped().Delete(&tables.ProxyNodeTable{}).Error
 }
 
 func ensureNodesNotReferencedByActiveChains(ctx context.Context, tx model.DBTx, nodeIDs []string) error {

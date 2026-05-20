@@ -477,6 +477,7 @@ func (b *nodeHealthBatcher) flush(ctx context.Context) error {
 			}
 			if err := tx.WithContext(ctx).
 				Where("node_id IN ?", existingNodeIDs).
+				Unscoped().
 				Delete(&tables.ProxyNodeHealthHistoryTable{}).Error; err != nil {
 				return err
 			}

@@ -57,7 +57,6 @@ func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
 	if historyCount != nodeHealthHistoryLimit {
 		t.Fatalf("history count = %d, want %d", historyCount, nodeHealthHistoryLimit)
 	}
-
 	health, err := getNodeHealth(ctx, nil, node.ID)
 	if err != nil {
 		t.Fatalf("getNodeHealth() error = %v", err)
@@ -73,6 +72,30 @@ func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
 	}
 	if health.Blacklisted {
 		t.Fatalf("health blacklisted = true, want false")
+	}
+
+	for i := 31; i < 61; i++ {
+		if _, err := recordNodeHealthResult(ctx, nil, node.ID, nodeHealthResultRecord{
+			Source:    nodeHealthSourceNodeTest,
+			TargetID:  node.ID,
+			ProbeURL:  "https://example.com/generate_204",
+			Available: true,
+			LatencyMs: int64(i + 1),
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("recordNodeHealthResult(%d) error = %v", i, err)
+		}
+	}
+	if err := flushNodeHealthBatcher(ctx); err != nil {
+		t.Fatalf("flushNodeHealthBatcher(second) error = %v", err)
+	}
+	if err := model.GetTx(nil).Unscoped().Model(&tables.ProxyNodeHealthHistoryTable{}).
+		Where("node_id = ?", node.ID).
+		Count(&historyCount).Error; err != nil {
+		t.Fatalf("unscoped count history error = %v", err)
+	}
+	if historyCount != nodeHealthHistoryLimit {
+		t.Fatalf("unscoped history count = %d, want %d", historyCount, nodeHealthHistoryLimit)
 	}
 }
 
