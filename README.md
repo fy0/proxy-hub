@@ -1,7 +1,8 @@
 <div align="center">
+  <h1>ProxyHub</h1>
+
   <img src="media/readme/proxyhub-pool-flow-en.png" alt="ProxyHub proxy format flow" width="680">
 
-  <h1>ProxyHub</h1>
   <p><strong>Simple proxy format conversion tool</strong></p>
   <p>Import common proxy links and turn them into ready-to-use local SOCKS5/HTTP endpoints.</p>
 
@@ -13,39 +14,43 @@
 
 ## What It Solves
 
-ProxyHub focuses on everyday proxy link handling: import, preview, convert, probe, and expose stable local SOCKS5/HTTP ports.
+ProxyHub focuses on everyday proxy link handling: import, preview, convert, probe, and expose stable local SOCKS5/HTTP ports. It can run multiple local HTTP/SOCKS proxies at the same time. Built on sing-box.
 
-## Highlights
+## Features
 
 | Feature | Why it matters |
 | --- | --- |
-| Format conversion | Import common proxy links and output local proxy endpoints. |
+| Format conversion | Import common proxy links (VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, SSH, SOCKS5, HTTP) and output local proxy endpoints. |
 | Smart routing | Prefer low latency, fail over, balance, or switch manually. |
 | Health guard | Probe latency and automatically exclude broken routes. |
-| Chain nodes | Build multi-hop paths without hand-editing configs. |
+| Chain nodes | Chain multiple nodes into one ordered proxy path, with traffic forwarded through each node. |
 | Bulk import | Paste links or subscriptions, preview, then import. |
 | Backup | Move the proxy setup with one JSON file. |
 
 ## Screenshots
 
-| Local ports | Add node |
-| --- | --- |
-| ![Local ports](media/readme/proxyhub-local-ports-en.png) | ![Add node](media/readme/proxyhub-add-node-en.png) |
+### Local Ports
 
-| Chain node | Batch import |
-| --- | --- |
-| ![Add chain node](media/readme/proxyhub-chain-node-en.png) | ![Batch import nodes](media/readme/proxyhub-batch-import-en.png) |
+<img src="media/readme/proxyhub-local-ports-en.png" alt="Local ports" width="860">
+
+### Add Node
+
+<img src="media/readme/proxyhub-add-node-en.png" alt="Add node" width="860">
+
+### Chain Node
+
+<img src="media/readme/proxyhub-chain-node-en.png" alt="Add chain node" width="860">
+
+### Batch Import
+
+<img src="media/readme/proxyhub-batch-import-en.png" alt="Batch import nodes" width="860">
 
 ## Quick Start
 
 ### Docker
 
 ```bash
-docker run -d \
-  --name proxyhub \
-  -p 3020:3020 \
-  -v proxyhub-data:/app/data \
-  ghcr.io/fy0/proxy-hub:latest
+docker run -d --name proxyhub -p 3020:3020 -v proxyhub-data:/app/data ghcr.io/fy0/proxy-hub:latest
 ```
 
 Then open:
@@ -69,6 +74,5 @@ Common keys:
 | `serveAt` | Service listen address, default `:3020`. |
 | `dbUrl` | Database DSN, default `./data/data.db`. |
 | `logLevel` | Service log level. |
-| `registerOpen` | Whether registration is open. |
 
 SQLite, PostgreSQL, and MySQL DSNs are supported.
