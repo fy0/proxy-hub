@@ -134,6 +134,9 @@ def build_go_multiplatform(
             print(f"[error] Go build failed for {goos}/{goarch}")
             return result.returncode
 
+        if goos != "windows":
+            output_path.chmod(0o755)
+
         size = output_path.stat().st_size
         total_size += size
         print(f"  ok {output_name} ({size / (1024 * 1024):.2f} MB)")

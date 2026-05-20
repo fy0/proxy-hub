@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: proxy-hub
+
+jobs:
+  publish-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Extract release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "Release workflow must run from a v* tag, got ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION_MAIN="${TAG_NAME#v}"
+          BUILD_DATE="$(date +%Y%m%d)"
+
+          echo "TAG_NAME=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_MAIN=${VERSION_MAIN}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_PRERELEASE=" >> "$GITHUB_OUTPUT"
+          echo "VERSION_BUILD_METADATA=+${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+          echo "APP_CHANNEL=stable" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          CURRENT_TAG="${{ steps.version.outputs.TAG_NAME }}"
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || true)"
+
+          {
+            echo "CHANGELOG<<EOF"
+            echo "## What's Changed"
+            echo ""
+
+            if [ -n "${PREVIOUS_TAG}" ]; then
+              git log "${PREVIOUS_TAG}..${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges
+              echo ""
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${CURRENT_TAG}"
+            else
+              git log "${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges | head -20
+              echo ""
+              echo ""
+              echo "Initial release."
+            fi
+
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend dependencies
+        working-directory: ./ui
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Generate OpenAPI and frontend assets
+        run: |
+          go run -tags with_utls . --gen-openapi=./ui/openapi.json
+          cd ui
+          pnpm run generate-client
+          pnpm run build
+          cd ..
+          rm -rf static/*
+          cp -r ui/dist/. static/
+
+      - name: Build release archives
+        shell: bash
+        run: |
+          mkdir -p release
+
+          build_target() {
+            local goos="$1"
+            local goarch="$2"
+            local ext="$3"
+            local archive="$4"
+            local stage="release/stage/${goos}-${goarch}"
+            local archive_name="${APP_NAME}-${{ steps.version.outputs.VERSION_MAIN }}-${goos}-${goarch}"
+
+            rm -rf "$stage"
+            mkdir -p "$stage"
+
+            local ldflags="-s -w -X 'main.VERSION_MAIN=${{ steps.version.outputs.VERSION_MAIN }}' -X 'main.VERSION_PRERELEASE=${{ steps.version.outputs.VERSION_PRERELEASE }}' -X 'main.VERSION_BUILD_METADATA=${{ steps.version.outputs.VERSION_BUILD_METADATA }}' -X 'main.APP_CHANNEL=${{ steps.version.outputs.APP_CHANNEL }}'"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags with_utls -trimpath -ldflags="$ldflags" -o "$stage/${APP_NAME}$ext" .
+            cp README.md "$stage/README.md"
+
+            if [ "$goos" != "windows" ]; then
+              chmod 755 "$stage/${APP_NAME}$ext"
+            fi
+
+            if [ "$archive" = "zip" ]; then
+              (cd "$stage" && zip -rq "../../${archive_name}.zip" .)
+            else
+              tar -C "$stage" -czf "release/${archive_name}.tar.gz" .
+            fi
+          }
+
+          build_target linux amd64 "" tar.gz
+          build_target linux arm64 "" tar.gz
+          build_target darwin amd64 "" tar.gz
+          build_target darwin arm64 "" tar.gz
+          build_target windows amd64 ".exe" zip
+
+          (
+            cd release
+            sha256sum ${APP_NAME}-${{ steps.version.outputs.VERSION_MAIN }}-* > SHA256SUMS.txt
+          )
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG_NAME }}
+          name: ${{ steps.version.outputs.TAG_NAME }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: release/*
