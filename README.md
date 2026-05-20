@@ -98,6 +98,13 @@ Common keys:
 
 Only SQLite DSNs are supported.
 
+## Disclaimer
+
+This project was developed for learning purposes and is only used by the
+author for mutual access between two machines in the living room and bedroom
+at home. It is open sourced to comply with GPL requirements. Users are
+responsible for any consequences of their own use.
+
 ## License
 
 ProxyHub is distributed under GPL-3.0-or-later because the released

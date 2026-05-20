@@ -98,6 +98,11 @@ ProxyHub 从 `data/config.yaml` 读取运行配置。
 
 仅支持 SQLite DSN。
 
+## 声明
+
+本项目出于学习目的开发，仅用于作者家里客厅和卧室两台机器的互相访问。因 GPL
+协议要求开源。使用者需要自行承担使用后果。
+
 ## 许可证
 
 ProxyHub 按 GPL-3.0-or-later 分发，因为发布产物链接了 SagerNet
