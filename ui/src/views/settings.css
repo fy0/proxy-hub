@@ -175,6 +175,10 @@
   grid-column: 1 / -1;
 }
 
+.settings-service-card {
+  grid-column: 1 / -1;
+}
+
 .settings-preference-control {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -209,6 +213,49 @@
   background: rgb(37 99 235);
   color: #ffffff;
   box-shadow: 0 12px 24px rgb(37 99 235 / 0.14);
+}
+
+.settings-listen-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 240px);
+  gap: 12px;
+}
+
+.settings-field {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  color: rgb(51 65 85);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-field input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgb(207 218 237);
+  border-radius: 12px;
+  background: #ffffff;
+  color: rgb(15 23 42);
+  font-size: 14px;
+  line-height: 1;
+  outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+
+.settings-field input:focus {
+  border-color: rgb(37 99 235 / 0.55);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12);
+}
+
+.settings-field input:disabled {
+  color: rgb(100 116 139);
+  background: rgb(248 250 252);
+  cursor: not-allowed;
 }
 
 .settings-summary-list {
@@ -258,6 +305,35 @@
   transform: translateY(-1px);
   background: rgb(29 78 216);
   box-shadow: 0 12px 26px rgb(37 99 235 / 0.18);
+}
+
+.settings-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-secondary-action[data-slot='button'] {
+  width: fit-content;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 12px;
+  border-color: rgb(207 218 237);
+  background: #ffffff;
+  color: rgb(51 65 85);
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.settings-secondary-action[data-slot='button']:hover {
+  transform: translateY(-1px);
+  border-color: rgb(148 184 255);
+  color: rgb(29 78 216);
+  box-shadow: 0 12px 26px rgb(15 23 42 / 0.08);
 }
 
 .settings-file-picker {
@@ -367,6 +443,60 @@
   overflow-wrap: anywhere;
 }
 
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(15 23 42 / 0.32);
+  backdrop-filter: blur(6px);
+}
+
+.settings-modal-card {
+  width: min(480px, 100%);
+  display: grid;
+  gap: 22px;
+  padding: 22px;
+  border: 1px solid rgb(15 23 42 / 0.1);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgb(15 23 42 / 0.22);
+}
+
+.settings-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-modal-actions [data-slot='button'] {
+  min-height: 42px;
+  border-radius: 12px;
+}
+
+.settings-modal-pop-enter-active,
+.settings-modal-pop-leave-active {
+  transition: opacity 150ms ease;
+}
+
+.settings-modal-pop-enter-active .settings-modal-card,
+.settings-modal-pop-leave-active .settings-modal-card {
+  transition: transform 150ms ease;
+}
+
+.settings-modal-pop-enter-from,
+.settings-modal-pop-leave-to {
+  opacity: 0;
+}
+
+.settings-modal-pop-enter-from .settings-modal-card,
+.settings-modal-pop-leave-to .settings-modal-card {
+  transform: translateY(10px) scale(0.98);
+}
+
 .spin-icon {
   animation: settings-spin 900ms linear infinite;
 }
@@ -415,6 +545,10 @@
     padding: 6px;
   }
 
+  .settings-listen-form {
+    grid-template-columns: 1fr;
+  }
+
   .settings-preference-button[data-slot='button'] {
     min-height: 42px;
     padding: 0 10px;
@@ -422,8 +556,15 @@
   }
 
   .settings-primary-action[data-slot='button'],
+  .settings-secondary-action[data-slot='button'],
   .settings-back-link {
     width: 100%;
+  }
+
+  .settings-card-actions,
+  .settings-modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }
 
@@ -444,7 +585,15 @@
 @media (prefers-reduced-motion: reduce) {
   .settings-back-link:hover,
   .settings-action-card:hover,
-  .settings-primary-action[data-slot='button']:hover {
+  .settings-primary-action[data-slot='button']:hover,
+  .settings-secondary-action[data-slot='button']:hover {
     transform: none;
+  }
+
+  .settings-modal-pop-enter-active,
+  .settings-modal-pop-leave-active,
+  .settings-modal-pop-enter-active .settings-modal-card,
+  .settings-modal-pop-leave-active .settings-modal-card {
+    transition: none;
   }
 }

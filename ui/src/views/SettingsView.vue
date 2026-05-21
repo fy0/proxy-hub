@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
   ArrowLeft,
   Download,
   FileJson,
+  Power,
   RefreshCw,
+  Save,
+  Server,
   SlidersHorizontal,
   Upload,
 } from 'lucide-vue-next';
@@ -26,6 +29,23 @@ interface ParsedBackupSummary {
   mappings: number;
 }
 
+interface SystemListenConfig {
+  serveAt: string;
+  runningServeAt: string;
+  listenAddress: string;
+  listenPort: number;
+  restartRequired: boolean;
+}
+
+interface SystemListenUpdateResult {
+  message: string;
+  item: SystemListenConfig;
+}
+
+interface SystemRestartResult {
+  message: string;
+}
+
 const settingsKind = 'proxyhub.proxy-settings';
 const settingsSchemaVersion = 1;
 
@@ -37,10 +57,18 @@ const selectedBackup = ref<SettingsBackupDtoWritable | null>(null);
 const selectedZipBackup = ref<File | null>(null);
 const parseMessage = ref('');
 const operationMessage = ref('');
+const systemMessage = ref('');
 const isExporting = ref(false);
 const isImporting = ref(false);
+const isLoadingListen = ref(false);
+const isSavingListen = ref(false);
+const isRestarting = ref(false);
 const confirmOverwrite = ref(false);
+const showRestartConfirm = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+const listenConfig = ref<SystemListenConfig | null>(null);
+const listenAddress = ref('');
+const listenPort = ref(3020);
 const extraUiInfoPreferenceOptions = computed<Array<{ label: string; value: ExtraUiInfoPreference }>>(
   () => [
     { label: t('settings.extraUiInfo.default'), value: 'default' },
@@ -49,7 +77,17 @@ const extraUiInfoPreferenceOptions = computed<Array<{ label: string; value: Extr
   ]
 );
 
-const isBusy = computed(() => isExporting.value || isImporting.value);
+const isBusy = computed(
+  () => isExporting.value || isImporting.value || isSavingListen.value || isRestarting.value
+);
+const isListenPortValid = computed(() => {
+  const port = Number(listenPort.value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+});
+const canSaveListenConfig = computed(
+  () => !isBusy.value && !isLoadingListen.value && isListenPortValid.value
+);
+const canRestartService = computed(() => !isLoadingListen.value && !isRestarting.value);
 const hasSelectedBackup = computed(() => selectedBackup.value !== null || selectedZipBackup.value !== null);
 const parsedSummary = computed<ParsedBackupSummary | null>(() => {
   const backup = selectedBackup.value;
@@ -61,6 +99,11 @@ const parsedSummary = computed<ParsedBackupSummary | null>(() => {
     mappings: backup.data.mappings?.length ?? 0,
   };
 });
+const runningServeAtLabel = computed(() => listenConfig.value?.runningServeAt || '-');
+const savedServeAtLabel = computed(() => listenConfig.value?.serveAt || '-');
+const restartRequiredLabel = computed(() =>
+  listenConfig.value?.restartRequired ? t('settings.service.restartYes') : t('settings.service.restartNo')
+);
 
 function backupToWritable(value: unknown): SettingsBackupDtoWritable {
   if (!isPlainObject(value)) {
@@ -161,6 +204,127 @@ async function handleExport(): Promise<void> {
   }
 }
 
+function applyListenConfig(config: SystemListenConfig): void {
+  listenConfig.value = config;
+  listenAddress.value = config.listenAddress;
+  listenPort.value = config.listenPort;
+}
+
+async function loadListenConfig(): Promise<void> {
+  isLoadingListen.value = true;
+  systemMessage.value = '';
+  try {
+    const { data } = await client.get<{ 200: SystemListenConfig }, unknown, true>({
+      url: '/api/v1/system/listen',
+      throwOnError: true,
+    });
+    applyListenConfig(data);
+  } catch (error) {
+    systemMessage.value = errorToMessage(error);
+  } finally {
+    isLoadingListen.value = false;
+  }
+}
+
+async function handleSaveListenConfig(): Promise<void> {
+  if (!isListenPortValid.value) {
+    systemMessage.value = t('settings.messages.invalidListenPort');
+    return;
+  }
+
+  isSavingListen.value = true;
+  systemMessage.value = '';
+  try {
+    const { data } = await client.put<{ 200: SystemListenUpdateResult }, unknown, true>({
+      url: '/api/v1/system/listen',
+      body: {
+        listenAddress: listenAddress.value.trim(),
+        listenPort: Number(listenPort.value),
+      },
+      parseAs: 'json',
+      throwOnError: true,
+    });
+    applyListenConfig(data.item);
+    systemMessage.value = data.message || t('settings.messages.listenSaved');
+  } catch (error) {
+    systemMessage.value = errorToMessage(error);
+  } finally {
+    isSavingListen.value = false;
+  }
+}
+
+function browserHostForListenAddress(address: string): string {
+  const trimmed = address.trim();
+  if (!trimmed || trimmed === '0.0.0.0' || trimmed === '::') {
+    return window.location.hostname || '127.0.0.1';
+  }
+  return trimmed;
+}
+
+function bracketIPv6Host(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+function targetServiceBaseUrl(config: SystemListenConfig): string {
+  const host = bracketIPv6Host(browserHostForListenAddress(config.listenAddress));
+  return `${window.location.protocol}//${host}:${config.listenPort}`;
+}
+
+function restartTargetUrl(): string {
+  const config = listenConfig.value;
+  if (!config || typeof window === 'undefined') return '';
+
+  const path = `${window.location.pathname || '/settings'}${window.location.search || ''}`;
+  return new URL(path, targetServiceBaseUrl(config)).toString();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+async function waitForRestart(targetUrl: string): Promise<void> {
+  const healthUrl = new URL('/health', targetUrl).toString();
+  const deadline = Date.now() + 30_000;
+
+  await sleep(800);
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(healthUrl, { cache: 'no-store' });
+      if (response.ok) {
+        window.location.assign(targetUrl);
+        return;
+      }
+    } catch {
+      // The service is expected to be unavailable during restart.
+    }
+    await sleep(800);
+  }
+
+  systemMessage.value = t('settings.messages.restartTimeout', { url: targetUrl });
+  isRestarting.value = false;
+}
+
+async function handleRestartService(): Promise<void> {
+  isRestarting.value = true;
+  systemMessage.value = t('settings.messages.restarting');
+  const targetUrl = restartTargetUrl() || window.location.href;
+
+  try {
+    const { data } = await client.post<{ 202: SystemRestartResult }, unknown, true>({
+      url: '/api/v1/system/restart',
+      body: { confirm: true },
+      parseAs: 'json',
+      throwOnError: true,
+    });
+    showRestartConfirm.value = false;
+    systemMessage.value = data.message || t('settings.messages.restartRequested');
+    await waitForRestart(targetUrl);
+  } catch (error) {
+    systemMessage.value = errorToMessage(error);
+    isRestarting.value = false;
+  }
+}
+
 async function handleFileChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -248,6 +412,10 @@ async function handleImport(): Promise<void> {
     isImporting.value = false;
   }
 }
+
+onMounted(() => {
+  void loadListenConfig();
+});
 </script>
 
 <template>
@@ -301,6 +469,85 @@ async function handleImport(): Promise<void> {
               @click="setExtraUiInfoPreference(option.value)"
             >
               {{ option.label }}
+            </Button>
+          </div>
+        </article>
+
+        <article class="settings-action-card settings-service-card">
+          <div class="settings-card-heading">
+            <span class="settings-card-icon" aria-hidden="true">
+              <Server class="size-5" />
+            </span>
+            <div>
+              <h2>{{ t('settings.service.title') }}</h2>
+              <p>{{ t('settings.service.lead') }}</p>
+            </div>
+          </div>
+
+          <form class="settings-listen-form" @submit.prevent="handleSaveListenConfig">
+            <label class="settings-field">
+              <span>{{ t('settings.service.addressLabel') }}</span>
+              <input
+                v-model="listenAddress"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                :placeholder="t('settings.service.addressPlaceholder')"
+                :disabled="isLoadingListen || isBusy"
+              />
+            </label>
+
+            <label class="settings-field">
+              <span>{{ t('settings.service.portLabel') }}</span>
+              <input
+                v-model.number="listenPort"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="65535"
+                step="1"
+                :disabled="isLoadingListen || isBusy"
+              />
+            </label>
+          </form>
+
+          <dl class="settings-summary-list">
+            <div>
+              <dt>{{ t('settings.service.runningLabel') }}</dt>
+              <dd>{{ runningServeAtLabel }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('settings.service.savedLabel') }}</dt>
+              <dd>{{ savedServeAtLabel }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('settings.service.restartRequiredLabel') }}</dt>
+              <dd>{{ restartRequiredLabel }}</dd>
+            </div>
+          </dl>
+
+          <div class="settings-card-actions">
+            <Button
+              type="button"
+              class="settings-primary-action"
+              :disabled="!canSaveListenConfig"
+              @click="handleSaveListenConfig"
+            >
+              <RefreshCw v-if="isSavingListen" class="size-4 spin-icon" aria-hidden="true" />
+              <Save v-else class="size-4" aria-hidden="true" />
+              {{ t('settings.service.saveButton') }}
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              class="settings-secondary-action"
+              :disabled="!canRestartService"
+              @click="showRestartConfirm = true"
+            >
+              <RefreshCw v-if="isRestarting" class="size-4 spin-icon" aria-hidden="true" />
+              <Power v-else class="size-4" aria-hidden="true" />
+              {{ t('settings.service.restartButton') }}
             </Button>
           </div>
         </article>
@@ -381,6 +628,44 @@ async function handleImport(): Promise<void> {
 
       <p v-if="parseMessage" class="settings-message" role="status">{{ parseMessage }}</p>
       <p v-if="operationMessage" class="settings-message" role="status">{{ operationMessage }}</p>
+      <p v-if="systemMessage" class="settings-message" role="status">{{ systemMessage }}</p>
     </section>
+
+    <Transition name="settings-modal-pop">
+      <div
+        v-if="showRestartConfirm"
+        class="settings-modal-backdrop"
+        role="presentation"
+        @click.self="showRestartConfirm = false"
+      >
+        <section
+          class="settings-modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-restart-title"
+        >
+          <div class="settings-card-heading">
+            <span class="settings-card-icon" aria-hidden="true">
+              <Power class="size-5" />
+            </span>
+            <div>
+              <h2 id="settings-restart-title">{{ t('settings.restartConfirm.title') }}</h2>
+              <p>{{ t('settings.restartConfirm.message') }}</p>
+            </div>
+          </div>
+
+          <div class="settings-modal-actions">
+            <Button type="button" variant="outline" :disabled="isRestarting" @click="showRestartConfirm = false">
+              {{ t('common.cancel') }}
+            </Button>
+            <Button type="button" variant="destructive" :disabled="isRestarting" @click="handleRestartService">
+              <RefreshCw v-if="isRestarting" class="size-4 spin-icon" aria-hidden="true" />
+              <Power v-else class="size-4" aria-hidden="true" />
+              {{ t('settings.restartConfirm.confirmButton') }}
+            </Button>
+          </div>
+        </section>
+      </div>
+    </Transition>
   </main>
 </template>

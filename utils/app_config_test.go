@@ -3,6 +3,7 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/knadh/koanf/v2"
@@ -62,6 +63,42 @@ func TestReadConfigNPMModeUsesHomeDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workDir, "data", "config.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("workdir config should not be written in npm mode, stat err = %v", err)
+	}
+}
+
+func TestUpdateConfigWritesConfigFile(t *testing.T) {
+	tempDir := t.TempDir()
+	chdirForTest(t, tempDir)
+
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	resetConfigForTest(t, filepath.Join(binDir, "proxy-hub"), filepath.Join(tempDir, "home"))
+
+	cfg := ReadConfig()
+	cfg.PrintConfig = false
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	updated, err := UpdateConfig(func(config *AppConfig) error {
+		config.ServeAt = "127.0.0.1:4040"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+	if updated.ServeAt != "127.0.0.1:4040" {
+		t.Fatalf("updated ServeAt = %q, want persisted value", updated.ServeAt)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tempDir, "data", "config.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(config.yaml) error = %v", err)
+	}
+	if !strings.Contains(string(content), "serveAt: 127.0.0.1:4040") {
+		t.Fatalf("config.yaml missing updated serveAt:\n%s", string(content))
 	}
 }
 

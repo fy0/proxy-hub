@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 
@@ -52,6 +53,19 @@ func main() {
 }
 
 func run(forceMigrate, migrateOnly, compactDB bool, genOpenAPI string) {
+	for {
+		if err := runOnce(forceMigrate, migrateOnly, compactDB, genOpenAPI); err != nil {
+			if errors.Is(err, api.ErrRestartRequested) {
+				utils.Logger.Info("服务正在内部重启")
+				continue
+			}
+			utils.Logger.Fatal("服务启动失败", zap.Error(err))
+		}
+		return
+	}
+}
+
+func runOnce(forceMigrate, migrateOnly, compactDB bool, genOpenAPI string) error {
 	cfg := utils.ReadConfig()
 	if forceMigrate {
 		cfg.AutoMigrate = true
@@ -71,13 +85,13 @@ func run(forceMigrate, migrateOnly, compactDB bool, genOpenAPI string) {
 			logger.Fatal("数据库压缩失败", zap.Error(err))
 		}
 		logDBCompactResult(logger, result)
-		return
+		return nil
 	}
 
 	// 如果只是迁移模式，完成迁移后退出
 	if migrateOnly {
 		logger.Info("数据库迁移完成，退出程序")
-		return
+		return nil
 	}
 
 	// 如果是生成 OpenAPI 模式，生成后退出
@@ -88,16 +102,14 @@ func run(forceMigrate, migrateOnly, compactDB bool, genOpenAPI string) {
 		}
 		api.GenOpenAPI(context.Background(), cfg, embedStatic, outputPath, defaultAppInfo())
 		logger.Info("OpenAPI JSON 生成完成", zap.String("path", outputPath))
-		return
+		return nil
 	}
 
 	logger.Info("服务启动中", zap.String("listen", cfg.ServeAt))
 	checker := utils.NewVersionCheckerWithChannel(VERSION.String(), PACKAGE_NAME, APP_CHANNEL)
 	checker.CheckAsync()
 
-	if err := api.Init(context.Background(), cfg, embedStatic, defaultAppInfo()); err != nil {
-		logger.Fatal("服务启动失败", zap.Error(err))
-	}
+	return api.Init(context.Background(), cfg, embedStatic, defaultAppInfo())
 }
 
 func logDBCompactResult(logger *zap.Logger, result *model.DBCompactResult) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -69,6 +70,7 @@ type AppConfig struct {
 
 var configStore = koanf.New(".")
 var configPath string
+var configMu sync.Mutex
 
 // ReadConfig 会加载当前数据目录下的 config.yaml，若不存在则写入默认配置。
 func ReadConfig() *AppConfig {
@@ -124,16 +126,53 @@ func ReadConfig() *AppConfig {
 	return &config
 }
 
+// UpdateConfig 会基于当前已加载配置应用修改，并写回磁盘。
+func UpdateConfig(update func(*AppConfig) error) (*AppConfig, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	var config AppConfig
+	if err := configStore.Unmarshal("", &config); err != nil {
+		return nil, fmt.Errorf("解析配置失败: %w", err)
+	}
+
+	if update != nil {
+		if err := update(&config); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := writeConfigLocked(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// SaveConfig 会将配置写回磁盘，并把失败原因返回给调用方。
+func SaveConfig(config *AppConfig) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	return writeConfigLocked(config)
+}
+
 // WriteConfig 会将当前配置写回磁盘，常用于初始化默认配置。
 func WriteConfig(config *AppConfig) {
+	if err := SaveConfig(config); err != nil {
+		fmt.Printf("%v\n", err)
+	}
+}
+
+func writeConfigLocked(config *AppConfig) error {
 	if config != nil {
-		lo.Must0(configStore.Load(structs.Provider(config, "yaml"), nil))
+		if err := configStore.Load(structs.Provider(config, "yaml"), nil); err != nil {
+			return fmt.Errorf("写入配置失败: 加载配置错误: %w", err)
+		}
 	}
 
 	content, err := yaml.Parser().Marshal(configStore.Raw())
 	if err != nil {
-		fmt.Println("写入配置失败: 序列化错误")
-		return
+		return fmt.Errorf("写入配置失败: 序列化错误: %w", err)
 	}
 
 	targetPath := configPath
@@ -142,10 +181,10 @@ func WriteConfig(config *AppConfig) {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		fmt.Println("写入配置失败: 无法创建目录")
-		return
+		return fmt.Errorf("写入配置失败: 无法创建目录: %w", err)
 	}
 	if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-		fmt.Println("写入配置失败: 无法写入文件")
+		return fmt.Errorf("写入配置失败: 无法写入文件: %w", err)
 	}
+	return nil
 }

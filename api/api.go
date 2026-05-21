@@ -4,12 +4,14 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -31,6 +33,8 @@ const (
 	staticAssetMaxAgeSeconds = 30 * 24 * 60 * 60
 	defaultBodyLimitBytes    = 64 * 1024 * 1024
 )
+
+var ErrRestartRequested = errors.New("api: restart requested")
 
 // AppInfo contains build-time application metadata exposed by system routes.
 type AppInfo struct {
@@ -112,7 +116,24 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, info *AppI
 
 	api, v1 := h.NewAPI(app, cfg)
 	registerHealthRoute(api, "/health", "health-get")
-	registerSystemRoutes(v1)
+	var restartRequested atomic.Bool
+	requestRestart := func() error {
+		if !restartRequested.CompareAndSwap(false, true) {
+			return nil
+		}
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			if err := app.Shutdown(); err != nil {
+				theLogger.Warn("服务重启前关闭 HTTP 服务失败", zap.Error(err))
+			}
+		}()
+		return nil
+	}
+	registerSystemRoutes(v1, systemRouteOptions{
+		Config:         cfg,
+		RunningServeAt: cfg.ServeAt,
+		RequestRestart: requestRestart,
+	})
 	h.HumaTypesRegister()
 	h.HumaValidatePatch()
 
@@ -134,7 +155,16 @@ func Init(ctx context.Context, cfg *utils.AppConfig, assets embed.FS, info *AppI
 
 	mountStatic(app, cfg, assets, theLogger)
 
-	return app.Listen(cfg.ServeAt)
+	if err := app.Listen(cfg.ServeAt); err != nil {
+		if restartRequested.Load() {
+			return ErrRestartRequested
+		}
+		return err
+	}
+	if restartRequested.Load() {
+		return ErrRestartRequested
+	}
+	return nil
 }
 
 // mountStatic 将内置静态资源或自定义目录挂载到 Fiber 上
