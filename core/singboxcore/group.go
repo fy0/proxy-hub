@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -27,6 +29,7 @@ const (
 	DefaultLeastLatencyMaxLatency       = 3 * time.Second
 	DefaultLeastLatencySlowThreshold    = 3
 	DefaultBlacklistRevivalLimit        = 3
+	TrafficFailureStagePreFirstByte     = "pre-first-byte"
 )
 
 type ProbeRecord struct {
@@ -45,9 +48,20 @@ type BlacklistRevivalEvent struct {
 	RevivedAt time.Time
 }
 
+type TrafficFailureRecord struct {
+	GroupTag  string
+	NodeID    string
+	NodeTag   string
+	Stage     string
+	Error     string
+	CheckedAt time.Time
+}
+
 type ProbeResultCallback func(ProbeRecord)
 
 type BlacklistRevivalCallback func(BlacklistRevivalEvent)
+
+type TrafficFailureCallback func(TrafficFailureRecord)
 
 type Policy struct {
 	Strategy                 BalanceStrategy
@@ -64,6 +78,7 @@ type Policy struct {
 	FallbackStrategy         BalanceStrategy
 	ProbeResultCallback      ProbeResultCallback      `json:"-"`
 	BlacklistRevivalCallback BlacklistRevivalCallback `json:"-"`
+	TrafficFailureCallback   TrafficFailureCallback   `json:"-"`
 }
 
 func (p Policy) normalized() Policy {
@@ -352,7 +367,7 @@ func (g *DynamicGroup) DialContext(ctx context.Context, network string, destinat
 			g.setSelected(node.ID)
 		}
 		node.incActive()
-		return &trackedConn{Conn: conn, node: node}, nil
+		return &trackedConn{Conn: conn, group: g, node: node}, nil
 	}
 	if joined != nil {
 		return nil, joined
@@ -905,6 +920,33 @@ func (g *DynamicGroup) emitProbeResult(policy Policy, node *NodeState, available
 	})
 }
 
+func (g *DynamicGroup) emitTrafficFailure(node *NodeState, err error, checkedAt time.Time) {
+	if g == nil || node == nil || err == nil {
+		return
+	}
+	reason := strings.TrimSpace(err.Error())
+	if reason == "" {
+		reason = "traffic failed before first response byte"
+	}
+	policy := g.policySnapshot()
+	node.recordRuntimeTrafficFailure(reason, checkedAt, probeFailurePolicy{
+		threshold: policy.SlowThreshold,
+		ttl:       policy.FailureBlacklistTTL,
+	})
+	g.ensureSelected()
+	if policy.TrafficFailureCallback == nil {
+		return
+	}
+	policy.TrafficFailureCallback(TrafficFailureRecord{
+		GroupTag:  g.Tag(),
+		NodeID:    node.ID,
+		NodeTag:   node.Tag,
+		Stage:     TrafficFailureStagePreFirstByte,
+		Error:     reason,
+		CheckedAt: checkedAt,
+	})
+}
+
 func removeString(values []string, target string) []string {
 	next := values[:0]
 	for _, value := range values {
@@ -917,16 +959,99 @@ func removeString(values []string, target string) []string {
 
 type trackedConn struct {
 	net.Conn
-	node *NodeState
-	once sync.Once
+	group            *DynamicGroup
+	node             *NodeState
+	activeOnce       sync.Once
+	failureOnce      sync.Once
+	receivedResponse atomic.Bool
+	closing          atomic.Bool
+}
+
+func (c *trackedConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.receivedResponse.Store(true)
+	}
+	if err != nil {
+		c.reportPreFirstByteFailure(err)
+	}
+	return n, err
+}
+
+func (c *trackedConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if err != nil {
+		c.reportPreFirstByteFailure(err)
+	}
+	return n, err
 }
 
 func (c *trackedConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	c.closing.Store(true)
 	err := c.Conn.Close()
-	c.once.Do(func() {
-		c.node.decActive()
+	c.activeOnce.Do(func() {
+		if c.node != nil {
+			c.node.decActive()
+		}
 	})
 	return err
+}
+
+func (c *trackedConn) reportPreFirstByteFailure(err error) {
+	if c == nil || err == nil || c.group == nil || c.node == nil {
+		return
+	}
+	if c.receivedResponse.Load() || c.closing.Load() || !isPreFirstByteTrafficFailure(err) {
+		return
+	}
+	c.failureOnce.Do(func() {
+		if c.receivedResponse.Load() || c.closing.Load() {
+			return
+		}
+		checkedAt := time.Now()
+		_ = c.Close()
+		c.group.emitTrafficFailure(c.node, err, checkedAt)
+	})
+}
+
+func isPreFirstByteTrafficFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "context canceled") ||
+		strings.Contains(message, "operation was canceled") {
+		return false
+	}
+	for _, fragment := range []string{
+		"connection reset",
+		"forcibly closed",
+		"closed by the remote host",
+		"broken pipe",
+		"connection aborted",
+		"connection refused",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 type trackedPacketConn struct {

@@ -1258,6 +1258,7 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 		FallbackStrategy:         singboxcore.BalanceRoundRobin,
 		ProbeResultCallback:      recordRuntimeProbeResult,
 		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
+		TrafficFailureCallback:   recordRuntimeTrafficFailure,
 	}
 }
 
@@ -1285,6 +1286,7 @@ func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 		FallbackStrategy:         singboxcore.BalanceRoundRobin,
 		ProbeResultCallback:      recordRuntimeProbeResult,
 		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
+		TrafficFailureCallback:   recordRuntimeTrafficFailure,
 	}
 }
 

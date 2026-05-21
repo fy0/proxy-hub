@@ -2,6 +2,7 @@ package singboxcore
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -118,6 +119,100 @@ func TestActiveConnectionCount(t *testing.T) {
 	_ = conn.Close()
 	if got := node.ActiveCount(); got != 0 {
 		t.Fatalf("active count after close = %d, want 0", got)
+	}
+}
+
+func TestTrackedConnReportsPreFirstByteEOFOnceAndCloses(t *testing.T) {
+	var records []TrafficFailureRecord
+	group := NewDynamicGroup("group-auto", nil, Policy{
+		SlowThreshold: 3,
+		TrafficFailureCallback: func(record TrafficFailureRecord) {
+			records = append(records, record)
+		},
+	})
+	node := NewNodeState("a", "node-a", option.Outbound{})
+	if err := group.AddNode(node); err != nil {
+		t.Fatalf("AddNode() error = %v", err)
+	}
+	node.incActive()
+	rawConn := &scriptedConn{reads: []scriptedRead{{err: io.EOF}}}
+	conn := &trackedConn{Conn: rawConn, group: group, node: node}
+
+	if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("Read() error = %v, want EOF", err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("second Read() error = %v, want EOF", err)
+	}
+	if rawConn.closed != 1 {
+		t.Fatalf("closed count = %d, want 1", rawConn.closed)
+	}
+	if got := node.ActiveCount(); got != 0 {
+		t.Fatalf("active count = %d, want 0", got)
+	}
+	if len(records) != 1 {
+		t.Fatalf("traffic failure records = %d, want 1", len(records))
+	}
+	if records[0].Stage != TrafficFailureStagePreFirstByte || records[0].NodeID != "a" {
+		t.Fatalf("traffic failure record = %+v, want pre-first-byte for node a", records[0])
+	}
+}
+
+func TestTrackedConnDoesNotReportEOFAfterResponseBytes(t *testing.T) {
+	var records []TrafficFailureRecord
+	group := NewDynamicGroup("group-auto", nil, Policy{
+		TrafficFailureCallback: func(record TrafficFailureRecord) {
+			records = append(records, record)
+		},
+	})
+	node := NewNodeState("a", "node-a", option.Outbound{})
+	if err := group.AddNode(node); err != nil {
+		t.Fatalf("AddNode() error = %v", err)
+	}
+	node.incActive()
+	rawConn := &scriptedConn{reads: []scriptedRead{
+		{data: []byte("x")},
+		{err: io.EOF},
+	}}
+	conn := &trackedConn{Conn: rawConn, group: group, node: node}
+
+	buffer := make([]byte, 1)
+	if n, err := conn.Read(buffer); n != 1 || err != nil {
+		t.Fatalf("first Read() = %d, %v, want 1, nil", n, err)
+	}
+	if _, err := conn.Read(buffer); err != io.EOF {
+		t.Fatalf("second Read() error = %v, want EOF", err)
+	}
+	if rawConn.closed != 0 {
+		t.Fatalf("closed count = %d, want 0", rawConn.closed)
+	}
+	if len(records) != 0 {
+		t.Fatalf("traffic failure records = %d, want 0", len(records))
+	}
+	_ = conn.Close()
+}
+
+func TestTrackedConnBlacklistsAfterPreFirstByteFailures(t *testing.T) {
+	group := NewDynamicGroup("group-auto", nil, Policy{SlowThreshold: 3, FailureBlacklistTTL: time.Minute})
+	node := NewNodeState("a", "node-a", option.Outbound{})
+	if err := group.AddNode(node); err != nil {
+		t.Fatalf("AddNode() error = %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		node.incActive()
+		conn := &trackedConn{
+			Conn:  &scriptedConn{reads: []scriptedRead{{err: io.EOF}}},
+			group: group,
+			node:  node,
+		}
+		if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
+			t.Fatalf("Read(%d) error = %v, want EOF", i, err)
+		}
+	}
+
+	if got := blacklistedSnapshotIDs(group); !sameStrings(got, []string{"a"}) {
+		t.Fatalf("blacklisted nodes = %v, want a", got)
 	}
 }
 
@@ -416,4 +511,66 @@ type fakeOutboundManager struct {
 func (m *fakeOutboundManager) Remove(tag string) error {
 	m.removed[tag] = true
 	return nil
+}
+
+type scriptedRead struct {
+	data []byte
+	err  error
+}
+
+type scriptedConn struct {
+	reads    []scriptedRead
+	writeErr error
+	closed   int
+}
+
+func (c *scriptedConn) Read(b []byte) (int, error) {
+	if len(c.reads) == 0 {
+		return 0, io.EOF
+	}
+	next := c.reads[0]
+	c.reads = c.reads[1:]
+	return copy(b, next.data), next.err
+}
+
+func (c *scriptedConn) Write(b []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	return len(b), nil
+}
+
+func (c *scriptedConn) Close() error {
+	c.closed++
+	return nil
+}
+
+func (c *scriptedConn) LocalAddr() net.Addr {
+	return testAddr("local")
+}
+
+func (c *scriptedConn) RemoteAddr() net.Addr {
+	return testAddr("remote")
+}
+
+func (c *scriptedConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *scriptedConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *scriptedConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+type testAddr string
+
+func (a testAddr) Network() string {
+	return string(a)
+}
+
+func (a testAddr) String() string {
+	return string(a)
 }

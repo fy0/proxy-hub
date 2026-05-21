@@ -26,13 +26,14 @@ import (
 )
 
 const (
-	healthProbeQueueSize         = 10000
-	healthProbeBatchSize         = 256
-	nodeHealthHistoryLimit       = 30
-	nodeHealthSourceNodeProbe    = "node-probe"
-	nodeHealthSourceNodeTest     = "node-test"
-	nodeHealthSourceMappingTest  = "mapping-test"
-	nodeHealthSourceRuntimeProbe = "runtime-probe"
+	healthProbeQueueSize           = 10000
+	healthProbeBatchSize           = 256
+	nodeHealthHistoryLimit         = 30
+	nodeHealthSourceNodeProbe      = "node-probe"
+	nodeHealthSourceNodeTest       = "node-test"
+	nodeHealthSourceMappingTest    = "mapping-test"
+	nodeHealthSourceRuntimeProbe   = "runtime-probe"
+	nodeHealthSourceRuntimeTraffic = "runtime-traffic"
 )
 
 type nodeHealthResultRecord struct {
@@ -394,6 +395,77 @@ func recordRuntimeProbeResult(record singboxcore.ProbeRecord) {
 			zap.Error(err),
 		)
 	}
+}
+
+func recordRuntimeTrafficFailure(record singboxcore.TrafficFailureRecord) {
+	record.NodeID = strings.TrimSpace(record.NodeID)
+	if record.NodeID == "" {
+		return
+	}
+	record.GroupTag = strings.TrimSpace(record.GroupTag)
+	record.NodeTag = strings.TrimSpace(record.NodeTag)
+	record.Stage = strings.TrimSpace(record.Stage)
+	record.Error = strings.TrimSpace(record.Error)
+	if record.CheckedAt.IsZero() {
+		record.CheckedAt = time.Now()
+	}
+	go func() {
+		if _, err := recordRuntimeTrafficFailureSync(record); err != nil {
+			utils.Logger.Warn("真实代理流量失败写入节点健康状态失败",
+				zap.String("groupTag", record.GroupTag),
+				zap.String("nodeId", record.NodeID),
+				zap.Error(err),
+			)
+		}
+	}()
+}
+
+func recordRuntimeTrafficFailureSync(record singboxcore.TrafficFailureRecord) (*tables.ProxyNodeHealthTable, error) {
+	cfg := normalizeHealthConfig(currentHealthConfig())
+	errMessage := firstNonEmpty(record.Error, "traffic failed before first response byte")
+	health, err := recordNodeHealthResult(context.Background(), nil, record.NodeID, nodeHealthResultRecord{
+		Source:    nodeHealthSourceRuntimeTraffic,
+		TargetID:  record.GroupTag,
+		Available: false,
+		Error:     errMessage,
+		CheckedAt: record.CheckedAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if health == nil || !health.Blacklisted || cfg.FailureThreshold <= 0 || health.ConsecutiveFailureCount != cfg.FailureThreshold {
+		return health, nil
+	}
+	if err := syncRuntimeMappingsForTrafficFailure(record); err != nil {
+		utils.Logger.Warn("真实代理流量失败触发运行时同步失败",
+			zap.String("groupTag", record.GroupTag),
+			zap.String("nodeId", record.NodeID),
+			zap.Error(err),
+		)
+	}
+	return health, nil
+}
+
+func syncRuntimeMappingsForTrafficFailure(record singboxcore.TrafficFailureRecord) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mappingIDs, err := RuntimeAffectedMappingIDsByNodes(ctx, []string{record.NodeID})
+	if err != nil {
+		return err
+	}
+	if len(mappingIDs) == 0 {
+		return nil
+	}
+	_, err = RuntimeSyncMappings(ctx, mappingIDs)
+	if err == nil {
+		utils.Logger.Warn("真实代理流量连续失败，节点已进入黑名单并同步运行时",
+			zap.String("groupTag", record.GroupTag),
+			zap.String("nodeId", record.NodeID),
+			zap.Strings("mappingIds", mappingIDs),
+		)
+	}
+	return err
 }
 
 func reviveRuntimeBlacklistedNodes(event singboxcore.BlacklistRevivalEvent) {

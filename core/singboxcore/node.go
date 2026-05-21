@@ -290,6 +290,33 @@ func (n *NodeState) recordLeastLatencyProbeFailure(reason string, now time.Time,
 	}
 }
 
+func (n *NodeState) recordRuntimeTrafficFailure(reason string, now time.Time, policies ...probeFailurePolicy) {
+	if n == nil {
+		return
+	}
+	policy := probeFailurePolicy{}
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.leastLatencyLastCheckedAt = now
+	n.leastLatencyFailureCount++
+	n.leastLatencyCandidate = false
+	n.leastLatencyStaleFallback = !n.leastLatencyLastSuccessAt.IsZero()
+	n.lastError = reason
+	if policy.threshold > 0 && n.leastLatencyFailureCount >= policy.threshold {
+		n.health = HealthBlacklisted
+		n.blacklistedAt = now
+		if policy.ttl > 0 {
+			n.blacklistedUntil = now.Add(policy.ttl)
+		} else {
+			n.blacklistedUntil = time.Time{}
+		}
+		n.blacklistReason = reason
+	}
+}
+
 func (n *NodeState) markLeastLatencyProbeRunning(now time.Time) {
 	if n == nil {
 		return

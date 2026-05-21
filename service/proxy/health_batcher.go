@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	nodeHealthFlushInterval  = 30 * time.Second
-	nodeHealthFlushBatchSize = 256
+	nodeHealthFlushInterval             = 30 * time.Second
+	nodeHealthFlushBatchSize            = 256
+	nodeHealthRuntimeTrafficDedupWindow = 2 * time.Second
 )
 
 type nodeHealthHistoryWindowEntry struct {
@@ -544,6 +545,10 @@ func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, rec
 	prevBlacklistedUntil := cloneTimePtr(snapshot.BlacklistedUntil)
 	prevConsecutiveFailures := snapshot.ConsecutiveFailureCount
 
+	if isDuplicateRuntimeTrafficMappingFailure(state.history, record) {
+		return
+	}
+
 	state.history = append(state.history, nodeHealthHistoryWindowEntry{
 		Source:    record.Source,
 		TargetID:  record.TargetID,
@@ -597,6 +602,33 @@ func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, rec
 
 	state.dirty = true
 	state.revision++
+}
+
+func isDuplicateRuntimeTrafficMappingFailure(history []nodeHealthHistoryWindowEntry, record nodeHealthResultRecord) bool {
+	if record.Available || !isRuntimeTrafficMappingFailureSource(record.Source) {
+		return false
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Available || entry.Source == record.Source || !isRuntimeTrafficMappingFailureSource(entry.Source) {
+			continue
+		}
+		if absDuration(record.CheckedAt.Sub(entry.CheckedAt)) <= nodeHealthRuntimeTrafficDedupWindow {
+			return true
+		}
+	}
+	return false
+}
+
+func isRuntimeTrafficMappingFailureSource(source string) bool {
+	return source == nodeHealthSourceRuntimeTraffic || source == nodeHealthSourceMappingTest
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func summarizeNodeHealthHistoryWindow(history []nodeHealthHistoryWindowEntry) (int64, int, *time.Time, *time.Time) {

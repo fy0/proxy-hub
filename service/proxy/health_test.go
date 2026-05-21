@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
 	"proxy-hub/utils"
@@ -174,5 +175,109 @@ func TestRecordNodeHealthResultBlacklistsAfterThreeFailuresAndReleaseResetsStrea
 	}
 	if health.FailureCount != 4 {
 		t.Fatalf("recent failure count = %d, want 4", health.FailureCount)
+	}
+}
+
+func TestRecordRuntimeTrafficFailureBlacklistsAfterThreeFailures(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	base := time.Now().Add(-time.Minute)
+	for i := 0; i < 3; i++ {
+		health, err := recordRuntimeTrafficFailureSync(singboxcore.TrafficFailureRecord{
+			GroupTag:  "mapping-a",
+			NodeID:    node.ID,
+			NodeTag:   "node-a",
+			Stage:     singboxcore.TrafficFailureStagePreFirstByte,
+			Error:     "EOF",
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("recordRuntimeTrafficFailureSync(%d) error = %v", i, err)
+		}
+		if i < 2 && health.Blacklisted {
+			t.Fatalf("health after failure %d blacklisted = true, want false", i+1)
+		}
+	}
+
+	health, err := getNodeHealth(ctx, nil, node.ID)
+	if err != nil {
+		t.Fatalf("getNodeHealth() error = %v", err)
+	}
+	if health == nil || !health.Blacklisted || health.ConsecutiveFailureCount != 3 {
+		t.Fatalf("health = %+v, want blacklisted with 3 runtime traffic failures", health)
+	}
+	if health.LastError != "EOF" {
+		t.Fatalf("last error = %q, want EOF", health.LastError)
+	}
+}
+
+func TestRuntimeTrafficAndMappingTestFailureDedupesSameProbe(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	base := time.Now().Add(-time.Minute)
+	health, err := recordNodeHealthResult(ctx, nil, node.ID, nodeHealthResultRecord{
+		Source:    nodeHealthSourceRuntimeTraffic,
+		TargetID:  "mapping-out-a",
+		Available: false,
+		Error:     "EOF",
+		CheckedAt: base,
+	})
+	if err != nil {
+		t.Fatalf("record runtime traffic failure error = %v", err)
+	}
+	if health.ConsecutiveFailureCount != 1 || health.FailureCount != 1 {
+		t.Fatalf("health after runtime traffic = %+v, want one failure", health)
+	}
+
+	health, err = recordNodeHealthResult(ctx, nil, node.ID, nodeHealthResultRecord{
+		Source:    nodeHealthSourceMappingTest,
+		TargetID:  "mapping-a",
+		Available: false,
+		Error:     "EOF",
+		CheckedAt: base.Add(100 * time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("record mapping test duplicate failure error = %v", err)
+	}
+	if health.ConsecutiveFailureCount != 1 || health.FailureCount != 1 {
+		t.Fatalf("health after duplicate mapping test = %+v, want still one failure", health)
+	}
+
+	health, err = recordNodeHealthResult(ctx, nil, node.ID, nodeHealthResultRecord{
+		Source:    nodeHealthSourceRuntimeTraffic,
+		TargetID:  "mapping-out-a",
+		Available: false,
+		Error:     "EOF",
+		CheckedAt: base.Add(200 * time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("record second runtime traffic failure error = %v", err)
+	}
+	if health.ConsecutiveFailureCount != 2 || health.FailureCount != 2 {
+		t.Fatalf("health after second runtime traffic = %+v, want two failures", health)
 	}
 }
