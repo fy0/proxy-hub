@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -34,6 +37,7 @@ func TestNewVersionCheckerWithChannelUsesDistTag(t *testing.T) {
 
 func TestVersionCheckerUpdateInfo(t *testing.T) {
 	checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", "stable")
+	checker.installSource = installSourceNPM
 	info := checker.updateInfo("1.0.1", "latest", true)
 
 	if !info.HasUpdate {
@@ -48,21 +52,49 @@ func TestVersionCheckerUpdateInfo(t *testing.T) {
 	if info.UpdateCommand != "npm install -g pxhub@latest" {
 		t.Fatalf("UpdateCommand = %q", info.UpdateCommand)
 	}
-	if info.UpdateURL != "https://www.npmjs.com/package/pxhub" {
+	if info.UpdateURL != "https://github.com/fy0/proxy-hub/releases/tag/v1.0.1" {
 		t.Fatalf("UpdateURL = %q", info.UpdateURL)
+	}
+}
+
+func TestVersionCheckerUpdateInfoBinaryOmitsNPMCommand(t *testing.T) {
+	checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", "stable")
+	checker.installSource = installSourceBinary
+	info := checker.updateInfo("1.0.1", "latest", true)
+
+	if info.UpdateCommand != "" {
+		t.Fatalf("UpdateCommand = %q, want empty", info.UpdateCommand)
+	}
+	if info.UpdateURL != "https://github.com/fy0/proxy-hub/releases/tag/v1.0.1" {
+		t.Fatalf("UpdateURL = %q", info.UpdateURL)
+	}
+}
+
+func TestVersionCheckerUpdateInfoUsesDevReleaseTag(t *testing.T) {
+	checker := NewVersionCheckerWithChannel("0.1.0-dev", "pxhub", "dev")
+	checker.installSource = installSourceNPM
+	info := checker.updateInfo("0.1.1-dev", "dev", true)
+
+	if info.UpdateURL != "https://github.com/fy0/proxy-hub/releases/tag/dev" {
+		t.Fatalf("UpdateURL = %q", info.UpdateURL)
+	}
+	if info.UpdateCommand != "npm install -g pxhub@dev" {
+		t.Fatalf("UpdateCommand = %q", info.UpdateCommand)
 	}
 }
 
 func TestVersionCheckerShouldCheckIncludesPackageAndChannel(t *testing.T) {
 	checker := NewVersionCheckerWithChannel("1.0.0", "pxhub", "stable")
 	currentCache := &versionCache{
-		LastCheck:  time.Now(),
-		LatestVer:  "1.0.0",
-		CurrentVer: "1.0.0",
-		Package:    "pxhub",
-		Channel:    "stable",
-		DistTag:    "latest",
+		LastCheck:     time.Now(),
+		LatestVer:     "1.0.0",
+		CurrentVer:    "1.0.0",
+		Package:       "pxhub",
+		Channel:       "stable",
+		DistTag:       "latest",
+		InstallSource: installSourceBinary,
 	}
+	checker.installSource = installSourceBinary
 
 	if checker.shouldCheck(currentCache) {
 		t.Fatalf("shouldCheck current cache = true, want false")
@@ -78,5 +110,54 @@ func TestVersionCheckerShouldCheckIncludesPackageAndChannel(t *testing.T) {
 	channelChanged.Channel = "dev"
 	if !checker.shouldCheck(&channelChanged) {
 		t.Fatalf("shouldCheck channel change = false, want true")
+	}
+
+	installSourceChanged := *currentCache
+	installSourceChanged.InstallSource = installSourceNPM
+	if !checker.shouldCheck(&installSourceChanged) {
+		t.Fatalf("shouldCheck install source change = false, want true")
+	}
+}
+
+func TestVersionCheckerCheckUpdateInfoCachedUsesCache(t *testing.T) {
+	cacheDir := t.TempDir()
+	cacheFile := filepath.Join(cacheDir, "version-cache.json")
+	cache := versionCache{
+		LastCheck:     time.Now(),
+		LatestVer:     "1.0.2",
+		CurrentVer:    "1.0.1",
+		Package:       "pxhub",
+		Channel:       "stable",
+		DistTag:       "latest",
+		InstallSource: installSourceBinary,
+	}
+
+	data, err := json.Marshal(cache)
+	if err != nil {
+		t.Fatalf("marshal cache: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, data, 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	checker := NewVersionCheckerWithChannel("1.0.1", "pxhub", "stable")
+	checker.installSource = installSourceBinary
+	checker.cacheFile = cacheFile
+
+	info, err := checker.CheckUpdateInfoCached()
+	if err != nil {
+		t.Fatalf("CheckUpdateInfoCached() error = %v", err)
+	}
+	if !info.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if info.LatestVersion != "1.0.2" {
+		t.Fatalf("LatestVersion = %q, want %q", info.LatestVersion, "1.0.2")
+	}
+	if info.UpdateURL != "https://github.com/fy0/proxy-hub/releases/tag/v1.0.2" {
+		t.Fatalf("UpdateURL = %q", info.UpdateURL)
+	}
+	if info.UpdateCommand != "" {
+		t.Fatalf("UpdateCommand = %q, want empty", info.UpdateCommand)
 	}
 }

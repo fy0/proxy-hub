@@ -1,12 +1,19 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { VersionResponseBody } from '@/api/generated';
+import type { CheckUpdateResponseBody, VersionResponseBody } from '@/api/generated';
 import { getSystemVersion } from '@/api/generated';
+import { client } from '@/api/generated/client.gen';
 
 export interface AppInfo {
   name: string;
   version: string;
   channel: string;
+}
+
+export interface AppUpdateInfo extends CheckUpdateResponseBody {
+  channel?: string;
+  distTag?: string;
+  updateCommand?: string;
 }
 
 const defaultAppInfo: AppInfo = {
@@ -18,6 +25,8 @@ const defaultAppInfo: AppInfo = {
 export const useAppStore = defineStore('app', () => {
   const appInfo = ref<AppInfo>({ ...defaultAppInfo });
   const appInfoLoaded = ref(false);
+  const updateInfo = ref<AppUpdateInfo | null>(null);
+  const updateInfoLoaded = ref(false);
 
   function setAppInfo(info: VersionResponseBody): void {
     appInfo.value = {
@@ -37,10 +46,26 @@ export const useAppStore = defineStore('app', () => {
     setAppInfo(data);
   }
 
+  async function loadUpdateInfo(): Promise<void> {
+    if (updateInfoLoaded.value) {
+      return;
+    }
+
+    const { data } = await client.get<{ 200: AppUpdateInfo }, unknown, true>({
+      url: '/api/v1/system/check-update',
+      throwOnError: true,
+    });
+    updateInfo.value = data;
+    updateInfoLoaded.value = true;
+  }
+
   return {
     appInfo,
     appInfoLoaded,
+    updateInfo,
+    updateInfoLoaded,
     loadAppInfo,
+    loadUpdateInfo,
     setAppInfo,
   };
 });

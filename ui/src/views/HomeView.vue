@@ -31,6 +31,7 @@ import GroupsPanel from './home/GroupsPanel.vue';
 import MappingsPanel from './home/MappingsPanel.vue';
 import NodeGroupFilterSelect from './home/NodeGroupFilterSelect.vue';
 import NodesPanel from './home/NodesPanel.vue';
+import AppVersionBadge from '@/components/AppVersionBadge.vue';
 import type {
   NodeGroupFilterKey,
   NodeGroupFilterOption,
@@ -45,8 +46,6 @@ import { useUiPreferences } from '@/composables/useUiPreferences';
 import { useI18n } from '@/i18n';
 import type { LocalePreference } from '@/i18n';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
-import { useAppStore } from '@/stores/app';
-import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import type {
   ImportPreviewResult,
   MappingSwitchTargetType,
@@ -94,7 +93,6 @@ const props = defineProps<{
 }>();
 const route = useRoute();
 const router = useRouter();
-const appStore = useAppStore();
 const { showExtraUiInfo } = useUiPreferences();
 const clipboard = useClipboard({
   legacy: true,
@@ -281,7 +279,6 @@ const routeSourceOptions = computed(() => [
   { value: 'node' as const, label: t('home.routeSource.node'), icon: Server },
   { value: 'group' as const, label: t('home.routeSource.group'), icon: Users },
 ]);
-const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
 
 const nodeCreateForm = reactive({
   name: '',
@@ -2756,7 +2753,7 @@ const homeContext = {
         <div class="brand-lockup">
           <img class="brand-logo" :src="proxyHubMarkUrl" alt="" aria-hidden="true" />
           <span class="brand-name">{{ t('app.name') }}</span>
-          <span class="brand-version">v{{ displayAppVersion }}</span>
+          <AppVersionBadge />
         </div>
 
         <div class="brand-actions">

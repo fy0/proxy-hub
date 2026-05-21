@@ -9,6 +9,9 @@ onMounted(() => {
   void appStore.loadAppInfo().catch(error => {
     console.error('Failed to load app version:', error);
   });
+  void appStore.loadUpdateInfo().catch(error => {
+    console.error('Failed to load update info:', error);
+  });
 });
 </script>
 

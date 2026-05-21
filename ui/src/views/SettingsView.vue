@@ -13,11 +13,10 @@ import { postProxySettingsImport } from '@/api/generated';
 import { client } from '@/api/generated/client.gen';
 import type { SettingsBackupDto, SettingsBackupDtoWritable, SettingsImportResultDto } from '@/api/generated';
 import { Button } from '@/components/ui/button';
+import AppVersionBadge from '@/components/AppVersionBadge.vue';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
 import { useI18n } from '@/i18n';
-import { useAppStore } from '@/stores/app';
 import { useUiPreferences, type ExtraUiInfoPreference } from '@/composables/useUiPreferences';
-import { formatVersionForDisplay } from '@/utils/versionDisplay';
 import './settings.css';
 
 interface ParsedBackupSummary {
@@ -31,7 +30,6 @@ const settingsKind = 'proxyhub.proxy-settings';
 const settingsSchemaVersion = 1;
 
 const { t } = useI18n();
-const appStore = useAppStore();
 const { extraUiInfoPreference, setExtraUiInfoPreference } = useUiPreferences();
 
 const selectedFileName = ref('');
@@ -51,7 +49,6 @@ const extraUiInfoPreferenceOptions = computed<Array<{ label: string; value: Extr
   ]
 );
 
-const displayAppVersion = computed(() => formatVersionForDisplay(appStore.appInfo.version));
 const isBusy = computed(() => isExporting.value || isImporting.value);
 const hasSelectedBackup = computed(() => selectedBackup.value !== null || selectedZipBackup.value !== null);
 const parsedSummary = computed<ParsedBackupSummary | null>(() => {
@@ -257,11 +254,13 @@ async function handleImport(): Promise<void> {
   <main class="settings-shell">
     <section class="settings-header">
       <header class="settings-brand-bar">
-        <RouterLink class="settings-brand-lockup" :to="{ name: 'home' }">
-          <img class="settings-brand-logo" :src="proxyHubMarkUrl" alt="" aria-hidden="true" />
-          <span class="settings-brand-name">{{ t('app.name') }}</span>
-          <span class="settings-brand-version">v{{ displayAppVersion }}</span>
-        </RouterLink>
+        <div class="settings-brand-lockup">
+          <RouterLink class="settings-brand-home" :to="{ name: 'home' }">
+            <img class="settings-brand-logo" :src="proxyHubMarkUrl" alt="" aria-hidden="true" />
+            <span class="settings-brand-name">{{ t('app.name') }}</span>
+          </RouterLink>
+          <AppVersionBadge />
+        </div>
 
         <RouterLink class="settings-back-link" :to="{ name: 'home' }">
           <ArrowLeft class="size-4" aria-hidden="true" />

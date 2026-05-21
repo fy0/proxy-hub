@@ -46,7 +46,7 @@ func registerSystemRoutes(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        "/system/check-update",
 		Summary:     "检查版本更新",
-		Description: "使用 npm registry dist-tag 检查版本更新",
+		Description: "使用 npm registry dist-tag 低频检查版本更新，并返回 GitHub Release 链接",
 		OperationID: "system-check-update",
 		Tags:        []string{systemTag},
 	}, systemCheckUpdateHandler)
@@ -71,7 +71,7 @@ func systemCheckUpdateHandler(ctx context.Context, _ *struct{}) (*checkUpdateRes
 	resp.Body.CurrentVersion = info.Version
 
 	checker := utils.NewVersionCheckerWithChannel(info.Version, info.PackageName, info.Channel)
-	update, err := checker.CheckUpdateInfo()
+	update, err := checker.CheckUpdateInfoCached()
 	if err != nil {
 		resp.Body.LatestVersion = info.Version
 		resp.Body.HasUpdate = false
@@ -87,7 +87,11 @@ func systemCheckUpdateHandler(ctx context.Context, _ *struct{}) (*checkUpdateRes
 	resp.Body.UpdateURL = update.UpdateURL
 	resp.Body.UpdateCommand = update.UpdateCommand
 	if update.HasUpdate {
-		resp.Body.Message = "发现新版本，请使用 " + update.UpdateCommand + " 更新"
+		if update.UpdateCommand != "" {
+			resp.Body.Message = "发现新版本，请使用 " + update.UpdateCommand + " 更新"
+		} else {
+			resp.Body.Message = "发现新版本，请前往 GitHub Releases 下载"
+		}
 	} else {
 		resp.Body.Message = "当前已是最新版本"
 	}

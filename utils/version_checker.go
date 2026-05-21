@@ -16,6 +16,11 @@ import (
 const (
 	versionCheckInterval = 24 * time.Hour
 	versionCheckTimeout  = 5 * time.Second
+
+	githubReleaseBaseURL = "https://github.com/fy0/proxy-hub/releases/tag/"
+
+	installSourceBinary = "binary"
+	installSourceNPM    = "npm"
 )
 
 type VersionChecker struct {
@@ -23,16 +28,18 @@ type VersionChecker struct {
 	packageName    string
 	channel        string
 	distTag        string
+	installSource  string
 	cacheFile      string
 }
 
 type versionCache struct {
-	LastCheck  time.Time `json:"last_check"`
-	LatestVer  string    `json:"latest_version"`
-	CurrentVer string    `json:"current_version"`
-	Package    string    `json:"package"`
-	Channel    string    `json:"channel"`
-	DistTag    string    `json:"dist_tag"`
+	LastCheck     time.Time `json:"last_check"`
+	LatestVer     string    `json:"latest_version"`
+	CurrentVer    string    `json:"current_version"`
+	Package       string    `json:"package"`
+	Channel       string    `json:"channel"`
+	DistTag       string    `json:"dist_tag"`
+	InstallSource string    `json:"install_source"`
 }
 
 type npmRegistry struct {
@@ -71,6 +78,7 @@ func NewVersionCheckerWithChannel(currentVersion, packageName, channel string) *
 		packageName:    packageName,
 		channel:        normalizedChannel,
 		distTag:        distTag,
+		installSource:  detectInstallSource(),
 		cacheFile:      filepath.Join(configDir, "version-cache.json"),
 	}
 }
@@ -85,7 +93,7 @@ func (vc *VersionChecker) CheckAsync() {
 }
 
 func (vc *VersionChecker) CheckUpdate() (string, bool, error) {
-	info, err := vc.CheckUpdateInfo()
+	info, err := vc.CheckUpdateInfoCached()
 	if err != nil {
 		return "", false, err
 	}
@@ -97,52 +105,48 @@ func (vc *VersionChecker) CheckUpdateInfo() (*UpdateInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	current, err := semver.NewVersion(vc.currentVersion)
-	if err != nil {
-		return nil, fmt.Errorf("parse current version: %w", err)
-	}
-	latest, err := semver.NewVersion(latestVersion)
-	if err != nil {
-		return nil, fmt.Errorf("parse latest version: %w", err)
-	}
-
-	return vc.updateInfo(latestVersion, distTag, latest.GreaterThan(current)), nil
+	return vc.buildUpdateInfo(latestVersion, distTag)
 }
 
-func (vc *VersionChecker) Check() {
+func (vc *VersionChecker) CheckUpdateInfoCached() (*UpdateInfo, error) {
 	cache := vc.loadCache()
 	if !vc.shouldCheck(cache) {
-		if cache != nil && cache.LatestVer != "" {
-			distTag := cache.DistTag
-			if distTag == "" {
-				distTag = vc.distTag
-			}
-			vc.showNotification(cache.LatestVer, distTag)
+		if info, ok := vc.updateInfoFromCache(cache); ok {
+			return info, nil
 		}
-		return
 	}
 
 	latestVersion, distTag, err := vc.fetchLatestVersion()
 	if err != nil {
-		if cache != nil && cache.LatestVer != "" {
-			distTag := cache.DistTag
-			if distTag == "" {
-				distTag = vc.distTag
-			}
-			vc.showNotification(cache.LatestVer, distTag)
+		if info, ok := vc.updateInfoFromCache(cache); ok {
+			return info, nil
 		}
-		return
+		return nil, err
+	}
+
+	info, err := vc.buildUpdateInfo(latestVersion, distTag)
+	if err != nil {
+		return nil, err
 	}
 
 	vc.saveCache(&versionCache{
-		LastCheck:  time.Now(),
-		LatestVer:  latestVersion,
-		CurrentVer: vc.currentVersion,
-		Package:    vc.packageName,
-		Channel:    vc.channel,
-		DistTag:    distTag,
+		LastCheck:     time.Now(),
+		LatestVer:     latestVersion,
+		CurrentVer:    vc.currentVersion,
+		Package:       vc.packageName,
+		Channel:       vc.channel,
+		DistTag:       distTag,
+		InstallSource: vc.installSource,
 	})
-	vc.showNotification(latestVersion, distTag)
+	return info, nil
+}
+
+func (vc *VersionChecker) Check() {
+	info, err := vc.CheckUpdateInfoCached()
+	if err != nil {
+		return
+	}
+	vc.showNotification(info)
 }
 
 func (vc *VersionChecker) loadCache() *versionCache {
@@ -179,6 +183,9 @@ func (vc *VersionChecker) shouldCheck(cache *versionCache) bool {
 	if cache.Channel != vc.channel {
 		return true
 	}
+	if cache.InstallSource != vc.installSource {
+		return true
+	}
 	return time.Since(cache.LastCheck) > versionCheckInterval
 }
 
@@ -211,42 +218,62 @@ func (vc *VersionChecker) fetchLatestVersion() (string, string, error) {
 	return latestVersion, distTag, nil
 }
 
-func (vc *VersionChecker) showNotification(latestVersion, distTag string) {
-	if latestVersion == "" || latestVersion == vc.currentVersion {
+func (vc *VersionChecker) showNotification(info *UpdateInfo) {
+	if info == nil || !info.HasUpdate {
 		return
 	}
-
-	current, err := semver.NewVersion(vc.currentVersion)
-	if err != nil {
-		return
-	}
-	latest, err := semver.NewVersion(latestVersion)
-	if err != nil {
-		return
-	}
-	if !latest.GreaterThan(current) {
-		return
-	}
-
-	info := vc.updateInfo(latestVersion, distTag, true)
 
 	fmt.Println()
 	fmt.Println("New version available")
 	fmt.Println()
-	fmt.Printf("Current: %s    Latest: %s\n", vc.currentVersion, latestVersion)
-	fmt.Printf("Channel: %s    npm tag: %s\n", vc.channel, distTag)
+	fmt.Printf("Current: %s    Latest: %s\n", info.CurrentVersion, info.LatestVersion)
+	fmt.Printf("Channel: %s    npm tag: %s\n", info.Channel, info.DistTag)
 	fmt.Println()
-	fmt.Println("Update command:")
-	fmt.Printf("  %s\n", info.UpdateCommand)
-	fmt.Println()
-	fmt.Println("View updates:")
+	fmt.Println("Release page:")
 	fmt.Printf("  %s\n", info.UpdateURL)
+	if info.UpdateCommand != "" {
+		fmt.Println()
+		fmt.Println("npm update:")
+		fmt.Printf("  %s\n", info.UpdateCommand)
+	}
 	fmt.Println()
+}
+
+func (vc *VersionChecker) buildUpdateInfo(latestVersion, distTag string) (*UpdateInfo, error) {
+	current, err := semver.NewVersion(vc.currentVersion)
+	if err != nil {
+		return nil, fmt.Errorf("parse current version: %w", err)
+	}
+	latest, err := semver.NewVersion(latestVersion)
+	if err != nil {
+		return nil, fmt.Errorf("parse latest version: %w", err)
+	}
+
+	return vc.updateInfo(latestVersion, distTag, latest.GreaterThan(current)), nil
+}
+
+func (vc *VersionChecker) updateInfoFromCache(cache *versionCache) (*UpdateInfo, bool) {
+	if cache == nil || cache.LatestVer == "" {
+		return nil, false
+	}
+	distTag := cache.DistTag
+	if distTag == "" {
+		distTag = vc.distTag
+	}
+	info, err := vc.buildUpdateInfo(cache.LatestVer, distTag)
+	if err != nil {
+		return nil, false
+	}
+	return info, true
 }
 
 func (vc *VersionChecker) updateInfo(latestVersion, distTag string, hasUpdate bool) *UpdateInfo {
 	if distTag == "" {
 		distTag = vc.distTag
+	}
+	updateCommand := ""
+	if vc.installSource == installSourceNPM {
+		updateCommand = fmt.Sprintf("npm install -g %s@%s", vc.packageName, distTag)
 	}
 	return &UpdateInfo{
 		CurrentVersion: vc.currentVersion,
@@ -255,9 +282,40 @@ func (vc *VersionChecker) updateInfo(latestVersion, distTag string, hasUpdate bo
 		PackageName:    vc.packageName,
 		Channel:        vc.channel,
 		DistTag:        distTag,
-		UpdateURL:      "https://www.npmjs.com/package/" + url.PathEscape(vc.packageName),
-		UpdateCommand:  fmt.Sprintf("npm install -g %s@%s", vc.packageName, distTag),
+		UpdateURL:      githubReleaseURL(latestVersion, distTag),
+		UpdateCommand:  updateCommand,
 	}
+}
+
+func detectInstallSource() string {
+	if isNPMInstall() {
+		return installSourceNPM
+	}
+	return installSourceBinary
+}
+
+func githubReleaseURL(latestVersion, distTag string) string {
+	return githubReleaseBaseURL + url.PathEscape(githubReleaseTag(latestVersion, distTag))
+}
+
+func githubReleaseTag(latestVersion, distTag string) string {
+	if distTag == "dev" {
+		return "dev"
+	}
+
+	if version, err := semver.NewVersion(latestVersion); err == nil {
+		releaseVersion := semver.New(version.Major(), version.Minor(), version.Patch(), version.Prerelease(), "")
+		return "v" + releaseVersion.String()
+	}
+
+	trimmed := strings.TrimSpace(latestVersion)
+	if trimmed == "" {
+		return strings.TrimSpace(distTag)
+	}
+	if strings.HasPrefix(trimmed, "v") {
+		return trimmed
+	}
+	return "v" + trimmed
 }
 
 func normalizeUpdateChannel(channel string) string {

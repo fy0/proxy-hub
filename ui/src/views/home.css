@@ -102,6 +102,7 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .brand-logo {
@@ -119,15 +120,6 @@
   line-height: 1;
   font-weight: 700;
   letter-spacing: -0.03em;
-}
-
-.brand-version {
-  align-self: flex-end;
-  margin-bottom: 2px;
-  color: rgb(100 116 139);
-  font-size: 13px;
-  line-height: 1;
-  font-weight: 700;
 }
 
 .brand-actions {
@@ -3094,10 +3086,6 @@ textarea:focus {
 
   .brand-name {
     font-size: 26px;
-  }
-
-  .brand-version {
-    font-size: 12px;
   }
 
   .language-menu-trigger[data-slot='button'],
