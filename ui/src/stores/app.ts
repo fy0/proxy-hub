@@ -10,11 +10,11 @@ export interface AppInfo {
   channel: string;
 }
 
-export interface AppUpdateInfo extends CheckUpdateResponseBody {
+export type AppUpdateInfo = Omit<CheckUpdateResponseBody, 'channel' | 'distTag' | 'updateCommand'> & {
   channel?: string;
   distTag?: string;
   updateCommand?: string;
-}
+};
 
 const defaultAppInfo: AppInfo = {
   name: 'ProxyHub',

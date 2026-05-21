@@ -21,10 +21,10 @@ const updateNotice = computed(() => {
   }
 
   const latestVersion = formatVersionForDisplay(info.latestVersion);
-  const hasNpmCommand = Boolean(info.updateCommand?.trim());
-  const title = hasNpmCommand
+  const updateCommand = info.updateCommand?.trim();
+  const title = updateCommand
     ? t('common.npmUpdateTitle', {
-        command: info.updateCommand,
+        command: updateCommand,
         version: `v${latestVersion}`,
       })
     : t('common.updateTitle', {
