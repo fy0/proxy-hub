@@ -108,6 +108,12 @@ author for mutual access between two machines in the living room and bedroom
 at home. It is open sourced to comply with GPL requirements. Users are
 responsible for any consequences of their own use.
 
+## Acknowledgements
+
+- [sing-box](https://github.com/SagerNet/sing-box): provides the core functionality.
+- [easy_proxies](https://github.com/jasonwong1991/easy_proxies): inspired the node blocklist and other implementation ideas.
+- [Linux.do community](https://linux.do/): provides an open source exchange platform.
+
 ## License
 
 ProxyHub is distributed under GPL-3.0-or-later because the released
