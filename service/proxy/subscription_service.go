@@ -187,6 +187,9 @@ func subscriptionDeleteInTx(ctx context.Context, tx model.DBTx, id string) error
 	for _, group := range groups {
 		groupIDs = append(groupIDs, group.ID)
 	}
+	if err := ensureGroupNotReferencedByChains(ctx, tx, groupIDs); err != nil {
+		return err
+	}
 	if err := cleanupGroupReferences(ctx, tx, groupIDs); err != nil {
 		return err
 	}
@@ -442,6 +445,9 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		}
 		deletedGroupIDs = append(deletedGroupIDs, group.ID)
 	}
+	if err := ensureGroupNotReferencedByChains(ctx, tx, deletedGroupIDs); err != nil {
+		return result, err
+	}
 	if err := cleanupGroupReferences(ctx, tx, deletedGroupIDs); err != nil {
 		return result, err
 	}
@@ -474,6 +480,7 @@ func subscriptionNodeRow(existing *tables.ProxyNodeTable, req NodeUpsertRequest)
 		TagsJSON:         encodeStringSlice(normalized.Tags),
 		Remark:           normalized.Remark,
 		ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
+		ChainMembersJSON: encodeChainMembers(normalized.ChainMembers),
 		SubscriptionID:   req.SubscriptionID,
 		GroupID:          req.GroupID,
 		SourceKey:        req.SourceKey,
@@ -502,6 +509,7 @@ func upsertSubscriptionNodeRows(ctx context.Context, tx model.DBTx, nodes []*tab
 			"tags_json",
 			"remark",
 			"chain_node_ids_json",
+			"chain_members_json",
 			"subscription_id",
 			"group_id",
 			"source_key",
@@ -547,7 +555,7 @@ func ensureNodesNotReferencedByActiveChains(ctx context.Context, tx model.DBTx, 
 		if _, deletingNode := deleted[node.ID]; deletingNode {
 			continue
 		}
-		if stringSlicesIntersect(decodeStringSlice(node.ChainNodeIDsJSON), nodeIDs) {
+		if stringSlicesIntersect(chainNodeIDsFromMembers(chainMembersForNode(node)), nodeIDs) {
 			return ErrInvalidChain
 		}
 	}

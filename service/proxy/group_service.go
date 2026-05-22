@@ -121,6 +121,9 @@ func groupDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 	if group.Type == GroupTypeSubscription {
 		return ErrInvalidGroup
 	}
+	if err := ensureGroupNotReferencedByChains(ctx, tx, []string{id}); err != nil {
+		return err
+	}
 	if err := cleanupGroupReferences(ctx, tx, []string{id}); err != nil {
 		return err
 	}

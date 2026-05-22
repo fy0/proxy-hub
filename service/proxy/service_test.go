@@ -342,6 +342,70 @@ func TestGroupCreatePreservesLoadBalanceStrategy(t *testing.T) {
 	}
 }
 
+func TestNodeCreateAcceptsChainMembersWithGroup(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:    "egress",
+		NodeIDs: []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.3",
+		Port:     uint16Ptr(1083),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to group to B",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+			{Type: ChainMemberTypeNode, ID: second.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	dto := ToNodeDTO(chain)
+	if got, want := dto.ChainNodeIDs, []string{first.ID, second.ID}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("legacy chain node IDs = %v, want %v", got, want)
+	}
+	if got := dto.ChainMembers; len(got) != 3 || got[1].Type != ChainMemberTypeGroup || got[1].ID != group.ID {
+		t.Fatalf("chain members = %+v, want group member in order", got)
+	}
+	if err := GroupDelete(ctx, nil, group.ID); !errors.Is(err, ErrInvalidChain) {
+		t.Fatalf("GroupDelete(referenced) error = %v, want %v", err, ErrInvalidChain)
+	}
+}
+
 func TestGroupUpdateClearsNestedGroupReferences(t *testing.T) {
 	initProxyInMemoryDB(t)
 

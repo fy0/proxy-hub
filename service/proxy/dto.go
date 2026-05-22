@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"proxy-hub/model/tables"
@@ -38,9 +39,17 @@ const (
 	GroupStrategyLoadBalance  = "load-balance"
 	GroupStrategyLeastLatency = "least-latency"
 
+	ChainMemberTypeNode  = "node"
+	ChainMemberTypeGroup = "group"
+
 	SubscriptionSyncStatusSuccess = "success"
 	SubscriptionSyncStatusFailed  = "failed"
 )
+
+type ChainMemberDTO struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
 
 type ProxyNodeDTO struct {
 	ID             string              `json:"id"`
@@ -54,6 +63,7 @@ type ProxyNodeDTO struct {
 	Tags           []string            `json:"tags"`
 	Remark         string              `json:"remark"`
 	ChainNodeIDs   []string            `json:"chainNodeIds"`
+	ChainMembers   []ChainMemberDTO    `json:"chainMembers"`
 	SubscriptionID string              `json:"subscriptionId"`
 	GroupID        string              `json:"groupId"`
 	GroupIDs       []string            `json:"groupIds"`
@@ -164,20 +174,21 @@ type NodeListRequest struct {
 }
 
 type NodeUpsertRequest struct {
-	Name           string   `json:"name,omitempty" validate:"omitempty,max=100"`
-	Protocol       string   `json:"protocol,omitempty" validate:"omitempty"`
-	Server         string   `json:"server,omitempty" validate:"omitempty,max=255"`
-	Port           *uint16  `json:"port,omitempty" validate:"omitempty,min=1,max=65535"`
-	Username       string   `json:"username,omitempty" validate:"omitempty,max=255"`
-	Password       string   `json:"password,omitempty" validate:"omitempty,max=500"`
-	RawURI         string   `json:"rawUri,omitempty" validate:"omitempty"`
-	Tags           []string `json:"tags,omitempty" validate:"omitempty"`
-	Remark         string   `json:"remark,omitempty" validate:"omitempty,max=500"`
-	ChainNodeIDs   []string `json:"chainNodeIds,omitempty" validate:"omitempty"`
-	SubscriptionID string   `json:"-"`
-	GroupID        string   `json:"groupId,omitempty"`
-	GroupIDs       []string `json:"groupIds,omitempty"`
-	SourceKey      string   `json:"-"`
+	Name           string           `json:"name,omitempty" validate:"omitempty,max=100"`
+	Protocol       string           `json:"protocol,omitempty" validate:"omitempty"`
+	Server         string           `json:"server,omitempty" validate:"omitempty,max=255"`
+	Port           *uint16          `json:"port,omitempty" validate:"omitempty,min=1,max=65535"`
+	Username       string           `json:"username,omitempty" validate:"omitempty,max=255"`
+	Password       string           `json:"password,omitempty" validate:"omitempty,max=500"`
+	RawURI         string           `json:"rawUri,omitempty" validate:"omitempty"`
+	Tags           []string         `json:"tags,omitempty" validate:"omitempty"`
+	Remark         string           `json:"remark,omitempty" validate:"omitempty,max=500"`
+	ChainNodeIDs   []string         `json:"chainNodeIds,omitempty" validate:"omitempty"`
+	ChainMembers   []ChainMemberDTO `json:"chainMembers,omitempty" validate:"omitempty"`
+	SubscriptionID string           `json:"-"`
+	GroupID        string           `json:"groupId,omitempty"`
+	GroupIDs       []string         `json:"groupIds,omitempty"`
+	SourceKey      string           `json:"-"`
 }
 
 type NodeImportRequest struct {
@@ -322,6 +333,7 @@ func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {
 	if node == nil {
 		return nil
 	}
+	chainMembers := chainMembersForNode(node)
 	return &ProxyNodeDTO{
 		ID:             node.ID,
 		Name:           node.Name,
@@ -333,7 +345,8 @@ func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {
 		RawURI:         node.RawURI,
 		Tags:           decodeStringSlice(node.TagsJSON),
 		Remark:         node.Remark,
-		ChainNodeIDs:   decodeStringSlice(node.ChainNodeIDsJSON),
+		ChainNodeIDs:   chainNodeIDsFromMembers(chainMembers),
+		ChainMembers:   chainMembers,
 		SubscriptionID: node.SubscriptionID,
 		GroupID:        node.GroupID,
 		GroupIDs:       stringSliceOrEmpty(node.GroupID),
@@ -589,6 +602,100 @@ func decodeStringSlice(raw string) []string {
 		return []string{}
 	}
 	return values
+}
+
+func encodeChainMembers(members []ChainMemberDTO) string {
+	members = normalizeChainMembers(members)
+	if len(members) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(members)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func decodeChainMembers(raw string) []ChainMemberDTO {
+	if raw == "" {
+		return []ChainMemberDTO{}
+	}
+	var members []ChainMemberDTO
+	if err := json.Unmarshal([]byte(raw), &members); err != nil {
+		return []ChainMemberDTO{}
+	}
+	return normalizeChainMembers(members)
+}
+
+func chainMembersForNode(node *tables.ProxyNodeTable) []ChainMemberDTO {
+	if node == nil {
+		return []ChainMemberDTO{}
+	}
+	if members := decodeChainMembers(node.ChainMembersJSON); len(members) > 0 {
+		return members
+	}
+	return chainMembersFromNodeIDs(decodeStringSlice(node.ChainNodeIDsJSON))
+}
+
+func chainMembersFromNodeIDs(nodeIDs []string) []ChainMemberDTO {
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	members := make([]ChainMemberDTO, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		members = append(members, ChainMemberDTO{Type: ChainMemberTypeNode, ID: nodeID})
+	}
+	return members
+}
+
+func chainNodeIDsFromMembers(members []ChainMemberDTO) []string {
+	members = normalizeChainMembers(members)
+	nodeIDs := make([]string, 0, len(members))
+	for _, member := range members {
+		if member.Type == ChainMemberTypeNode {
+			nodeIDs = append(nodeIDs, member.ID)
+		}
+	}
+	return nodeIDs
+}
+
+func chainGroupIDsFromMembers(members []ChainMemberDTO) []string {
+	members = normalizeChainMembers(members)
+	groupIDs := make([]string, 0, len(members))
+	for _, member := range members {
+		if member.Type == ChainMemberTypeGroup {
+			groupIDs = append(groupIDs, member.ID)
+		}
+	}
+	return groupIDs
+}
+
+func normalizeChainMembers(members []ChainMemberDTO) []ChainMemberDTO {
+	seen := map[string]struct{}{}
+	result := make([]ChainMemberDTO, 0, len(members))
+	for _, member := range members {
+		member.Type = normalizeChainMemberType(member.Type)
+		member.ID = strings.TrimSpace(member.ID)
+		if member.Type == "" || member.ID == "" {
+			continue
+		}
+		key := member.Type + ":" + member.ID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, member)
+	}
+	return result
+}
+
+func normalizeChainMemberType(value string) string {
+	switch strings.TrimSpace(value) {
+	case ChainMemberTypeNode:
+		return ChainMemberTypeNode
+	case ChainMemberTypeGroup:
+		return ChainMemberTypeGroup
+	default:
+		return ""
+	}
 }
 
 func stringSliceOrEmpty(value string) []string {

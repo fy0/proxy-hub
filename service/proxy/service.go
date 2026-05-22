@@ -41,6 +41,7 @@ func NodeCreate(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) (*tab
 		TagsJSON:         encodeStringSlice(normalized.Tags),
 		Remark:           normalized.Remark,
 		ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
+		ChainMembersJSON: encodeChainMembers(normalized.ChainMembers),
 		SubscriptionID:   strings.TrimSpace(req.SubscriptionID),
 		GroupID:          groupID,
 		SourceKey:        strings.TrimSpace(req.SourceKey),
@@ -96,6 +97,7 @@ func NodeUpdate(ctx context.Context, tx model.DBTx, id string, req NodeUpsertReq
 		"tags_json":           encodeStringSlice(normalized.Tags),
 		"remark":              normalized.Remark,
 		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
+		"chain_members_json":  encodeChainMembers(normalized.ChainMembers),
 		"group_id":            groupID,
 		"updated_at":          time.Now(),
 	}).Error; err != nil {
@@ -559,6 +561,7 @@ func upsertManualImportNode(ctx context.Context, tx model.DBTx, existing *tables
 		"tags_json":           encodeStringSlice(normalized.Tags),
 		"remark":              normalized.Remark,
 		"chain_node_ids_json": encodeStringSlice(normalized.ChainNodeIDs),
+		"chain_members_json":  encodeChainMembers(normalized.ChainMembers),
 		"group_id":            req.GroupID,
 		"source_key":          req.SourceKey,
 		"updated_at":          time.Now(),
@@ -1137,7 +1140,11 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	normalized.Password = strings.TrimSpace(normalized.Password)
 	normalized.Remark = strings.TrimSpace(normalized.Remark)
 	normalized.Tags = cleanTags(normalized.Tags, normalized.Protocol)
-	normalized.ChainNodeIDs = uniqueNonEmpty(normalized.ChainNodeIDs)
+	normalized.ChainMembers = normalizeChainMembers(normalized.ChainMembers)
+	if len(normalized.ChainMembers) == 0 {
+		normalized.ChainMembers = chainMembersFromNodeIDs(normalized.ChainNodeIDs)
+	}
+	normalized.ChainNodeIDs = chainNodeIDsFromMembers(normalized.ChainMembers)
 
 	if normalized.Name == "" {
 		normalized.Name = defaultNodeName(normalized.Protocol, normalized.Server)
@@ -1151,7 +1158,7 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 		normalized.Username = ""
 		normalized.Password = ""
 		normalized.RawURI = ""
-		if len(normalized.ChainNodeIDs) < 2 {
+		if len(normalized.ChainMembers) < 2 {
 			return nil, ErrInvalidChain
 		}
 		return &normalized, nil
@@ -1171,12 +1178,17 @@ func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, re
 	}
 	if req.Protocol != ProtocolChain {
 		req.ChainNodeIDs = nil
+		req.ChainMembers = nil
 		return nil
 	}
 
 	tx = model.GetTx(tx).WithContext(ctx)
-	req.ChainNodeIDs = uniqueNonEmpty(req.ChainNodeIDs)
-	if len(req.ChainNodeIDs) < 2 {
+	req.ChainMembers = normalizeChainMembers(req.ChainMembers)
+	if len(req.ChainMembers) == 0 {
+		req.ChainMembers = chainMembersFromNodeIDs(req.ChainNodeIDs)
+	}
+	req.ChainNodeIDs = chainNodeIDsFromMembers(req.ChainMembers)
+	if len(req.ChainMembers) < 2 {
 		return ErrInvalidChain
 	}
 	if nodeID != "" && containsString(req.ChainNodeIDs, nodeID) {
@@ -1194,7 +1206,75 @@ func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, re
 			return ErrInvalidChain
 		}
 	}
+	groupIDs := chainGroupIDsFromMembers(req.ChainMembers)
+	groups, err := findGroupsByIDs(ctx, tx, groupIDs)
+	if err != nil {
+		return err
+	}
+	if len(groups) != len(groupIDs) {
+		return ErrInvalidChain
+	}
+	if len(groupIDs) > 0 {
+		var allGroups []*tables.ProxyGroupTable
+		if err := tx.Find(&allGroups).Error; err != nil {
+			return err
+		}
+		if hasChainGroupCycle(allGroups, groupIDs) {
+			return ErrInvalidChain
+		}
+	}
 	return nil
+}
+
+func hasChainGroupCycle(groups []*tables.ProxyGroupTable, seedGroupIDs []string) bool {
+	seedGroupIDs = uniqueNonEmpty(seedGroupIDs)
+	if len(seedGroupIDs) == 0 {
+		return false
+	}
+
+	byID := make(map[string]*tables.ProxyGroupTable, len(groups))
+	for _, group := range groups {
+		if group != nil && strings.TrimSpace(group.ID) != "" {
+			byID[group.ID] = group
+		}
+	}
+
+	visited := map[string]bool{}
+	visiting := map[string]bool{}
+	var visit func(string) bool
+	visit = func(groupID string) bool {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			return false
+		}
+		if visiting[groupID] {
+			return true
+		}
+		if visited[groupID] {
+			return false
+		}
+		group := byID[groupID]
+		if group == nil {
+			return false
+		}
+
+		visiting[groupID] = true
+		for _, childGroupID := range decodeStringSlice(group.GroupIDsJSON) {
+			if visit(childGroupID) {
+				return true
+			}
+		}
+		delete(visiting, groupID)
+		visited[groupID] = true
+		return false
+	}
+
+	for _, groupID := range seedGroupIDs {
+		if visit(groupID) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureNodeNotReferencedByChains(ctx context.Context, tx model.DBTx, nodeID string) error {
@@ -1212,7 +1292,43 @@ func ensureNodeNotReferencedByChains(ctx context.Context, tx model.DBTx, nodeID 
 		if node == nil || node.ID == nodeID {
 			continue
 		}
-		if containsString(decodeStringSlice(node.ChainNodeIDsJSON), nodeID) {
+		if containsString(chainNodeIDsFromMembers(chainMembersForNode(node)), nodeID) {
+			return ErrInvalidChain
+		}
+	}
+	return nil
+}
+
+func ensureGroupNotReferencedByChains(ctx context.Context, tx model.DBTx, groupIDs []string) error {
+	groupIDs = uniqueNonEmpty(groupIDs)
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return err
+	}
+	affectedGroupIDs := map[string]struct{}{}
+	for _, groupID := range groupIDs {
+		affectedGroupIDs[groupID] = struct{}{}
+	}
+	expandAffectedGroups(groups, affectedGroupIDs)
+	expandedGroupIDs := make([]string, 0, len(affectedGroupIDs))
+	for groupID := range affectedGroupIDs {
+		expandedGroupIDs = append(expandedGroupIDs, groupID)
+	}
+
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.Find(&nodes).Error; err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+			continue
+		}
+		if stringSlicesIntersect(chainGroupIDsFromMembers(chainMembersForNode(node)), expandedGroupIDs) {
 			return ErrInvalidChain
 		}
 	}

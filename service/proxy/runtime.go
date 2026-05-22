@@ -1145,11 +1145,181 @@ func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamic
 	for _, outbound := range outbounds {
 		b.outbounds[outbound.Tag] = outbound
 	}
+	b.cacheDynamicChainGroups(node)
 	outbound, ok := b.outbounds[tag]
 	if !ok {
 		return dynamicMemberPlan{}, ErrNoAvailableNode
 	}
 	return dynamicMemberPlan{id: node.ID, tag: tag, outbound: outbound, outbounds: outbounds}, nil
+}
+
+func (b *dynamicPlanBuilder) cacheDynamicChainGroups(node *tables.ProxyNodeTable) {
+	if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+		return
+	}
+	members := chainMembersForNode(node)
+	for index, member := range members {
+		if member.Type != ChainMemberTypeGroup {
+			continue
+		}
+		group, err := findChainGroupByID(b.ctx, b.tx, member.ID)
+		if err != nil || group == nil {
+			continue
+		}
+		b.cacheDynamicChainGroup(node.ID, index, group, map[string]bool{})
+	}
+}
+
+func (b *dynamicPlanBuilder) cacheDynamicChainGroup(
+	chainID string,
+	index int,
+	group *tables.ProxyGroupTable,
+	visiting map[string]bool,
+) {
+	if group == nil || visiting[group.ID] {
+		return
+	}
+	visiting[group.ID] = true
+	defer delete(visiting, group.ID)
+
+	tag := nodeChainMemberGroupOutboundTag(chainID, index, group.ID)
+	if _, exists := b.groupPlans[tag]; !exists {
+		outbound := b.outbounds[tag]
+		members := staticSelectorDynamicMembers(
+			outboundTagsForSelector(outbound),
+			b.outbounds,
+			b.outboundNodes,
+		)
+		b.groupPlans[tag] = &dynamicGroupPlan{
+			tag:      tag,
+			policy:   policyForGroup(group),
+			members:  members,
+			selected: selectedDynamicMemberID(members, selectedSelectorOutboundTag(outbound)),
+		}
+		delete(b.outbounds, tag)
+	}
+
+	childGroups, err := findGroupsByIDs(b.ctx, b.tx, decodeStringSlice(group.GroupIDsJSON))
+	if err != nil {
+		return
+	}
+	for _, childGroup := range childGroups {
+		b.cacheDynamicChainGroup(chainID, index, childGroup, visiting)
+	}
+}
+
+func findChainGroupByID(ctx context.Context, tx model.DBTx, groupID string) (*tables.ProxyGroupTable, error) {
+	groups, err := findGroupsByIDs(ctx, tx, []string{groupID})
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) != 1 {
+		return nil, ErrInvalidChain
+	}
+	return groups[0], nil
+}
+
+func staticSelectorDynamicMembers(
+	tags []string,
+	outbounds map[string]option.Outbound,
+	outboundNodes map[string]*tables.ProxyNodeTable,
+) []dynamicMemberPlan {
+	tags = uniqueNonEmpty(tags)
+	members := make([]dynamicMemberPlan, 0, len(tags))
+	for _, tag := range tags {
+		switch tag {
+		case constant.TypeDirect, constant.TypeBlock:
+			members = append(members, builtinMember(tag))
+		default:
+			outbound := outbounds[tag]
+			if outbound.Tag == "" {
+				outbound = option.Outbound{
+					Type: singboxcore.DynamicOutboundType,
+					Tag:  tag,
+				}
+			}
+			id := tag
+			if node := outboundNodes[tag]; node != nil && strings.TrimSpace(node.ID) != "" {
+				id = node.ID
+			}
+			members = append(members, dynamicMemberPlan{
+				id:       id,
+				tag:      tag,
+				outbound: outbound,
+				outbounds: collectOutboundDependencies(
+					tag,
+					outbounds,
+					map[string]bool{},
+				),
+			})
+		}
+	}
+	return uniqueDynamicMembers(members)
+}
+
+func selectedDynamicMemberID(members []dynamicMemberPlan, selectedTag string) string {
+	selectedTag = strings.TrimSpace(selectedTag)
+	for _, member := range members {
+		if member.tag == selectedTag || member.id == selectedTag {
+			return member.id
+		}
+	}
+	if len(members) > 0 {
+		return members[0].id
+	}
+	return ""
+}
+
+func collectOutboundDependencies(tag string, outbounds map[string]option.Outbound, visiting map[string]bool) []option.Outbound {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || tag == constant.TypeDirect || tag == constant.TypeBlock || visiting[tag] {
+		return nil
+	}
+	outbound := outbounds[tag]
+	if outbound.Tag == "" {
+		return nil
+	}
+	visiting[tag] = true
+	defer delete(visiting, tag)
+
+	result := make([]option.Outbound, 0)
+	for _, childTag := range outboundTagsForSelector(outbound) {
+		result = append(result, collectOutboundDependencies(childTag, outbounds, visiting)...)
+	}
+	result = append(result, outbound)
+	return result
+}
+
+func outboundTagsForSelector(outbound option.Outbound) []string {
+	switch options := outbound.Options.(type) {
+	case *option.SelectorOutboundOptions:
+		return options.Outbounds
+	case option.SelectorOutboundOptions:
+		return options.Outbounds
+	default:
+		return nil
+	}
+}
+
+func selectedSelectorOutboundTag(outbound option.Outbound) string {
+	switch options := outbound.Options.(type) {
+	case *option.SelectorOutboundOptions:
+		return firstNonEmpty(options.Default, firstString(options.Outbounds))
+	case option.SelectorOutboundOptions:
+		return firstNonEmpty(options.Default, firstString(options.Outbounds))
+	default:
+		return ""
+	}
+}
+
+func firstString(values []string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, visiting map[string]bool) (dynamicMemberPlan, error) {
@@ -1614,55 +1784,278 @@ func buildNodeRuntimeOutbounds(
 		return tag, []option.Outbound{outbound}, nil
 	}
 
-	chainNodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(node.ChainNodeIDsJSON))
+	members := chainMembersForNode(node)
+	if len(members) < 2 {
+		return "", nil, ErrInvalidChain
+	}
+	chainTag, outbounds, err := buildChainRuntimeOutbounds(
+		ctx,
+		tx,
+		node.ID,
+		members,
+		outboundTags,
+		outboundNodeCache,
+		map[string]bool{},
+	)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(chainNodes) < 2 {
-		return "", nil, ErrInvalidChain
-	}
-
-	outbounds := make([]option.Outbound, 0, len(chainNodes))
-	detourTag := ""
-	for index, chainNode := range chainNodes {
-		if normalizeProtocol(chainNode.Protocol) == ProtocolChain {
-			return "", nil, ErrInvalidChain
-		}
-		chainTag := nodeChainMemberOutboundTag(node.ID, index, chainNode.ID)
-		if _, exists := outboundTags[chainTag]; exists {
-			detourTag = chainTag
-			continue
-		}
-		outbound, err := buildNodeOutbound(chainNode, chainTag)
-		if err != nil {
-			return "", nil, err
-		}
-		if detourTag != "" {
-			if err := setOutboundDetour(&outbound, detourTag); err != nil {
-				return "", nil, err
-			}
-		}
-		outbounds = append(outbounds, outbound)
-		outboundNodeCache[chainTag] = chainNode
-		outboundTags[chainTag] = struct{}{}
-		detourTag = chainTag
-	}
-
 	tag := nodeOutboundTag(node.ID)
 	nodeOutboundCache[node.ID] = tag
 	if _, exists := outboundTags[tag]; !exists {
-		finalOutbound := outbounds[len(outbounds)-1]
-		finalOutbound.Tag = tag
-		if len(outbounds) > 1 {
-			if err := setOutboundDetour(&finalOutbound, outbounds[len(outbounds)-2].Tag); err != nil {
-				return "", nil, err
-			}
+		finalOutbound := chainTag.aliasOutbound(tag)
+		if finalOutbound.Tag == "" {
+			return "", nil, ErrInvalidChain
 		}
 		outbounds = append(outbounds, finalOutbound)
 		outboundNodeCache[tag] = node
 		outboundTags[tag] = struct{}{}
 	}
 	return tag, outbounds, nil
+}
+
+type chainBuildResult struct {
+	tag              string
+	finalOutbound    option.Outbound
+	hasFinalOutbound bool
+	representNode    *tables.ProxyNodeTable
+}
+
+func (r chainBuildResult) aliasOutbound(tag string) option.Outbound {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || r.tag == "" {
+		return option.Outbound{}
+	}
+	if r.hasFinalOutbound {
+		outbound := r.finalOutbound
+		outbound.Tag = tag
+		return outbound
+	}
+	return option.Outbound{
+		Type: constant.TypeSelector,
+		Tag:  tag,
+		Options: &option.SelectorOutboundOptions{
+			Outbounds: []string{r.tag},
+			Default:   r.tag,
+		},
+	}
+}
+
+func buildChainRuntimeOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	chainID string,
+	members []ChainMemberDTO,
+	outboundTags map[string]struct{},
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
+	visitingGroups map[string]bool,
+) (chainBuildResult, []option.Outbound, error) {
+	members = normalizeChainMembers(members)
+	if len(members) < 2 {
+		return chainBuildResult{}, nil, ErrInvalidChain
+	}
+
+	outbounds := make([]option.Outbound, 0, len(members)+1)
+	detourTag := ""
+	var last chainBuildResult
+	for index, member := range members {
+		result, memberOutbounds, err := buildChainMemberRuntimeOutbounds(
+			ctx,
+			tx,
+			chainID,
+			index,
+			member,
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+			visitingGroups,
+		)
+		if err != nil {
+			return chainBuildResult{}, nil, err
+		}
+		if result.tag == "" {
+			return chainBuildResult{}, nil, ErrInvalidChain
+		}
+		outbounds = append(outbounds, memberOutbounds...)
+		detourTag = result.tag
+		last = result
+	}
+	return last, outbounds, nil
+}
+
+func buildChainMemberRuntimeOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	chainID string,
+	index int,
+	member ChainMemberDTO,
+	detourTag string,
+	outboundTags map[string]struct{},
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
+	visitingGroups map[string]bool,
+) (chainBuildResult, []option.Outbound, error) {
+	switch normalizeChainMemberType(member.Type) {
+	case ChainMemberTypeNode:
+		nodes, err := findNodesByIDs(ctx, tx, []string{member.ID})
+		if err != nil {
+			return chainBuildResult{}, nil, err
+		}
+		if len(nodes) != 1 || normalizeProtocol(nodes[0].Protocol) == ProtocolChain {
+			return chainBuildResult{}, nil, ErrInvalidChain
+		}
+		return buildChainNodeMemberRuntimeOutbound(
+			nodes[0],
+			nodeChainMemberOutboundTag(chainID, index, member.ID),
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+		)
+	case ChainMemberTypeGroup:
+		groups, err := findGroupsByIDs(ctx, tx, []string{member.ID})
+		if err != nil {
+			return chainBuildResult{}, nil, err
+		}
+		if len(groups) != 1 {
+			return chainBuildResult{}, nil, ErrInvalidChain
+		}
+		return buildChainGroupMemberRuntimeOutbounds(
+			ctx,
+			tx,
+			chainID,
+			index,
+			groups[0],
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+			visitingGroups,
+		)
+	default:
+		return chainBuildResult{}, nil, ErrInvalidChain
+	}
+}
+
+func buildChainNodeMemberRuntimeOutbound(
+	node *tables.ProxyNodeTable,
+	tag string,
+	detourTag string,
+	outboundTags map[string]struct{},
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
+) (chainBuildResult, []option.Outbound, error) {
+	tag = strings.TrimSpace(tag)
+	if _, exists := outboundTags[tag]; exists {
+		return chainBuildResult{tag: tag, representNode: node}, nil, nil
+	}
+	outbound, err := buildNodeOutbound(node, tag)
+	if err != nil {
+		return chainBuildResult{}, nil, err
+	}
+	if detourTag != "" {
+		if err := setOutboundDetour(&outbound, detourTag); err != nil {
+			return chainBuildResult{}, nil, err
+		}
+	}
+	outboundNodeCache[tag] = node
+	outboundTags[tag] = struct{}{}
+	return chainBuildResult{
+		tag:              tag,
+		finalOutbound:    outbound,
+		hasFinalOutbound: true,
+		representNode:    node,
+	}, []option.Outbound{outbound}, nil
+}
+
+func buildChainGroupMemberRuntimeOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	chainID string,
+	index int,
+	group *tables.ProxyGroupTable,
+	detourTag string,
+	outboundTags map[string]struct{},
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
+	visitingGroups map[string]bool,
+) (chainBuildResult, []option.Outbound, error) {
+	if group == nil {
+		return chainBuildResult{}, nil, ErrInvalidChain
+	}
+	if visitingGroups[group.ID] {
+		return chainBuildResult{}, nil, fmt.Errorf("%w: cyclic group %s", ErrInvalidGroup, group.Name)
+	}
+	groupTag := nodeChainMemberGroupOutboundTag(chainID, index, group.ID)
+	if _, exists := outboundTags[groupTag]; exists {
+		return chainBuildResult{tag: groupTag}, nil, nil
+	}
+	visitingGroups[group.ID] = true
+	defer delete(visitingGroups, group.ID)
+
+	memberTags := make([]string, 0)
+	outbounds := make([]option.Outbound, 0)
+
+	for _, builtin := range decodeStringSlice(group.BuiltinTagsJSON) {
+		switch builtin {
+		case constantDirect:
+			memberTags = append(memberTags, constant.TypeDirect)
+		case constantReject, constantRejectDrop:
+			memberTags = append(memberTags, constant.TypeBlock)
+		}
+	}
+
+	nodes, err := findNodesByGroupOrIDs(ctx, tx, group.ID, decodeStringSlice(group.NodeIDsJSON))
+	if err != nil {
+		return chainBuildResult{}, nil, err
+	}
+	for memberIndex, childNode := range nodes {
+		if normalizeProtocol(childNode.Protocol) == ProtocolChain {
+			return chainBuildResult{}, nil, ErrInvalidChain
+		}
+		childTag := nodeChainGroupNodeOutboundTag(chainID, index, memberIndex, childNode.ID)
+		result, childOutbounds, err := buildChainNodeMemberRuntimeOutbound(
+			childNode,
+			childTag,
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+		)
+		if err != nil {
+			return chainBuildResult{}, nil, nodeBuildError{node: childNode, err: err}
+		}
+		memberTags = append(memberTags, result.tag)
+		outbounds = append(outbounds, childOutbounds...)
+	}
+
+	childGroups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(group.GroupIDsJSON))
+	if err != nil {
+		return chainBuildResult{}, nil, err
+	}
+	for _, childGroup := range childGroups {
+		result, childOutbounds, err := buildChainGroupMemberRuntimeOutbounds(
+			ctx,
+			tx,
+			chainID,
+			index,
+			childGroup,
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+			visitingGroups,
+		)
+		if err != nil {
+			return chainBuildResult{}, nil, err
+		}
+		if result.tag != "" {
+			memberTags = append(memberTags, result.tag)
+		}
+		outbounds = append(outbounds, childOutbounds...)
+	}
+
+	memberTags = uniqueNonEmpty(memberTags)
+	if len(memberTags) == 0 {
+		memberTags = []string{constant.TypeBlock}
+	}
+	groupOutbound := buildProxyGroupOutbound(group, groupTag, memberTags)
+	outbounds = append(outbounds, groupOutbound)
+	outboundTags[groupTag] = struct{}{}
+	return chainBuildResult{tag: groupTag}, outbounds, nil
 }
 
 func setOutboundDetour(outbound *option.Outbound, detour string) error {
@@ -1852,6 +2245,14 @@ func nodeChainMemberOutboundTag(chainID string, index int, nodeID string) string
 	return fmt.Sprintf("node-chain-%s-%02d-%s", strings.TrimSpace(chainID), index, strings.TrimSpace(nodeID))
 }
 
+func nodeChainMemberGroupOutboundTag(chainID string, index int, groupID string) string {
+	return fmt.Sprintf("node-chain-%s-%02d-group-%s", strings.TrimSpace(chainID), index, strings.TrimSpace(groupID))
+}
+
+func nodeChainGroupNodeOutboundTag(chainID string, groupIndex int, memberIndex int, nodeID string) string {
+	return fmt.Sprintf("node-chain-%s-%02d-node-%02d-%s", strings.TrimSpace(chainID), groupIndex, memberIndex, strings.TrimSpace(nodeID))
+}
+
 func mappingInboundTag(id string) string {
 	return "mapping-in-" + id
 }
@@ -1919,7 +2320,7 @@ func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeID
 			if _, ok := affectedNodeIDs[node.ID]; ok {
 				continue
 			}
-			if stringSlicesIntersect(decodeStringSlice(node.ChainNodeIDsJSON), currentNodeIDs) {
+			if stringSlicesIntersect(chainNodeIDsFromMembers(chainMembersForNode(node)), currentNodeIDs) {
 				affectedNodeIDs[node.ID] = struct{}{}
 				changed = true
 			}
@@ -1931,12 +2332,45 @@ func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeID
 	}
 
 	affectedGroupIDs := map[string]struct{}{}
-	for _, group := range groups {
-		if stringSlicesIntersect(decodeStringSlice(group.NodeIDsJSON), expandedNodeIDs) {
-			affectedGroupIDs[group.ID] = struct{}{}
+	for {
+		groupChanged := false
+		for _, group := range groups {
+			if _, ok := affectedGroupIDs[group.ID]; ok {
+				continue
+			}
+			if stringSlicesIntersect(decodeStringSlice(group.NodeIDsJSON), expandedNodeIDs) {
+				affectedGroupIDs[group.ID] = struct{}{}
+				groupChanged = true
+			}
+		}
+		previousGroupCount := len(affectedGroupIDs)
+		expandAffectedGroups(groups, affectedGroupIDs)
+		if len(affectedGroupIDs) != previousGroupCount {
+			groupChanged = true
+		}
+
+		currentGroupIDs := make([]string, 0, len(affectedGroupIDs))
+		for groupID := range affectedGroupIDs {
+			currentGroupIDs = append(currentGroupIDs, groupID)
+		}
+		nodeChanged := false
+		for _, node := range allNodes {
+			if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+				continue
+			}
+			if _, ok := affectedNodeIDs[node.ID]; ok {
+				continue
+			}
+			if stringSlicesIntersect(chainGroupIDsFromMembers(chainMembersForNode(node)), currentGroupIDs) {
+				affectedNodeIDs[node.ID] = struct{}{}
+				expandedNodeIDs = append(expandedNodeIDs, node.ID)
+				nodeChanged = true
+			}
+		}
+		if !groupChanged && !nodeChanged {
+			break
 		}
 	}
-	expandAffectedGroups(groups, affectedGroupIDs)
 
 	groupIDs := make([]string, 0, len(affectedGroupIDs))
 	for groupID := range affectedGroupIDs {
@@ -1969,6 +2403,31 @@ func runtimeAffectedMappingIDsByGroups(ctx context.Context, tx model.DBTx, group
 	expandedGroupIDs := make([]string, 0, len(affectedGroupIDs))
 	for groupID := range affectedGroupIDs {
 		expandedGroupIDs = append(expandedGroupIDs, groupID)
+	}
+
+	var allNodes []*tables.ProxyNodeTable
+	if err := tx.Find(&allNodes).Error; err != nil {
+		return nil, err
+	}
+	affectedNodeIDs := make([]string, 0)
+	for _, node := range allNodes {
+		if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+			continue
+		}
+		if stringSlicesIntersect(chainGroupIDsFromMembers(chainMembersForNode(node)), expandedGroupIDs) {
+			affectedNodeIDs = append(affectedNodeIDs, node.ID)
+		}
+	}
+	if len(affectedNodeIDs) > 0 {
+		nodeMappingIDs, err := runtimeAffectedMappingIDsByNodes(ctx, tx, affectedNodeIDs)
+		if err != nil {
+			return nil, err
+		}
+		groupMappingIDs, err := runtimeAffectedMappingIDsByNodesAndGroups(ctx, tx, nil, expandedGroupIDs)
+		if err != nil {
+			return nil, err
+		}
+		return uniqueNonEmpty(append(groupMappingIDs, nodeMappingIDs...)), nil
 	}
 	return runtimeAffectedMappingIDsByNodesAndGroups(ctx, tx, nil, expandedGroupIDs)
 }

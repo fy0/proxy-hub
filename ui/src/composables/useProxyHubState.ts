@@ -44,6 +44,7 @@ import type {
 } from '@/api/generated';
 import { isAuthCredentialError } from '@/api/auth';
 import type {
+  ChainMember,
   OutboundProtocol,
   ImportPreviewAction,
   ImportPreviewItem,
@@ -77,6 +78,7 @@ interface NodeInput {
   rawUri: string;
   tags: string[];
   chainNodeIds: string[];
+  chainMembers: ChainMember[];
   groupId: string;
   groupIds: string[];
   remark: string;
@@ -302,6 +304,7 @@ function parseVmessUri(rawUri: string): NodeInput | null {
       rawUri,
       tags: ['vmess', transport].filter(Boolean),
       chainNodeIds: [],
+      chainMembers: [],
       groupId: '',
       groupIds: [],
       remark: '',
@@ -343,6 +346,7 @@ function parseProxyUri(rawValue: string): NodeInput {
       rawUri,
       tags: uriTags(protocol, parsed.searchParams),
       chainNodeIds: [],
+      chainMembers: [],
       groupId: '',
       groupIds: [],
       remark: '',
@@ -360,6 +364,7 @@ function parseProxyUri(rawValue: string): NodeInput {
       rawUri,
       tags: [protocol].filter(tag => tag !== 'unknown'),
       chainNodeIds: [],
+      chainMembers: [],
       groupId: '',
       groupIds: [],
       remark: t('state.node.unsupportedRemark'),
@@ -375,6 +380,10 @@ export function inferNodeNameFromUri(rawUri: string): string {
 }
 
 function toProxyNode(dto: ProxyNodeDto): ProxyNode {
+  const chainNodeIds = dto.chainNodeIds ?? [];
+  const chainMembers = normalizeChainMembers(
+    dto.chainMembers ?? chainNodeIds.map(id => ({ type: 'node', id }))
+  );
   return {
     id: dto.id,
     name: dto.name,
@@ -386,7 +395,8 @@ function toProxyNode(dto: ProxyNodeDto): ProxyNode {
     rawUri: dto.rawUri,
     tags: dto.tags ?? [],
     remark: dto.remark,
-    chainNodeIds: dto.chainNodeIds ?? [],
+    chainNodeIds,
+    chainMembers,
     subscriptionId: dto.subscriptionId,
     groupId: dto.groupId,
     groupIds: dto.groupIds ?? (dto.groupId ? [dto.groupId] : []),
@@ -406,6 +416,31 @@ function toProxyNodeOption(dto: ProxyNodeOptionDto): ProxyNodeOption {
     port: toPort(dto.port),
     groupIds: dto.groupIds ?? [],
   };
+}
+
+function normalizeChainMembers(
+  members: Array<{ type?: string; id?: string }> | null | undefined
+): ChainMember[] {
+  const seen = new Set<string>();
+  const normalized: ChainMember[] = [];
+  for (const member of members ?? []) {
+    const type = member.type === 'group' ? 'group' : member.type === 'node' ? 'node' : '';
+    const id = member.id?.trim() ?? '';
+    if (!type || !id) continue;
+    const key = `${type}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({ type, id });
+  }
+  return normalized;
+}
+
+function chainNodeIdsFromMembers(members: ChainMember[], fallbackNodeIds: string[] = []): string[] {
+  const normalizedMembers = normalizeChainMembers(members);
+  if (normalizedMembers.length === 0) {
+    return fallbackNodeIds.map(nodeId => nodeId.trim()).filter(Boolean);
+  }
+  return normalizedMembers.filter(member => member.type === 'node').map(member => member.id);
 }
 
 function toProxyNodeHealth(dto: ProxyNodeDto['health']): ProxyNodeHealth | null {
@@ -747,7 +782,8 @@ function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
     password: input.password.trim(),
     rawUri: input.rawUri.trim(),
     tags: input.tags.map(tag => tag.trim()).filter(Boolean),
-    chainNodeIds: input.chainNodeIds.map(nodeId => nodeId.trim()).filter(Boolean),
+    chainNodeIds: chainNodeIdsFromMembers(input.chainMembers, input.chainNodeIds),
+    chainMembers: normalizeChainMembers(input.chainMembers),
     groupId: input.groupId.trim() || undefined,
     groupIds: input.groupIds.map(groupId => groupId.trim()).filter(Boolean),
     remark: input.remark.trim(),
@@ -839,6 +875,7 @@ function mergeNodePatch(node: ProxyNode, patch: Partial<NodeInput>): NodeInput {
     rawUri: patch.rawUri ?? node.rawUri,
     tags: patch.tags ?? node.tags,
     chainNodeIds: patch.chainNodeIds ?? node.chainNodeIds,
+    chainMembers: patch.chainMembers ?? node.chainMembers,
     groupId: patch.groupId ?? node.groupId,
     groupIds: patch.groupIds ?? node.groupIds,
     remark: patch.remark ?? node.remark,
@@ -876,6 +913,18 @@ function removeNodeFromLocalState(id: string): void {
       updatedAt: new Date().toISOString(),
     };
   });
+  nodes.value = nodes.value.map(node =>
+    node.chainNodeIds.includes(id)
+      ? {
+          ...node,
+          chainNodeIds: node.chainNodeIds.filter(nodeId => nodeId !== id),
+          chainMembers: node.chainMembers.filter(
+            member => member.type !== 'node' || member.id !== id
+          ),
+          updatedAt: new Date().toISOString(),
+        }
+      : node
+  );
 }
 
 function removeGroupFromLocalState(id: string): void {
@@ -892,6 +941,9 @@ function removeGroupFromLocalState(id: string): void {
           ...node,
           groupId: node.groupId === id ? '' : node.groupId,
           groupIds: node.groupIds.filter(groupId => groupId !== id),
+          chainMembers: node.chainMembers.filter(
+            member => member.type !== 'group' || member.id !== id
+          ),
           updatedAt: new Date().toISOString(),
         }
       : node

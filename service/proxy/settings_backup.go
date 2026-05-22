@@ -155,6 +155,7 @@ func validateSettingsBackup(backup SettingsBackupDTO) (*settingsBackupRows, erro
 	}
 
 	nodeIDs := make(map[string]struct{}, len(backup.Data.Nodes))
+	nodeByID := make(map[string]*tables.ProxyNodeTable, len(backup.Data.Nodes))
 	for _, dto := range backup.Data.Nodes {
 		row, err := nodeDTOToTable(dto, subscriptionIDs, groupIDs)
 		if err != nil {
@@ -163,10 +164,11 @@ func validateSettingsBackup(backup SettingsBackupDTO) (*settingsBackupRows, erro
 		if err := rememberID(nodeIDs, row.ID, "node"); err != nil {
 			return nil, err
 		}
+		nodeByID[row.ID] = row
 		rows.nodes = append(rows.nodes, row)
 	}
 	for _, node := range rows.nodes {
-		if err := validateNodeReferences(node, nodeIDs); err != nil {
+		if err := validateNodeReferences(node, nodeByID, groupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -191,6 +193,9 @@ func validateSettingsBackup(backup SettingsBackupDTO) (*settingsBackupRows, erro
 		if err := validateGroupReferences(group, nodeIDs, groupIDs); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateGroupGraphForChainMembers(rows.groups, rows.nodes); err != nil {
+		return nil, err
 	}
 
 	for _, subscription := range rows.subscriptions {
@@ -333,7 +338,12 @@ func nodeDTOToTable(dto *ProxyNodeDTO, subscriptionIDs, groupIDs map[string]stru
 	if protocol != ProtocolChain && (strings.TrimSpace(dto.Server) == "" || dto.Port == nil || *dto.Port == 0) {
 		return nil, invalidSettingsBackup("node server and port are required")
 	}
-	if protocol == ProtocolChain && len(uniqueNonEmpty(dto.ChainNodeIDs)) < 2 {
+	chainMembers := normalizeChainMembers(dto.ChainMembers)
+	if len(chainMembers) == 0 {
+		chainMembers = chainMembersFromNodeIDs(dto.ChainNodeIDs)
+	}
+	chainNodeIDs := chainNodeIDsFromMembers(chainMembers)
+	if protocol == ProtocolChain && len(chainMembers) < 2 {
 		return nil, invalidSettingsBackup("chain node requires at least two child nodes")
 	}
 
@@ -347,7 +357,8 @@ func nodeDTOToTable(dto *ProxyNodeDTO, subscriptionIDs, groupIDs map[string]stru
 		RawURI:           strings.TrimSpace(dto.RawURI),
 		TagsJSON:         encodeStringSlice(uniqueNonEmpty(dto.Tags)),
 		Remark:           strings.TrimSpace(dto.Remark),
-		ChainNodeIDsJSON: encodeStringSlice(uniqueNonEmpty(dto.ChainNodeIDs)),
+		ChainNodeIDsJSON: encodeStringSlice(chainNodeIDs),
+		ChainMembersJSON: encodeChainMembers(chainMembers),
 		SubscriptionID:   subscriptionID,
 		GroupID:          groupID,
 		SourceKey:        strings.TrimSpace(dto.SourceKey),
@@ -423,16 +434,41 @@ func mappingDTOToTable(dto *PortMappingDTO, nodeIDs, groupIDs map[string]struct{
 	return row, nil
 }
 
-func validateNodeReferences(node *tables.ProxyNodeTable, nodeIDs map[string]struct{}) error {
+func validateNodeReferences(node *tables.ProxyNodeTable, nodeByID map[string]*tables.ProxyNodeTable, groupIDs map[string]struct{}) error {
 	if node.Protocol != ProtocolChain {
 		return nil
 	}
-	for _, childNodeID := range decodeStringSlice(node.ChainNodeIDsJSON) {
-		if childNodeID == node.ID {
-			return invalidSettingsBackup("chain node cannot reference itself")
+	for _, member := range chainMembersForNode(node) {
+		switch member.Type {
+		case ChainMemberTypeNode:
+			if member.ID == node.ID {
+				return invalidSettingsBackup("chain node cannot reference itself")
+			}
+			child := nodeByID[member.ID]
+			if child == nil {
+				return invalidSettingsBackup("chain node references missing node")
+			}
+			if child.Protocol == ProtocolChain {
+				return invalidSettingsBackup("chain node cannot reference another chain node")
+			}
+		case ChainMemberTypeGroup:
+			if _, ok := groupIDs[member.ID]; !ok {
+				return invalidSettingsBackup("chain node references missing group")
+			}
+		default:
+			return invalidSettingsBackup("chain node has invalid member")
 		}
-		if _, ok := nodeIDs[childNodeID]; !ok {
-			return invalidSettingsBackup("chain node references missing node")
+	}
+	return nil
+}
+
+func validateGroupGraphForChainMembers(groups []*tables.ProxyGroupTable, nodes []*tables.ProxyNodeTable) error {
+	for _, node := range nodes {
+		if node == nil || node.Protocol != ProtocolChain {
+			continue
+		}
+		if hasChainGroupCycle(groups, chainGroupIDsFromMembers(chainMembersForNode(node))) {
+			return invalidSettingsBackup("chain node references cyclic group")
 		}
 	}
 	return nil

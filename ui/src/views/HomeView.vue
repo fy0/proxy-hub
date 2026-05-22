@@ -47,6 +47,7 @@ import { useI18n } from '@/i18n';
 import type { LocalePreference } from '@/i18n';
 import proxyHubMarkUrl from '@/assets/mark-large.png';
 import type {
+  ChainMember,
   ImportPreviewResult,
   MappingSwitchTargetType,
   OutboundProtocol,
@@ -294,6 +295,7 @@ const nodeEditForm = reactive({
   name: '',
   groupIds: [] as string[],
   chainNodeIds: [] as string[],
+  chainMembers: [] as ChainMember[],
   rawUri: '',
   remark: '',
 });
@@ -303,6 +305,7 @@ const nodeEditGroupsExpanded = ref(false);
 const chainNodeForm = reactive({
   name: '',
   chainNodeIds: [] as string[],
+  chainMembers: [] as ChainMember[],
   groupIds: [] as string[],
   remark: '',
 });
@@ -465,6 +468,7 @@ function optionToProxyNode(option: ProxyNodeOption): ProxyNode {
     tags: [],
     remark: '',
     chainNodeIds: [],
+    chainMembers: [],
     subscriptionId: '',
     groupId: option.groupIds[0] ?? '',
     groupIds: option.groupIds,
@@ -1179,7 +1183,7 @@ function reloadChainOptions(): void {
     keyword: chainNodeSearch.value,
     groupId: chainNodeGroupId.value,
     physicalOnly: true,
-    selectedIds: chainNodeForm.chainNodeIds,
+    selectedIds: chainNodeIdsFromMembers(chainNodeForm.chainMembers),
   }).catch(() => undefined);
 }
 
@@ -1188,7 +1192,7 @@ function reloadEditChainOptions(): void {
     keyword: editChainNodeSearch.value,
     groupId: editChainNodeGroupId.value,
     physicalOnly: true,
-    selectedIds: nodeEditForm.chainNodeIds,
+    selectedIds: chainNodeIdsFromMembers(nodeEditForm.chainMembers),
   }).catch(() => undefined);
 }
 
@@ -1215,7 +1219,7 @@ function loadMoreChainOptions(): void {
       keyword: chainNodeSearch.value,
       groupId: chainNodeGroupId.value,
       physicalOnly: true,
-      selectedIds: chainNodeForm.chainNodeIds,
+      selectedIds: chainNodeIdsFromMembers(chainNodeForm.chainMembers),
       page: chainNodePage.value + 1,
     },
     true
@@ -1229,7 +1233,7 @@ function loadMoreEditChainOptions(): void {
       keyword: editChainNodeSearch.value,
       groupId: editChainNodeGroupId.value,
       physicalOnly: true,
-      selectedIds: nodeEditForm.chainNodeIds,
+      selectedIds: chainNodeIdsFromMembers(nodeEditForm.chainMembers),
       page: editChainNodePage.value + 1,
     },
     true
@@ -1277,63 +1281,85 @@ function subscriptionGroupName(groupId: string): string {
 }
 
 function chainNodeNames(node: ProxyNode): string {
-  return node.chainNodeIds
-    .map(id => nodeById.value.get(id)?.name ?? nodeOptionById.value.get(id)?.name)
-    .filter((name): name is string => Boolean(name))
-    .join(' -> ');
+  return chainMemberNames(node.chainMembers);
 }
 
 function chainNodeFormPreview(): string {
-  return chainNodeNamesFromIds(chainNodeForm.chainNodeIds);
+  return chainMemberNames(chainNodeForm.chainMembers);
 }
 
-function chainNodeNamesFromIds(nodeIds: string[]): string {
-  return nodeIds
-    .map(id => nodeById.value.get(id)?.name ?? nodeOptionById.value.get(id)?.name)
-    .filter((name): name is string => Boolean(name))
-    .join(' -> ');
+function chainMemberNames(members: ChainMember[]): string {
+  return members.map(chainMemberName).filter(Boolean).join(' -> ');
 }
 
-function selectedChainNodes(): ProxyNode[] {
-  return selectedChainNodesFromIds(chainNodeForm.chainNodeIds);
+function chainMemberName(member: ChainMember): string {
+  if (member.type === 'group') {
+    return groupById.value.get(member.id)?.name ?? member.id;
+  }
+  return (
+    nodeById.value.get(member.id)?.name ?? nodeOptionById.value.get(member.id)?.name ?? member.id
+  );
 }
 
-function selectedChainNodesFromIds(nodeIds: string[]): ProxyNode[] {
-  return nodeIds.map(id => nodeFromCache(id)).filter((node): node is ProxyNode => Boolean(node));
+function chainNodeIdsFromMembers(members: ChainMember[]): string[] {
+  return members.filter(member => member.type === 'node').map(member => member.id);
 }
 
-function removeChainNodeSelection(nodeId: string): void {
-  chainNodeForm.chainNodeIds = chainNodeForm.chainNodeIds.filter(id => id !== nodeId);
+function syncChainNodeIds(target: { chainNodeIds: string[]; chainMembers: ChainMember[] }): void {
+  target.chainNodeIds = chainNodeIdsFromMembers(target.chainMembers);
+}
+
+function chainMemberSelected(members: ChainMember[], type: ChainMember['type'], id: string): boolean {
+  return members.some(member => member.type === type && member.id === id);
+}
+
+function removeChainMemberSelection(
+  target: { chainNodeIds: string[]; chainMembers: ChainMember[] },
+  type: ChainMember['type'],
+  id: string
+): void {
+  target.chainMembers = target.chainMembers.filter(
+    member => member.type !== type || member.id !== id
+  );
+  syncChainNodeIds(target);
+}
+
+function toggleChainMemberSelection(
+  target: { chainNodeIds: string[]; chainMembers: ChainMember[] },
+  type: ChainMember['type'],
+  id: string
+): void {
+  if (chainMemberSelected(target.chainMembers, type, id)) {
+    removeChainMemberSelection(target, type, id);
+    return;
+  }
+  target.chainMembers = [...target.chainMembers, { type, id }];
+  syncChainNodeIds(target);
+  if (type === 'node') ensureNodeOptions([id]).catch(() => undefined);
+}
+
+function selectedChainMembers(members: ChainMember[]): ChainMember[] {
+  return members;
 }
 
 function toggleChainNodeSelection(nodeId: string): void {
-  if (chainNodeForm.chainNodeIds.includes(nodeId)) {
-    removeChainNodeSelection(nodeId);
-    return;
-  }
-  chainNodeForm.chainNodeIds = [...chainNodeForm.chainNodeIds, nodeId];
-  ensureNodeOptions([nodeId]).catch(() => undefined);
+  toggleChainMemberSelection(chainNodeForm, 'node', nodeId);
+}
+
+function toggleChainGroupSelection(groupId: string): void {
+  toggleChainMemberSelection(chainNodeForm, 'group', groupId);
 }
 
 function nodeEditChainPreview(): string {
-  return chainNodeNamesFromIds(nodeEditForm.chainNodeIds);
-}
-
-function selectedNodeEditChainNodes(): ProxyNode[] {
-  return selectedChainNodesFromIds(nodeEditForm.chainNodeIds);
-}
-
-function removeNodeEditChainNodeSelection(nodeId: string): void {
-  nodeEditForm.chainNodeIds = nodeEditForm.chainNodeIds.filter(id => id !== nodeId);
+  return chainMemberNames(nodeEditForm.chainMembers);
 }
 
 function toggleNodeEditChainNodeSelection(nodeId: string): void {
-  if (nodeEditForm.chainNodeIds.includes(nodeId)) {
-    removeNodeEditChainNodeSelection(nodeId);
-    return;
-  }
-  nodeEditForm.chainNodeIds = [...nodeEditForm.chainNodeIds, nodeId];
-  ensureNodeOptions([nodeId]).catch(() => undefined);
+  toggleChainMemberSelection(nodeEditForm, 'node', nodeId);
+}
+
+function toggleNodeEditChainGroupSelection(groupId: string): void {
+  toggleChainMemberSelection(nodeEditForm, 'group', groupId);
 }
 
 function toggleNodeEditGroup(groupId: string): void {
@@ -1526,6 +1552,7 @@ function resetChainNodeForm(): void {
   Object.assign(chainNodeForm, {
     name: '',
     chainNodeIds: [],
+    chainMembers: [],
     groupIds: [],
     remark: '',
   });
@@ -1634,6 +1661,7 @@ function resetNodeEditForm(): void {
     name: '',
     groupIds: [],
     chainNodeIds: [],
+    chainMembers: [],
     rawUri: '',
     remark: '',
   });
@@ -1647,6 +1675,7 @@ function openEditNodeDialog(node: ProxyNode): void {
     name: node.name,
     groupIds: nodeGroupIds(node),
     chainNodeIds: [...node.chainNodeIds],
+    chainMembers: [...node.chainMembers],
     rawUri: node.protocol === 'chain' ? '' : nodeExportUri(node),
     remark: node.remark,
   });
@@ -1664,7 +1693,7 @@ async function saveNodeEditDialog(): Promise<void> {
   const currentNode = editingNode.value;
   if (!currentNode) return;
 
-  if (currentNode.protocol === 'chain' && nodeEditForm.chainNodeIds.length < 2) {
+  if (currentNode.protocol === 'chain' && nodeEditForm.chainMembers.length < 2) {
     nodeEditError.value = t('home.messages.chainNodesRequired');
     return;
   }
@@ -1680,8 +1709,12 @@ async function saveNodeEditDialog(): Promise<void> {
       groupIds: [...nodeEditForm.groupIds],
       chainNodeIds:
         currentNode.protocol === 'chain'
-          ? [...nodeEditForm.chainNodeIds]
+          ? chainNodeIdsFromMembers(nodeEditForm.chainMembers)
           : currentNode.chainNodeIds,
+      chainMembers:
+        currentNode.protocol === 'chain'
+          ? [...nodeEditForm.chainMembers]
+          : currentNode.chainMembers,
       ...(currentNode.protocol === 'chain' ? {} : { rawUri: nodeEditForm.rawUri }),
       remark: nodeEditForm.remark,
     });
@@ -2215,7 +2248,7 @@ async function handleImport(): Promise<void> {
 }
 
 async function handleChainNodeSubmit(): Promise<void> {
-  if (chainNodeForm.chainNodeIds.length < 2) {
+  if (chainNodeForm.chainMembers.length < 2) {
     chainNodeError.value = t('home.messages.chainNodesRequired');
     return;
   }
@@ -2230,7 +2263,8 @@ async function handleChainNodeSubmit(): Promise<void> {
       password: '',
       rawUri: '',
       tags: [],
-      chainNodeIds: chainNodeForm.chainNodeIds,
+      chainNodeIds: chainNodeIdsFromMembers(chainNodeForm.chainMembers),
+      chainMembers: [...chainNodeForm.chainMembers],
       groupId: chainNodeForm.groupIds[0] ?? '',
       groupIds: [...chainNodeForm.groupIds],
       remark: chainNodeForm.remark,
@@ -3129,11 +3163,11 @@ const homeContext = {
               <label
                 v-for="node in chainNodeOptions"
                 :key="node.id"
-                :class="{ selected: chainNodeForm.chainNodeIds.includes(node.id) }"
+                :class="{ selected: chainMemberSelected(chainNodeForm.chainMembers, 'node', node.id) }"
               >
                 <input
                   type="checkbox"
-                  :checked="chainNodeForm.chainNodeIds.includes(node.id)"
+                  :checked="chainMemberSelected(chainNodeForm.chainMembers, 'node', node.id)"
                   @change="toggleChainNodeSelection(node.id)"
                 />
                 <span class="node-option-card">
@@ -3153,21 +3187,37 @@ const homeContext = {
                   isLoadingChainNodes ? t('home.messages.loadingNodes') : t('home.actions.loadMore')
                 }}
               </Button>
+              <label
+                v-for="group in groups"
+                :key="`group-${group.id}`"
+                :class="{ selected: chainMemberSelected(chainNodeForm.chainMembers, 'group', group.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="chainMemberSelected(chainNodeForm.chainMembers, 'group', group.id)"
+                  @change="toggleChainGroupSelection(group.id)"
+                />
+                <span class="node-option-card">
+                  <em>{{ t('home.routeSource.group') }}</em>
+                  <strong>{{ group.name }}</strong>
+                  <small>{{ groupSummary(group) }}</small>
+                </span>
+              </label>
             </div>
           </fieldset>
           <div class="chain-node-preview">
             <strong>{{ t('home.form.chainPreview') }}</strong>
-            <span v-if="chainNodeForm.chainNodeIds.length">{{ chainNodeFormPreview() }}</span>
+            <span v-if="chainNodeForm.chainMembers.length">{{ chainNodeFormPreview() }}</span>
             <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
-            <div v-if="chainNodeForm.chainNodeIds.length" class="chain-node-order">
+            <div v-if="chainNodeForm.chainMembers.length" class="chain-node-order">
               <button
-                v-for="(node, index) in selectedChainNodes()"
-                :key="node.id"
+                v-for="(member, index) in selectedChainMembers(chainNodeForm.chainMembers)"
+                :key="`${member.type}-${member.id}`"
                 type="button"
-                @click="removeChainNodeSelection(node.id)"
+                @click="removeChainMemberSelection(chainNodeForm, member.type, member.id)"
               >
                 <em>{{ index + 1 }}</em>
-                <span>{{ node.name }}</span>
+                <span>{{ chainMemberName(member) }}</span>
                 <X class="size-3" aria-hidden="true" />
               </button>
             </div>
@@ -3792,11 +3842,11 @@ const homeContext = {
               <label
                 v-for="node in editChainNodeOptions"
                 :key="node.id"
-                :class="{ selected: nodeEditForm.chainNodeIds.includes(node.id) }"
+                :class="{ selected: chainMemberSelected(nodeEditForm.chainMembers, 'node', node.id) }"
               >
                 <input
                   type="checkbox"
-                  :checked="nodeEditForm.chainNodeIds.includes(node.id)"
+                  :checked="chainMemberSelected(nodeEditForm.chainMembers, 'node', node.id)"
                   @change="toggleNodeEditChainNodeSelection(node.id)"
                 />
                 <span class="node-option-card">
@@ -3818,21 +3868,37 @@ const homeContext = {
                     : t('home.actions.loadMore')
                 }}
               </Button>
+              <label
+                v-for="group in groups"
+                :key="`edit-group-${group.id}`"
+                :class="{ selected: chainMemberSelected(nodeEditForm.chainMembers, 'group', group.id) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="chainMemberSelected(nodeEditForm.chainMembers, 'group', group.id)"
+                  @change="toggleNodeEditChainGroupSelection(group.id)"
+                />
+                <span class="node-option-card">
+                  <em>{{ t('home.routeSource.group') }}</em>
+                  <strong>{{ group.name }}</strong>
+                  <small>{{ groupSummary(group) }}</small>
+                </span>
+              </label>
             </div>
           </fieldset>
           <div class="chain-node-preview">
             <strong>{{ t('home.form.chainPreview') }}</strong>
-            <span v-if="nodeEditForm.chainNodeIds.length">{{ nodeEditChainPreview() }}</span>
+            <span v-if="nodeEditForm.chainMembers.length">{{ nodeEditChainPreview() }}</span>
             <span v-else>{{ t('home.nodeMeta.chainEmpty') }}</span>
-            <div v-if="nodeEditForm.chainNodeIds.length" class="chain-node-order">
+            <div v-if="nodeEditForm.chainMembers.length" class="chain-node-order">
               <button
-                v-for="(node, index) in selectedNodeEditChainNodes()"
-                :key="node.id"
+                v-for="(member, index) in selectedChainMembers(nodeEditForm.chainMembers)"
+                :key="`${member.type}-${member.id}`"
                 type="button"
-                @click="removeNodeEditChainNodeSelection(node.id)"
+                @click="removeChainMemberSelection(nodeEditForm, member.type, member.id)"
               >
                 <em>{{ index + 1 }}</em>
-                <span>{{ node.name }}</span>
+                <span>{{ chainMemberName(member) }}</span>
                 <X class="size-3" aria-hidden="true" />
               </button>
             </div>

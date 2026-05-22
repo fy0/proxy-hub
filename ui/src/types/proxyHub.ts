@@ -18,6 +18,8 @@ export type RouteStrategy = 'failover' | 'load-balance' | 'manual' | 'least-late
 
 export type MappingSwitchTargetType = 'node' | 'group';
 
+export type ChainMemberType = 'node' | 'group';
+
 export type ProxyGroupType = 'manual' | 'subscription';
 
 export type ProxyGroupStrategy = 'selector' | 'url-test' | 'load-balance' | 'least-latency';
@@ -64,6 +66,11 @@ export interface ProxyNodeHealth {
   updatedAt: string;
 }
 
+export interface ChainMember {
+  type: ChainMemberType;
+  id: string;
+}
+
 export interface ProxyNode {
   id: string;
   name: string;
@@ -76,6 +83,7 @@ export interface ProxyNode {
   tags: string[];
   remark: string;
   chainNodeIds: string[];
+  chainMembers: ChainMember[];
   subscriptionId: string;
   groupId: string;
   groupIds: string[];

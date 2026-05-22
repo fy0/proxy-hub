@@ -18,6 +18,7 @@ type ProxyNodeTable struct {
 	Remark   string `gorm:"type:text" json:"remark"`
 
 	ChainNodeIDsJSON string `gorm:"type:text" json:"-"`
+	ChainMembersJSON string `gorm:"type:text" json:"-"`
 
 	SubscriptionID string `gorm:"type:text;index" json:"subscriptionId"`
 	GroupID        string `gorm:"type:text;index" json:"groupId"`
