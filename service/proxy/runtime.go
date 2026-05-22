@@ -487,7 +487,7 @@ func buildSingBoxOptionsFromMappingsWithExcludedNodes(
 			if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 				continue
 			}
-			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache, blacklistedNodeIDs)
+			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache)
 			if err != nil {
 				return option.Options{}, nil, outboundNodeCache, nodeBuildError{node: node, err: err}
 			}
@@ -602,6 +602,7 @@ func buildDynamicRuntimePlanForMapping(
 		groupPlans:         map[string]*dynamicGroupPlan{},
 		blacklistedNodeIDs: blacklistedNodeIDs,
 		excludedNodeIDs:    excludedNodeIDs,
+		mappingID:          mapping.ID,
 	}
 
 	members := make([]dynamicMemberPlan, 0)
@@ -618,7 +619,7 @@ func buildDynamicRuntimePlanForMapping(
 		return nil, err
 	}
 	if len(nodeMembers) == 0 {
-		revived, err := builder.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes))
+		revived, err := builder.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes), mappingOutboundTag(mapping.ID))
 		if err != nil {
 			return nil, err
 		}
@@ -914,6 +915,7 @@ type dynamicPlanBuilder struct {
 	groupPlans         map[string]*dynamicGroupPlan
 	blacklistedNodeIDs map[string]struct{}
 	excludedNodeIDs    map[string]struct{}
+	mappingID          string
 }
 
 func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]dynamicMemberPlan, error) {
@@ -930,7 +932,7 @@ func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]
 	return members, nil
 }
 
-func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) (bool, error) {
+func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string, groupTag string) (bool, error) {
 	nodeIDs = uniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return false, nil
@@ -956,6 +958,11 @@ func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string) 
 	for _, nodeID := range reviveIDs {
 		delete(b.blacklistedNodeIDs, nodeID)
 	}
+	utils.Logger.Info("运行时黑名单兜底复活节点",
+		zap.String("mappingId", b.mappingID),
+		zap.String("groupTag", strings.TrimSpace(groupTag)),
+		zap.Strings("nodeIds", reviveIDs),
+	)
 	return true, nil
 }
 
@@ -1131,7 +1138,6 @@ func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamic
 		map[string]*tables.ProxyNodeTable{},
 		b.outboundNodes,
 		map[string]string{},
-		b.blacklistedNodeIDs,
 	)
 	if err != nil {
 		return dynamicMemberPlan{}, err
@@ -1186,7 +1192,7 @@ func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, 
 		return dynamicMemberPlan{}, err
 	}
 	if len(nodeMembers) == 0 {
-		revived, err := b.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes))
+		revived, err := b.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes), tag)
 		if err != nil {
 			return dynamicMemberPlan{}, err
 		}
@@ -1524,7 +1530,7 @@ func buildProxyGroupOutbounds(
 		if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
 			continue
 		}
-		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache, blacklistedNodeIDs)
+		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache)
 		if err != nil {
 			return "", nil, nodeBuildError{node: node, err: err}
 		}
@@ -1575,7 +1581,6 @@ func buildNodeRuntimeOutbounds(
 	nodeCache map[string]*tables.ProxyNodeTable,
 	outboundNodeCache map[string]*tables.ProxyNodeTable,
 	nodeOutboundCache map[string]string,
-	blacklistedNodeIDs map[string]struct{},
 ) (string, []option.Outbound, error) {
 	if node == nil {
 		return constant.TypeBlock, nil, nil
@@ -1606,11 +1611,6 @@ func buildNodeRuntimeOutbounds(
 	}
 	if len(chainNodes) < 2 {
 		return "", nil, ErrInvalidChain
-	}
-	for _, chainNode := range chainNodes {
-		if _, blacklisted := blacklistedNodeIDs[chainNode.ID]; blacklisted {
-			return constant.TypeBlock, nil, nil
-		}
 	}
 
 	outbounds := make([]option.Outbound, 0, len(chainNodes))

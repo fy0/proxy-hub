@@ -475,7 +475,12 @@ func reviveRuntimeBlacklistedNodes(event singboxcore.BlacklistRevivalEvent) {
 			zap.Strings("nodeIds", event.NodeIDs),
 			zap.Error(err),
 		)
+		return
 	}
+	utils.Logger.Info("运行时黑名单兜底复活节点",
+		zap.String("groupTag", event.GroupTag),
+		zap.Strings("nodeIds", event.NodeIDs),
+	)
 }
 
 func runHealthLoop(ctx context.Context, runner *healthRunnerState) {
@@ -965,7 +970,6 @@ func buildHealthProbeNodeOutbounds(ctx context.Context, node *tables.ProxyNodeTa
 		map[string]*tables.ProxyNodeTable{},
 		map[string]*tables.ProxyNodeTable{},
 		map[string]string{},
-		map[string]struct{}{},
 	)
 }
 

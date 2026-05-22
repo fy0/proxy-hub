@@ -313,7 +313,7 @@ func TestRuntimeRevivesTopHealthyBlacklistedCandidates(t *testing.T) {
 		nodes[2].ID,
 		nodes[1].ID,
 		nodes[0].ID,
-	})
+	}, "mapping-out-test")
 	if err != nil {
 		t.Fatalf("reviveIfAllCandidatesBlacklisted() error = %v", err)
 	}
@@ -380,7 +380,7 @@ func TestRuntimeRevivalDoesNotReleaseExcludedCandidate(t *testing.T) {
 			second.ID: {},
 		},
 	}
-	revived, err := builder.reviveIfAllCandidatesBlacklisted([]string{first.ID, second.ID})
+	revived, err := builder.reviveIfAllCandidatesBlacklisted([]string{first.ID, second.ID}, "mapping-out-test")
 	if err != nil {
 		t.Fatalf("reviveIfAllCandidatesBlacklisted() error = %v", err)
 	}
@@ -550,6 +550,74 @@ func TestBuildHealthProbeNodeOutboundsSupportsChainNodes(t *testing.T) {
 	}
 	if findTestOutbound(outbounds, wantDetour) == nil {
 		t.Fatalf("first chain member outbound %q not found", wantDetour)
+	}
+}
+
+func TestBuildNodeRuntimeOutboundsAllowsBlacklistedChainMembers(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	firstPort := uint16(1081)
+	secondPort := uint16(1082)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &firstPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     &secondPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "A to B",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	recordRuntimeRevivalHealthSeries(t, ctx, first.ID, time.Now().Add(-5*time.Minute), 0, 3)
+	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("nodeHealthBlacklistedIDs() error = %v", err)
+	}
+	if _, blacklisted := blacklistedNodeIDs[first.ID]; !blacklisted {
+		t.Fatalf("first chain member was not blacklisted")
+	}
+
+	outboundTags := map[string]struct{}{
+		constant.TypeDirect: {},
+		constant.TypeBlock:  {},
+	}
+	tag, outbounds, err := buildNodeRuntimeOutbounds(
+		ctx,
+		nil,
+		chain,
+		outboundTags,
+		map[string]*tables.ProxyNodeTable{},
+		map[string]*tables.ProxyNodeTable{},
+		map[string]string{},
+	)
+	if err != nil {
+		t.Fatalf("buildNodeRuntimeOutbounds() error = %v", err)
+	}
+	if tag != nodeOutboundTag(chain.ID) {
+		t.Fatalf("chain outbound tag = %q, want %q", tag, nodeOutboundTag(chain.ID))
+	}
+	if findTestOutbound(outbounds, nodeOutboundTag(chain.ID)) == nil {
+		t.Fatalf("chain final outbound %q not found", nodeOutboundTag(chain.ID))
+	}
+	if findTestOutbound(outbounds, nodeChainMemberOutboundTag(chain.ID, 0, first.ID)) == nil {
+		t.Fatalf("blacklisted chain member outbound was not built")
 	}
 }
 
@@ -1174,6 +1242,161 @@ func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T
 	}
 	if !containsString(childGroupMembers, goodNode.ID) {
 		t.Fatalf("child dynamic group members = %v, want good node %q", childGroupMembers, goodNode.ID)
+	}
+}
+
+func TestRuntimeTrafficFailureRevivesSingleBlacklistedMappingNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	port := uint16(65007)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "only",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{node.ID},
+		ActiveNodeID:     &node.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+
+	base := time.Now().Add(-time.Minute)
+	for i := 0; i < 3; i++ {
+		if _, err := recordRuntimeTrafficFailureSync(singboxcore.TrafficFailureRecord{
+			GroupTag:  mappingOutboundTag(mapping.ID),
+			NodeID:    node.ID,
+			NodeTag:   nodeOutboundTag(node.ID),
+			Stage:     singboxcore.TrafficFailureStagePreFirstByte,
+			Error:     "EOF",
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("recordRuntimeTrafficFailureSync(%d) error = %v", i, err)
+		}
+	}
+
+	health, err := getNodeHealth(ctx, nil, node.ID)
+	if err != nil {
+		t.Fatalf("getNodeHealth() error = %v", err)
+	}
+	if health == nil || health.Blacklisted || health.ConsecutiveFailureCount != 0 {
+		t.Fatalf("health after all-node revival = %+v, want revived with zero consecutive failures", health)
+	}
+	status := RuntimeStatusGet()
+	if !runtimeHasInboundForMapping(status, mapping.ID) || runtimeFailureForMapping(status, mapping.ID) != nil {
+		t.Fatalf("Runtime status = %+v, want mapping still running", status)
+	}
+	for _, excluded := range status.ExcludedNodes {
+		if excluded.NodeID == node.ID {
+			t.Fatalf("single revived node was still excluded: %+v", status.ExcludedNodes)
+		}
+	}
+}
+
+func TestRuntimeTrafficFailureDoesNotExcludeChainParentForBlacklistedMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	firstPort := uint16(65008)
+	secondPort := uint16(65009)
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &firstPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     &secondPort,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "A to B",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{chain.ID},
+		ActiveNodeID:     &chain.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+
+	base := time.Now().Add(-time.Minute)
+	for i := 0; i < 3; i++ {
+		if _, err := recordRuntimeTrafficFailureSync(singboxcore.TrafficFailureRecord{
+			GroupTag:  mappingOutboundTag(mapping.ID),
+			NodeID:    first.ID,
+			NodeTag:   nodeChainMemberOutboundTag(chain.ID, 0, first.ID),
+			Stage:     singboxcore.TrafficFailureStagePreFirstByte,
+			Error:     "EOF",
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("recordRuntimeTrafficFailureSync(%d) error = %v", i, err)
+		}
+	}
+
+	memberHealth, err := getNodeHealth(ctx, nil, first.ID)
+	if err != nil {
+		t.Fatalf("getNodeHealth(first) error = %v", err)
+	}
+	if memberHealth == nil || !memberHealth.Blacklisted {
+		t.Fatalf("chain member health = %+v, want blacklisted", memberHealth)
+	}
+	chainHealth, err := getNodeHealth(ctx, nil, chain.ID)
+	if err != nil {
+		t.Fatalf("getNodeHealth(chain) error = %v", err)
+	}
+	if chainHealth != nil && chainHealth.Blacklisted {
+		t.Fatalf("chain parent health = %+v, want not blacklisted", chainHealth)
+	}
+	status := RuntimeStatusGet()
+	if !runtimeHasInboundForMapping(status, mapping.ID) || runtimeFailureForMapping(status, mapping.ID) != nil {
+		t.Fatalf("Runtime status = %+v, want chain mapping still running", status)
+	}
+	for _, excluded := range status.ExcludedNodes {
+		if excluded.NodeID == chain.ID {
+			t.Fatalf("chain parent was excluded after member blacklist: %+v", status.ExcludedNodes)
+		}
 	}
 }
 
