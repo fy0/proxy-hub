@@ -20,7 +20,7 @@ export type MappingSwitchTargetType = 'node' | 'group';
 
 export type ProxyGroupType = 'manual' | 'subscription';
 
-export type ProxyGroupStrategy = 'selector' | 'url-test' | 'least-latency';
+export type ProxyGroupStrategy = 'selector' | 'url-test' | 'load-balance' | 'least-latency';
 
 export type ImportPreviewType = 'node' | 'group' | 'builtin' | 'failure';
 

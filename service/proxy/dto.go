@@ -35,6 +35,7 @@ const (
 
 	GroupStrategySelector     = "selector"
 	GroupStrategyURLTest      = "url-test"
+	GroupStrategyLoadBalance  = "load-balance"
 	GroupStrategyLeastLatency = "least-latency"
 
 	SubscriptionSyncStatusSuccess = "success"

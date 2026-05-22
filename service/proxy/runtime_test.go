@@ -277,6 +277,17 @@ func TestManualURLTestGroupKeepsRoundRobinPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadBalanceGroupUsesRoundRobinPolicy(t *testing.T) {
+	group := &tables.ProxyGroupTable{
+		Type:     GroupTypeManual,
+		Strategy: GroupStrategyLoadBalance,
+	}
+	policy := policyForGroup(group)
+	if policy.Strategy != singboxcore.BalanceRoundRobin {
+		t.Fatalf("load-balance policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRoundRobin)
+	}
+}
+
 func TestRuntimeRevivesTopHealthyBlacklistedCandidates(t *testing.T) {
 	initProxyInMemoryDB(t)
 

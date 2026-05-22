@@ -327,6 +327,21 @@ func TestGroupCreateAddsNodeMembership(t *testing.T) {
 	}
 }
 
+func TestGroupCreatePreservesLoadBalanceStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	group, err := GroupCreate(context.Background(), nil, GroupUpsertRequest{
+		Name:     "balanced",
+		Strategy: GroupStrategyLoadBalance,
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	if group.Strategy != GroupStrategyLoadBalance {
+		t.Fatalf("group strategy = %q, want %q", group.Strategy, GroupStrategyLoadBalance)
+	}
+}
+
 func TestGroupUpdateClearsNestedGroupReferences(t *testing.T) {
 	initProxyInMemoryDB(t)
 

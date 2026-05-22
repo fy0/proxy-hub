@@ -219,7 +219,7 @@ function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
 }
 
 function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
-  if (value === 'url-test' || value === 'least-latency') return value;
+  if (value === 'url-test' || value === 'load-balance' || value === 'least-latency') return value;
   return 'selector';
 }
 
