@@ -19,6 +19,9 @@ func GroupCreate(ctx context.Context, tx model.DBTx, req GroupUpsertRequest) (*t
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, "", normalized.NodeIDs, nil); err != nil {
+		return nil, err
+	}
 	group := &tables.ProxyGroupTable{
 		Name:            normalized.Name,
 		Type:            GroupTypeManual,
@@ -54,6 +57,9 @@ func GroupUpdate(ctx context.Context, tx model.DBTx, id string, req GroupUpsertR
 
 	normalized, err := normalizeGroupRequest(ctx, tx, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, normalized.NodeIDs, nil); err != nil {
 		return nil, err
 	}
 	if err := tx.Model(&group).Updates(map[string]any{
@@ -228,6 +234,9 @@ func addNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs
 	if err != nil {
 		return err
 	}
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, groupID, nodeIDs, nil); err != nil {
+		return err
+	}
 	nodeIDsMissingPrimaryGroup := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		if node.GroupID == "" {
@@ -276,10 +285,32 @@ func addNodesToGroupMembership(ctx context.Context, tx model.DBTx, groupID strin
 		return err
 	}
 	nextNodeIDs := uniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nextNodeIDs, nil); err != nil {
+		return err
+	}
 	return tx.WithContext(ctx).Model(&group).Updates(map[string]any{
 		"node_ids_json": encodeStringSlice(nextNodeIDs),
 		"updated_at":    time.Now(),
 	}).Error
+}
+
+func ensureGroupMembersKeepChainMemberGroupsValid(
+	ctx context.Context,
+	tx model.DBTx,
+	groupID string,
+	nodeIDs []string,
+	groupIDs []string,
+) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil
+	}
+	nextGroup := &tables.ProxyGroupTable{
+		NodeIDsJSON:  encodeStringSlice(uniqueNonEmpty(nodeIDs)),
+		GroupIDsJSON: encodeStringSlice(removeString(uniqueNonEmpty(groupIDs), groupID)),
+	}
+	nextGroup.ID = groupID
+	return ensureChainMemberGroupsValid(ctx, tx, []*tables.ProxyGroupTable{nextGroup}, nil)
 }
 
 func removeNodesFromGroupMembership(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {

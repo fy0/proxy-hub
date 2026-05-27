@@ -406,6 +406,234 @@ func TestNodeCreateAcceptsChainMembersWithGroup(t *testing.T) {
 	}
 }
 
+func TestNodeCreateRejectsChainMemberGroupContainingChainNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	innerChain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "inner chain",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(inner chain) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:    "contains chain",
+		NodeIDs: []string{innerChain.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+
+	_, err = NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "outer chain",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if !errors.Is(err, ErrInvalidChain) {
+		t.Fatalf("NodeCreate(outer chain) error = %v, want %v", err, ErrInvalidChain)
+	}
+}
+
+func TestNodeCreateRejectsNestedChainMemberGroupContainingChainNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	innerChain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "inner chain",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(inner chain) error = %v", err)
+	}
+	child := &tables.ProxyGroupTable{
+		Name:            "child",
+		Type:            GroupTypeSubscription,
+		Strategy:        GroupStrategySelector,
+		NodeIDsJSON:     encodeStringSlice([]string{innerChain.ID}),
+		GroupIDsJSON:    encodeStringSlice(nil),
+		BuiltinTagsJSON: encodeStringSlice(nil),
+	}
+	if err := model.GetDB().WithContext(ctx).Create(child).Error; err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+	parent := &tables.ProxyGroupTable{
+		Name:            "parent",
+		Type:            GroupTypeSubscription,
+		Strategy:        GroupStrategySelector,
+		NodeIDsJSON:     encodeStringSlice(nil),
+		GroupIDsJSON:    encodeStringSlice([]string{child.ID}),
+		BuiltinTagsJSON: encodeStringSlice(nil),
+	}
+	if err := model.GetDB().WithContext(ctx).Create(parent).Error; err != nil {
+		t.Fatalf("Create(parent) error = %v", err)
+	}
+
+	_, err = NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "outer chain",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: parent.ID},
+		},
+	})
+	if !errors.Is(err, ErrInvalidChain) {
+		t.Fatalf("NodeCreate(outer chain) error = %v, want %v", err, ErrInvalidChain)
+	}
+}
+
+func TestGroupUpdateRejectsAddingChainNodeToChainMemberGroup(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.3",
+		Port:     uint16Ptr(1083),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "egress", NodeIDs: []string{groupNode.ID}})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	if _, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "outer chain",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	}); err != nil {
+		t.Fatalf("NodeCreate(outer chain) error = %v", err)
+	}
+	innerChain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "inner chain",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(inner chain) error = %v", err)
+	}
+
+	_, err = GroupUpdate(ctx, nil, group.ID, GroupUpsertRequest{
+		Name:    group.Name,
+		NodeIDs: []string{groupNode.ID, innerChain.ID},
+	})
+	if !errors.Is(err, ErrInvalidChain) {
+		t.Fatalf("GroupUpdate(add chain) error = %v, want %v", err, ErrInvalidChain)
+	}
+}
+
+func TestMappingGroupCanContainChainNodeOutsideChainMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "first",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "second",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "chain",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "route group", NodeIDs: []string{chain.ID}})
+	if err != nil {
+		t.Fatalf("GroupCreate(route group) error = %v", err)
+	}
+	_, err = MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10094,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		GroupIDs:         []string{group.ID},
+		ActiveGroupID:    &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+}
+
 func TestGroupUpdateClearsNestedGroupReferences(t *testing.T) {
 	initProxyInMemoryDB(t)
 
@@ -1383,6 +1611,93 @@ func TestSettingsImportRejectsBrokenReferenceWithoutMutation(t *testing.T) {
 				Strategy: GroupStrategySelector,
 				NodeIDs:  []string{"missing-node"},
 			}},
+		},
+	}
+
+	_, err = SettingsImport(ctx, backup)
+	if !errors.Is(err, ErrInvalidSettingsBackup) {
+		t.Fatalf("SettingsImport() error = %v, want %v", err, ErrInvalidSettingsBackup)
+	}
+
+	nodes, err := NodeList(ctx, nil)
+	if err != nil {
+		t.Fatalf("NodeList() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != original.ID {
+		t.Fatalf("nodes after rejected import = %+v, want original data unchanged", nodes)
+	}
+}
+
+func TestSettingsImportRejectsChainMemberGroupContainingChainNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	original, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "original",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(original) error = %v", err)
+	}
+	firstPort := uint16(1081)
+	secondPort := uint16(1082)
+	backup := SettingsBackupDTO{
+		Kind:          SettingsBackupKind,
+		SchemaVersion: SettingsBackupSchemaVersion,
+		ExportedAt:    original.CreatedAt,
+		Data: SettingsBackupDataDTO{
+			Nodes: []*ProxyNodeDTO{
+				{
+					ID:       "node-first",
+					Name:     "first",
+					Protocol: ProtocolSOCKS5,
+					Server:   "127.0.0.1",
+					Port:     &firstPort,
+				},
+				{
+					ID:       "node-second",
+					Name:     "second",
+					Protocol: ProtocolHTTP,
+					Server:   "127.0.0.2",
+					Port:     &secondPort,
+				},
+				{
+					ID:           "chain-inner",
+					Name:         "inner",
+					Protocol:     ProtocolChain,
+					ChainNodeIDs: []string{"node-first", "node-second"},
+				},
+				{
+					ID:       "chain-outer",
+					Name:     "outer",
+					Protocol: ProtocolChain,
+					ChainMembers: []ChainMemberDTO{
+						{Type: ChainMemberTypeNode, ID: "node-first"},
+						{Type: ChainMemberTypeGroup, ID: "group-parent"},
+					},
+				},
+			},
+			Groups: []*ProxyGroupDTO{
+				{
+					ID:       "group-child",
+					Name:     "child",
+					Type:     GroupTypeSubscription,
+					Strategy: GroupStrategySelector,
+					NodeIDs:  []string{"chain-inner"},
+				},
+				{
+					ID:       "group-parent",
+					Name:     "parent",
+					Type:     GroupTypeSubscription,
+					Strategy: GroupStrategySelector,
+					GroupIDs: []string{"group-child"},
+				},
+			},
 		},
 	}
 

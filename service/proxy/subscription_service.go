@@ -425,6 +425,9 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 	for _, parsedGroup := range parsed.Groups {
 		group := existingGroups[parsedGroup.SourceKey]
 		nodeIDs, groupIDs := subscriptionGroupMembers(parsedGroup, nodeIDByName, groupIDByName)
+		if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nodeIDs, groupIDs); err != nil {
+			return result, err
+		}
 		if err := tx.Model(group).Updates(map[string]any{
 			"strategy":          parsedGroup.Strategy,
 			"node_ids_json":     encodeStringSlice(nodeIDs),
@@ -715,11 +718,16 @@ func updateRootGroupReferences(ctx context.Context, tx model.DBTx, groupID strin
 	if groupID == "" {
 		return nil
 	}
+	nodeIDs = uniqueNonEmpty(nodeIDs)
+	groupIDs = removeString(uniqueNonEmpty(groupIDs), groupID)
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, groupID, nodeIDs, groupIDs); err != nil {
+		return err
+	}
 	return tx.WithContext(ctx).Model(&tables.ProxyGroupTable{}).
 		Where("id = ?", groupID).
 		Updates(map[string]any{
-			"node_ids_json":  encodeStringSlice(uniqueNonEmpty(nodeIDs)),
-			"group_ids_json": encodeStringSlice(removeString(uniqueNonEmpty(groupIDs), groupID)),
+			"node_ids_json":  encodeStringSlice(nodeIDs),
+			"group_ids_json": encodeStringSlice(groupIDs),
 			"updated_at":     time.Now(),
 		}).Error
 }

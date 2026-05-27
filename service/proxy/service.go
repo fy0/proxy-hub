@@ -21,30 +21,36 @@ func NodeCreate(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) (*tab
 	if err != nil {
 		return nil, err
 	}
-	if err := normalizeNodeChainIDs(ctx, tx, "", normalized); err != nil {
-		return nil, err
-	}
 	groupIDs, err := normalizeNodeGroupIDs(ctx, tx, req)
 	if err != nil {
 		return nil, err
 	}
 	groupID := primaryGroupID(groupIDs)
 
-	node := &tables.ProxyNodeTable{
-		Name:             normalized.Name,
-		Protocol:         normalized.Protocol,
-		Server:           normalized.Server,
-		Port:             normalized.Port,
-		Username:         normalized.Username,
-		Password:         normalized.Password,
-		RawURI:           normalized.RawURI,
-		TagsJSON:         encodeStringSlice(normalized.Tags),
-		Remark:           normalized.Remark,
-		ChainNodeIDsJSON: encodeStringSlice(normalized.ChainNodeIDs),
-		ChainMembersJSON: encodeChainMembers(normalized.ChainMembers),
-		SubscriptionID:   strings.TrimSpace(req.SubscriptionID),
-		GroupID:          groupID,
-		SourceKey:        strings.TrimSpace(req.SourceKey),
+	node := &tables.ProxyNodeTable{}
+	if normalized.Protocol == ProtocolChain {
+		node.Init()
+	}
+	if err := normalizeNodeChainIDs(ctx, tx, node.ID, normalized, nil, groupIDs); err != nil {
+		return nil, err
+	}
+
+	*node = tables.ProxyNodeTable{
+		StringPKBaseModel: node.StringPKBaseModel,
+		Name:              normalized.Name,
+		Protocol:          normalized.Protocol,
+		Server:            normalized.Server,
+		Port:              normalized.Port,
+		Username:          normalized.Username,
+		Password:          normalized.Password,
+		RawURI:            normalized.RawURI,
+		TagsJSON:          encodeStringSlice(normalized.Tags),
+		Remark:            normalized.Remark,
+		ChainNodeIDsJSON:  encodeStringSlice(normalized.ChainNodeIDs),
+		ChainMembersJSON:  encodeChainMembers(normalized.ChainMembers),
+		SubscriptionID:    strings.TrimSpace(req.SubscriptionID),
+		GroupID:           groupID,
+		SourceKey:         strings.TrimSpace(req.SourceKey),
 	}
 	if err := tx.Create(node).Error; err != nil {
 		return nil, err
@@ -70,15 +76,15 @@ func NodeUpdate(ctx context.Context, tx model.DBTx, id string, req NodeUpsertReq
 	if err != nil {
 		return nil, err
 	}
-	if err := normalizeNodeChainIDs(ctx, tx, id, normalized); err != nil {
-		return nil, err
-	}
 	groupIDs, err := normalizeNodeGroupIDs(ctx, tx, req)
 	if err != nil {
 		return nil, err
 	}
 	previousGroupIDs, err := nodeGroupIDs(ctx, tx, node.ID, node.GroupID)
 	if err != nil {
+		return nil, err
+	}
+	if err := normalizeNodeChainIDs(ctx, tx, id, normalized, previousGroupIDs, groupIDs); err != nil {
 		return nil, err
 	}
 	if err := syncNodeGroupMembership(ctx, tx, node.ID, previousGroupIDs, groupIDs); err != nil {
@@ -396,6 +402,9 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 			return result, err
 		}
 		nodeIDs, groupIDs := subscriptionGroupMembers(parsedGroup, nodeIDByName, groupIDByName)
+		if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nodeIDs, groupIDs); err != nil {
+			return result, err
+		}
 		if err := tx.Model(group).Updates(map[string]any{
 			"strategy":          parsedGroup.Strategy,
 			"node_ids_json":     encodeStringSlice(nodeIDs),
@@ -536,7 +545,7 @@ func upsertManualImportNode(ctx context.Context, tx model.DBTx, existing *tables
 	if err != nil {
 		return nil, true, err
 	}
-	if err := normalizeNodeChainIDs(ctx, tx, existing.ID, normalized); err != nil {
+	if err := normalizeNodeChainIDs(ctx, tx, existing.ID, normalized, stringSliceOrEmpty(existing.GroupID), stringSliceOrEmpty(req.GroupID)); err != nil {
 		return nil, true, err
 	}
 	previousGroupID := strings.TrimSpace(existing.GroupID)
@@ -619,6 +628,9 @@ func appendManualImportToGroup(ctx context.Context, tx model.DBTx, targetGroupID
 	}
 	nextNodeIDs := uniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
 	nextGroupIDs := uniqueNonEmpty(append(decodeStringSlice(group.GroupIDsJSON), removeString(groupIDs, targetGroupID)...))
+	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nextNodeIDs, nextGroupIDs); err != nil {
+		return err
+	}
 	return tx.WithContext(ctx).Model(&group).Updates(map[string]any{
 		"node_ids_json":  encodeStringSlice(nextNodeIDs),
 		"group_ids_json": encodeStringSlice(nextGroupIDs),
@@ -1174,13 +1186,18 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	return &normalized, nil
 }
 
-func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, req *NodeUpsertRequest) error {
+func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, req *NodeUpsertRequest, previousGroupIDs []string, nextGroupIDs []string) error {
 	if req == nil {
 		return nil
 	}
 	if req.Protocol != ProtocolChain {
 		req.ChainNodeIDs = nil
 		req.ChainMembers = nil
+		if pendingNode := pendingNodeFromRequest(nodeID, req, nextGroupIDs); pendingNode != nil {
+			if err := ensurePendingNodeKeepsChainMemberGroupsValid(ctx, tx, pendingNode, previousGroupIDs, nextGroupIDs, nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -1208,24 +1225,258 @@ func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, re
 			return ErrInvalidChain
 		}
 	}
-	groupIDs := chainGroupIDsFromMembers(req.ChainMembers)
-	groups, err := findGroupsByIDs(ctx, tx, groupIDs)
+	chainGroupIDs := chainGroupIDsFromMembers(req.ChainMembers)
+	groups, err := findGroupsByIDs(ctx, tx, chainGroupIDs)
 	if err != nil {
 		return err
 	}
-	if len(groups) != len(groupIDs) {
+	if len(groups) != len(chainGroupIDs) {
 		return ErrInvalidChain
 	}
-	if len(groupIDs) > 0 {
+	if len(chainGroupIDs) > 0 {
 		var allGroups []*tables.ProxyGroupTable
 		if err := tx.Find(&allGroups).Error; err != nil {
 			return err
 		}
-		if hasChainGroupCycle(allGroups, groupIDs) {
+		if hasChainGroupCycle(allGroups, chainGroupIDs) {
 			return ErrInvalidChain
 		}
 	}
+	return ensurePendingNodeKeepsChainMemberGroupsValid(ctx, tx, pendingNodeFromRequest(nodeID, req, nextGroupIDs), previousGroupIDs, nextGroupIDs, nil)
+}
+
+func pendingNodeFromRequest(nodeID string, req *NodeUpsertRequest, groupIDs []string) *tables.ProxyNodeTable {
+	if req == nil || strings.TrimSpace(nodeID) == "" {
+		return nil
+	}
+	node := &tables.ProxyNodeTable{
+		Name:             req.Name,
+		Protocol:         req.Protocol,
+		Server:           req.Server,
+		Port:             req.Port,
+		Username:         req.Username,
+		Password:         req.Password,
+		RawURI:           req.RawURI,
+		TagsJSON:         encodeStringSlice(req.Tags),
+		Remark:           req.Remark,
+		ChainNodeIDsJSON: encodeStringSlice(req.ChainNodeIDs),
+		ChainMembersJSON: encodeChainMembers(req.ChainMembers),
+		GroupID:          primaryGroupID(groupIDs),
+	}
+	node.ID = strings.TrimSpace(nodeID)
+	return node
+}
+
+func ensurePendingNodeKeepsChainMemberGroupsValid(
+	ctx context.Context,
+	tx model.DBTx,
+	pendingNode *tables.ProxyNodeTable,
+	previousGroupIDs []string,
+	nextGroupIDs []string,
+	pendingGroups []*tables.ProxyGroupTable,
+) error {
+	if pendingNode == nil {
+		return ensureChainMemberGroupsValid(ctx, tx, pendingGroups, nil)
+	}
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return err
+	}
+	affectedGroupIDs := uniqueNonEmpty(append(append([]string{}, previousGroupIDs...), nextGroupIDs...))
+	if len(affectedGroupIDs) == 0 {
+		affectedGroupIDs = groupIDsForNodeFromGroups(pendingNode.ID, pendingNode.GroupID, groups)
+	}
+	groupByID := make(map[string]*tables.ProxyGroupTable, len(groups))
+	for _, group := range groups {
+		if group != nil {
+			groupByID[group.ID] = group
+		}
+	}
+	nextGroupSet := stringSet(nextGroupIDs)
+	for _, groupID := range affectedGroupIDs {
+		group := groupByID[groupID]
+		if group == nil {
+			continue
+		}
+		nextNodeIDs := removeString(decodeStringSlice(group.NodeIDsJSON), pendingNode.ID)
+		if _, shouldContain := nextGroupSet[group.ID]; shouldContain {
+			nextNodeIDs = append(nextNodeIDs, pendingNode.ID)
+		}
+		nextGroup := *group
+		nextGroup.NodeIDsJSON = encodeStringSlice(uniqueNonEmpty(nextNodeIDs))
+		pendingGroups = append(pendingGroups, &nextGroup)
+	}
+	return ensureChainMemberGroupsValid(ctx, tx, pendingGroups, []*tables.ProxyNodeTable{pendingNode})
+}
+
+func ensureChainMemberGroupsValid(
+	ctx context.Context,
+	tx model.DBTx,
+	pendingGroups []*tables.ProxyGroupTable,
+	pendingNodes []*tables.ProxyNodeTable,
+) error {
+	tx = model.GetTx(tx).WithContext(ctx)
+
+	var groups []*tables.ProxyGroupTable
+	if err := tx.Find(&groups).Error; err != nil {
+		return err
+	}
+	var nodes []*tables.ProxyNodeTable
+	if err := tx.Find(&nodes).Error; err != nil {
+		return err
+	}
+	groups = mergePendingGroups(groups, pendingGroups)
+	nodes = mergePendingNodes(nodes, pendingNodes)
+	if chainMemberGroupsInvalid(groups, nodes) {
+		return ErrInvalidChain
+	}
 	return nil
+}
+
+func chainMemberGroupsInvalid(groups []*tables.ProxyGroupTable, nodes []*tables.ProxyNodeTable) bool {
+	for _, node := range nodes {
+		if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+			continue
+		}
+		groupIDs := chainGroupIDsFromMembers(chainMembersForNode(node))
+		if len(groupIDs) == 0 {
+			continue
+		}
+		if hasChainGroupCycle(groups, groupIDs) || chainMemberGroupsContainChainNode(groups, nodes, groupIDs) {
+			return true
+		}
+	}
+	return false
+}
+
+func chainMemberGroupsContainChainNode(groups []*tables.ProxyGroupTable, nodes []*tables.ProxyNodeTable, seedGroupIDs []string) bool {
+	groupIDs := chainMemberGroupClosure(groups, seedGroupIDs)
+	if len(groupIDs) == 0 {
+		return false
+	}
+	explicitNodeIDs := map[string]struct{}{}
+	for _, group := range groups {
+		if group == nil {
+			continue
+		}
+		if _, ok := groupIDs[group.ID]; !ok {
+			continue
+		}
+		for _, nodeID := range decodeStringSlice(group.NodeIDsJSON) {
+			nodeID = strings.TrimSpace(nodeID)
+			if nodeID != "" {
+				explicitNodeIDs[nodeID] = struct{}{}
+			}
+		}
+	}
+	for _, node := range nodes {
+		if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
+			continue
+		}
+		if _, ok := explicitNodeIDs[node.ID]; ok {
+			return true
+		}
+		if _, ok := groupIDs[strings.TrimSpace(node.GroupID)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func chainMemberGroupClosure(groups []*tables.ProxyGroupTable, seedGroupIDs []string) map[string]struct{} {
+	byID := make(map[string]*tables.ProxyGroupTable, len(groups))
+	for _, group := range groups {
+		if group != nil && strings.TrimSpace(group.ID) != "" {
+			byID[group.ID] = group
+		}
+	}
+	visited := map[string]struct{}{}
+	var visit func(string)
+	visit = func(groupID string) {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			return
+		}
+		if _, ok := visited[groupID]; ok {
+			return
+		}
+		group := byID[groupID]
+		if group == nil {
+			return
+		}
+		visited[groupID] = struct{}{}
+		for _, childGroupID := range decodeStringSlice(group.GroupIDsJSON) {
+			visit(childGroupID)
+		}
+	}
+	for _, groupID := range uniqueNonEmpty(seedGroupIDs) {
+		visit(groupID)
+	}
+	return visited
+}
+
+func mergePendingGroups(groups []*tables.ProxyGroupTable, pendingGroups []*tables.ProxyGroupTable) []*tables.ProxyGroupTable {
+	if len(pendingGroups) == 0 {
+		return groups
+	}
+	byID := make(map[string]*tables.ProxyGroupTable, len(groups)+len(pendingGroups))
+	order := make([]string, 0, len(groups)+len(pendingGroups))
+	for _, group := range groups {
+		if group == nil || strings.TrimSpace(group.ID) == "" {
+			continue
+		}
+		if _, ok := byID[group.ID]; !ok {
+			order = append(order, group.ID)
+		}
+		byID[group.ID] = group
+	}
+	for _, group := range pendingGroups {
+		if group == nil || strings.TrimSpace(group.ID) == "" {
+			continue
+		}
+		if _, ok := byID[group.ID]; !ok {
+			order = append(order, group.ID)
+		}
+		byID[group.ID] = group
+	}
+	merged := make([]*tables.ProxyGroupTable, 0, len(order))
+	for _, id := range order {
+		merged = append(merged, byID[id])
+	}
+	return merged
+}
+
+func mergePendingNodes(nodes []*tables.ProxyNodeTable, pendingNodes []*tables.ProxyNodeTable) []*tables.ProxyNodeTable {
+	if len(pendingNodes) == 0 {
+		return nodes
+	}
+	byID := make(map[string]*tables.ProxyNodeTable, len(nodes)+len(pendingNodes))
+	order := make([]string, 0, len(nodes)+len(pendingNodes))
+	for _, node := range nodes {
+		if node == nil || strings.TrimSpace(node.ID) == "" {
+			continue
+		}
+		if _, ok := byID[node.ID]; !ok {
+			order = append(order, node.ID)
+		}
+		byID[node.ID] = node
+	}
+	for _, node := range pendingNodes {
+		if node == nil || strings.TrimSpace(node.ID) == "" {
+			continue
+		}
+		if _, ok := byID[node.ID]; !ok {
+			order = append(order, node.ID)
+		}
+		byID[node.ID] = node
+	}
+	merged := make([]*tables.ProxyNodeTable, 0, len(order))
+	for _, id := range order {
+		merged = append(merged, byID[id])
+	}
+	return merged
 }
 
 func hasChainGroupCycle(groups []*tables.ProxyGroupTable, seedGroupIDs []string) bool {

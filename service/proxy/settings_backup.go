@@ -468,13 +468,8 @@ func validateNodeReferences(node *tables.ProxyNodeTable, nodeByID map[string]*ta
 }
 
 func validateGroupGraphForChainMembers(groups []*tables.ProxyGroupTable, nodes []*tables.ProxyNodeTable) error {
-	for _, node := range nodes {
-		if node == nil || node.Protocol != ProtocolChain {
-			continue
-		}
-		if hasChainGroupCycle(groups, chainGroupIDsFromMembers(chainMembersForNode(node))) {
-			return invalidSettingsBackup("chain node references cyclic group")
-		}
+	if chainMemberGroupsInvalid(groups, nodes) {
+		return invalidSettingsBackup("chain node references invalid group graph")
 	}
 	return nil
 }
