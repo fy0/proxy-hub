@@ -187,9 +187,10 @@ func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []strin
 			}
 		}
 		if err := tx.Model(mapping).Updates(map[string]any{
-			"group_ids_json":  encodeStringSlice(nextGroupIDs),
-			"active_group_id": active,
-			"updated_at":      time.Now(),
+			"group_ids_json":                encodeStringSlice(nextGroupIDs),
+			"group_strategy_overrides_json": encodeGroupStrategyOverrides(normalizeGroupStrategyOverrides(decodeGroupStrategyOverrides(mapping.GroupStrategyOverridesJSON), nextGroupIDs)),
+			"active_group_id":               active,
+			"updated_at":                    time.Now(),
 		}).Error; err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
+	protocolGroup "github.com/sagernet/sing-box/protocol/group"
 	protocolHTTP "github.com/sagernet/sing-box/protocol/http"
 	"github.com/sagernet/sing-box/protocol/hysteria"
 	"github.com/sagernet/sing-box/protocol/hysteria2"
@@ -174,6 +175,34 @@ func (c *Core) UpsertGroup(groupID string, policy Policy) (*DynamicGroup, error)
 		return nil, ErrGroupNotFound
 	}
 	return group, nil
+}
+
+func (c *Core) RemoveGroup(groupID string) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return ErrGroupNotFound
+	}
+	if c == nil || c.instance == nil {
+		return ErrCoreNotStarted
+	}
+
+	c.mu.Lock()
+	group := c.groups[groupID]
+	if group == nil {
+		c.mu.Unlock()
+		return ErrGroupNotFound
+	}
+	tags := group.outboundTags()
+	delete(c.groups, groupID)
+	c.mu.Unlock()
+
+	group.StopProbing()
+	var joined error
+	if _, exists := c.instance.Outbound().Outbound(groupID); exists {
+		joined = errors.Join(joined, c.instance.Outbound().Remove(groupID))
+	}
+	joined = errors.Join(joined, c.removeOutboundTagsIfUnused(tags))
+	return joined
 }
 
 func (c *Core) createDynamicGroupOutbound(groupID string, group *DynamicGroup) error {
@@ -332,6 +361,9 @@ func (c *Core) removeOutboundTagsIfUnused(tags []string) error {
 	var joined error
 	for i := len(tags) - 1; i >= 0; i-- {
 		tag := tags[i]
+		if tag == C.TypeDirect || tag == C.TypeBlock {
+			continue
+		}
 		if _, ok := referenced[tag]; ok {
 			continue
 		}
@@ -355,6 +387,7 @@ func (c *Core) referencedOutboundTags() map[string]struct{} {
 	}
 	c.mu.RUnlock()
 	for _, group := range groups {
+		result[group.Tag()] = struct{}{}
 		for tag := range group.referencedTags() {
 			result[tag] = struct{}{}
 		}
@@ -424,6 +457,7 @@ func BoxContext(ctx context.Context) context.Context {
 	registerDynamicOutbound(outboundRegistry)
 	block.RegisterOutbound(outboundRegistry)
 	direct.RegisterOutbound(outboundRegistry)
+	protocolGroup.RegisterSelector(outboundRegistry)
 	socks.RegisterOutbound(outboundRegistry)
 	protocolHTTP.RegisterOutbound(outboundRegistry)
 	shadowsocks.RegisterOutbound(outboundRegistry)

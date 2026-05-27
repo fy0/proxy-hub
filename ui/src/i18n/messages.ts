@@ -180,6 +180,10 @@ export const messages = {
         'url-test': '自动测速',
         'least-latency': '最低延迟',
       },
+      groupStrategyOverride: {
+        inherit: '继承分组策略',
+        overrideLabel: '覆盖：{strategy}',
+      },
       groupType: {
         manual: '手动组',
         subscription: '订阅组',
@@ -385,7 +389,9 @@ export const messages = {
         nodeTag: '出站 Tag',
         result: '结果',
         retest: '重测',
+        routePath: '跳转路径',
         running: '测试中',
+        selectedNode: '选中节点：{node}',
         success: '成功',
         target: '目标',
         waiting: '等待测试',
@@ -702,6 +708,10 @@ export const messages = {
         'url-test': 'URL test',
         'least-latency': 'Least latency',
       },
+      groupStrategyOverride: {
+        inherit: 'Inherit group strategy',
+        overrideLabel: 'Override: {strategy}',
+      },
       groupType: {
         manual: 'Manual',
         subscription: 'Subscription',
@@ -909,7 +919,9 @@ export const messages = {
         nodeTag: 'Outbound tag',
         result: 'Result',
         retest: 'Retest',
+        routePath: 'Route path',
         running: 'Testing',
+        selectedNode: 'Selected node: {node}',
         success: 'Success',
         target: 'Target',
         waiting: 'Waiting',

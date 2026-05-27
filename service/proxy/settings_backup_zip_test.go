@@ -37,7 +37,10 @@ func TestSettingsImportZipRoundTripReplacesExistingConfig(t *testing.T) {
 		NodeIDs:          []string{node.ID},
 		ActiveNodeID:     &node.ID,
 		GroupIDs:         []string{group.ID},
-		ActiveGroupID:    &group.ID,
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideLoadBalance,
+		},
+		ActiveGroupID: &group.ID,
 	}); err != nil {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
@@ -52,6 +55,9 @@ func TestSettingsImportZipRoundTripReplacesExistingConfig(t *testing.T) {
 	}
 	if len(backup.Data.Nodes) != 1 || len(backup.Data.Groups) != 1 || len(backup.Data.Mappings) != 1 {
 		t.Fatalf("backup data = %+v, want one node/group/mapping", backup.Data)
+	}
+	if backup.Data.Mappings[0].GroupStrategyOverrides[group.ID] != GroupStrategyOverrideLoadBalance {
+		t.Fatalf("backup mapping overrides = %+v, want load-balance", backup.Data.Mappings[0].GroupStrategyOverrides)
 	}
 
 	extra, err := NodeCreate(ctx, nil, NodeUpsertRequest{
@@ -70,6 +76,13 @@ func TestSettingsImportZipRoundTripReplacesExistingConfig(t *testing.T) {
 	}
 	if result.Nodes != 1 || result.Groups != 1 || result.Mappings != 1 {
 		t.Fatalf("SettingsImportZip() result = %+v, want one node/group/mapping", result)
+	}
+	importedMapping, err := MappingGet(ctx, nil, backup.Data.Mappings[0].ID)
+	if err != nil {
+		t.Fatalf("MappingGet(imported) error = %v", err)
+	}
+	if decodeGroupStrategyOverrides(importedMapping.GroupStrategyOverridesJSON)[group.ID] != GroupStrategyOverrideLoadBalance {
+		t.Fatalf("imported mapping overrides = %q, want load-balance", importedMapping.GroupStrategyOverridesJSON)
 	}
 	if _, err := NodeGet(ctx, nil, extra.ID); !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("NodeGet(extra) error = %v, want %v", err, ErrNodeNotFound)

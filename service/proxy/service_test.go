@@ -1055,6 +1055,103 @@ func TestMappingCreateDefaultsToLeastLatencyStrategy(t *testing.T) {
 	}
 }
 
+func TestMappingGroupStrategyOverridesAreNormalized(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:    "auto",
+		NodeIDs: []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10091,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		GroupIDs:         []string{group.ID},
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideLoadBalance,
+		},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+	if got := decodeGroupStrategyOverrides(mapping.GroupStrategyOverridesJSON)[group.ID]; got != GroupStrategyOverrideLoadBalance {
+		t.Fatalf("group strategy override = %q, want %q", got, GroupStrategyOverrideLoadBalance)
+	}
+	if dto := ToMappingDTO(mapping); dto.GroupStrategyOverrides[group.ID] != GroupStrategyOverrideLoadBalance {
+		t.Fatalf("dto overrides = %+v, want load-balance override", dto.GroupStrategyOverrides)
+	}
+
+	updated, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+		GroupIDs:         []string{group.ID},
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideInherit,
+		},
+	})
+	if err != nil {
+		t.Fatalf("MappingUpdate() error = %v", err)
+	}
+	if got := decodeGroupStrategyOverrides(updated.GroupStrategyOverridesJSON); len(got) != 0 {
+		t.Fatalf("group strategy overrides = %+v, want empty after inherit", got)
+	}
+}
+
+func TestMappingGroupStrategyOverridesRejectInvalidGroupOrStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{Name: "auto", NodeIDs: []string{node.ID}})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	base := MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       10092,
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		GroupIDs:         []string{group.ID},
+	}
+	invalidGroup := base
+	invalidGroup.GroupStrategyOverrides = map[string]string{"missing": GroupStrategyOverrideLoadBalance}
+	if _, err := MappingCreate(ctx, nil, invalidGroup); !errors.Is(err, ErrInvalidMapping) {
+		t.Fatalf("MappingCreate(invalid group override) error = %v, want %v", err, ErrInvalidMapping)
+	}
+	invalidStrategy := base
+	invalidStrategy.GroupStrategyOverrides = map[string]string{group.ID: "selector"}
+	if _, err := MappingCreate(ctx, nil, invalidStrategy); !errors.Is(err, ErrInvalidMapping) {
+		t.Fatalf("MappingCreate(invalid strategy override) error = %v, want %v", err, ErrInvalidMapping)
+	}
+}
+
 func TestMappingSwitchUpdatesActiveRoute(t *testing.T) {
 	initProxyInMemoryDB(t)
 

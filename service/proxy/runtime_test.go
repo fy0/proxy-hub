@@ -63,7 +63,7 @@ func TestRuntimeReloadStartsEnabledMapping(t *testing.T) {
 	}
 }
 
-func TestBuildSingBoxOptionsIncludesMappingWithoutNodes(t *testing.T) {
+func TestDynamicRuntimePlanIncludesMappingWithoutNodes(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -78,25 +78,26 @@ func TestBuildSingBoxOptionsIncludesMappingWithoutNodes(t *testing.T) {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
-	if len(options.Inbounds) != 1 {
-		t.Fatalf("options.Inbounds length = %d, want 1", len(options.Inbounds))
+	if len(plan.options.Inbounds) != 1 {
+		t.Fatalf("options.Inbounds length = %d, want 1", len(plan.options.Inbounds))
 	}
-	if len(inbounds) != 1 {
-		t.Fatalf("runtime inbounds length = %d, want 1", len(inbounds))
+	if plan.inbound.MappingID != mapping.ID {
+		t.Fatalf("runtime inbound mapping ID = %q, want %q", plan.inbound.MappingID, mapping.ID)
 	}
-	if inbounds[0].MappingID != mapping.ID {
-		t.Fatalf("runtime inbound mapping ID = %q, want %q", inbounds[0].MappingID, mapping.ID)
+	if plan.inbound.Outbound != mappingOutboundTag(mapping.ID) {
+		t.Fatalf("runtime inbound outbound = %q, want mapping dynamic group tag", plan.inbound.Outbound)
 	}
-	if inbounds[0].Outbound != constant.TypeBlock {
-		t.Fatalf("runtime inbound outbound = %q, want %q", inbounds[0].Outbound, constant.TypeBlock)
+	group := dynamicGroupPlanByTag(plan.groups, mappingOutboundTag(mapping.ID))
+	if group == nil || len(group.members) != 1 || group.members[0].tag != constant.TypeBlock {
+		t.Fatalf("mapping group = %+v, want single block member", group)
 	}
 }
 
-func TestBuildSingBoxOptionsRoutesMappingToGroup(t *testing.T) {
+func TestDynamicRuntimePlanRoutesMappingToGroup(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -131,29 +132,24 @@ func TestBuildSingBoxOptionsRoutesMappingToGroup(t *testing.T) {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
-	if len(inbounds) != 1 || inbounds[0].MappingID != mapping.ID {
-		t.Fatalf("runtime inbounds = %+v, want mapping %q", inbounds, mapping.ID)
+	if plan.inbound.MappingID != mapping.ID || plan.inbound.Outbound != mappingOutboundTag(mapping.ID) {
+		t.Fatalf("runtime inbound = %+v, want mapping dynamic group", plan.inbound)
 	}
-	if inbounds[0].Outbound != proxyGroupOutboundTag(group.ID) {
-		t.Fatalf("runtime outbound = %q, want group tag", inbounds[0].Outbound)
+	groupPlan := dynamicGroupPlanByTag(plan.groups, proxyGroupOutboundTag(group.ID))
+	if groupPlan == nil {
+		t.Fatalf("groups = %+v, want proxy group plan", plan.groups)
 	}
-	hasGroupOutbound := false
-	for _, outbound := range options.Outbounds {
-		if outbound.Tag == proxyGroupOutboundTag(group.ID) {
-			hasGroupOutbound = true
-			break
-		}
-	}
-	if !hasGroupOutbound {
-		t.Fatalf("outbounds = %+v, want group outbound", options.Outbounds)
+	mappingPlan := dynamicGroupPlanByTag(plan.groups, mappingOutboundTag(mapping.ID))
+	if mappingPlan == nil || len(mappingPlan.members) != 1 || mappingPlan.members[0].tag != proxyGroupOutboundTag(group.ID) {
+		t.Fatalf("mapping group = %+v, want proxy group member", mappingPlan)
 	}
 }
 
-func TestBuildSingBoxOptionsDoesNotEmitURLTestOutbounds(t *testing.T) {
+func TestDynamicRuntimePlanDoesNotEmitURLTestOutbounds(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -198,23 +194,21 @@ func TestBuildSingBoxOptionsDoesNotEmitURLTestOutbounds(t *testing.T) {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, _, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
 
-	for _, outbound := range options.Outbounds {
+	for _, outbound := range plan.options.Outbounds {
 		if outbound.Type == constant.TypeURLTest {
 			t.Fatalf("outbound %q type = %q, want no URL test outbounds during runtime load", outbound.Tag, outbound.Type)
 		}
 	}
-	groupOutbound := findTestOutbound(options.Outbounds, proxyGroupOutboundTag(group.ID))
-	if groupOutbound == nil || groupOutbound.Type != constant.TypeSelector {
-		t.Fatalf("group outbound = %+v, want selector", groupOutbound)
+	if groupPlan := dynamicGroupPlanByTag(plan.groups, proxyGroupOutboundTag(group.ID)); groupPlan == nil {
+		t.Fatalf("groups = %+v, want proxy group plan", plan.groups)
 	}
-	mappingOutbound := findTestOutbound(options.Outbounds, mappingOutboundTag(mapping.ID))
-	if mappingOutbound == nil || mappingOutbound.Type != constant.TypeSelector {
-		t.Fatalf("mapping outbound = %+v, want selector", mappingOutbound)
+	if mappingPlan := dynamicGroupPlanByTag(plan.groups, mappingOutboundTag(mapping.ID)); mappingPlan == nil {
+		t.Fatalf("groups = %+v, want mapping group plan", plan.groups)
 	}
 }
 
@@ -286,6 +280,130 @@ func TestLoadBalanceGroupUsesRoundRobinPolicy(t *testing.T) {
 	if policy.Strategy != singboxcore.BalanceRoundRobin {
 		t.Fatalf("load-balance policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRoundRobin)
 	}
+}
+
+func TestMappingGroupStrategyOverrideUsesPortScopedPolicy(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	portA := uint16(65101)
+	nodeA, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portA,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(a) error = %v", err)
+	}
+	portB := uint16(65102)
+	nodeB, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "b",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     &portB,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(b) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "latency",
+		Strategy: GroupStrategyLeastLatency,
+		NodeIDs:  []string{nodeA.ID, nodeB.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	inherited, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		GroupIDs:         []string{group.ID},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(inherited) error = %v", err)
+	}
+	overridden, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		GroupIDs:         []string{group.ID},
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideLoadBalance,
+		},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate(overridden) error = %v", err)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	inheritedInstance := runtimeInstanceForMapping(inherited.ID)
+	if inheritedInstance == nil {
+		t.Fatalf("inherited runtime instance was not created")
+	}
+	inheritedGroup := snapshotGroupByTag(inheritedInstance.core.Snapshot().Groups, proxyGroupOutboundTag(group.ID))
+	if inheritedGroup == nil || inheritedGroup.Policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("inherited group policy = %+v, want least latency", inheritedGroup)
+	}
+	overriddenInstance := runtimeInstanceForMapping(overridden.ID)
+	if overriddenInstance == nil {
+		t.Fatalf("overridden runtime instance was not created")
+	}
+	overriddenTag := mappingProxyGroupOutboundTag(overridden.ID, group.ID)
+	overriddenGroup := snapshotGroupByTag(overriddenInstance.core.Snapshot().Groups, overriddenTag)
+	if overriddenGroup == nil || overriddenGroup.Policy.Strategy != singboxcore.BalanceRoundRobin {
+		t.Fatalf("overridden group policy = %+v, want round robin", overriddenGroup)
+	}
+	if inheritedScopedGroup := snapshotGroupByTag(inheritedInstance.core.Snapshot().Groups, overriddenTag); inheritedScopedGroup != nil {
+		t.Fatalf("inherited instance unexpectedly has scoped overridden group %+v", inheritedScopedGroup)
+	}
+
+	if _, err := MappingUpdate(ctx, nil, overridden.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    overridden.ListenAddress,
+		ListenPort:       overridden.ListenPort,
+		OutboundProtocol: overridden.OutboundProtocol,
+		Strategy:         overridden.Strategy,
+		GroupIDs:         []string{group.ID},
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideInherit,
+		},
+	}); err != nil {
+		t.Fatalf("MappingUpdate(remove override) error = %v", err)
+	}
+	if _, err := RuntimeSyncMapping(ctx, overridden.ID); err != nil {
+		t.Fatalf("RuntimeSyncMapping(remove override) error = %v", err)
+	}
+	syncedInstance := runtimeInstanceForMapping(overridden.ID)
+	if syncedInstance != overriddenInstance {
+		t.Fatalf("runtime instance was replaced while removing override")
+	}
+	syncedSnapshot := syncedInstance.core.Snapshot()
+	if staleGroup := snapshotGroupByTag(syncedSnapshot.Groups, overriddenTag); staleGroup != nil {
+		t.Fatalf("stale overridden group still exists after inherit update: %+v", staleGroup)
+	}
+	syncedGroup := snapshotGroupByTag(syncedSnapshot.Groups, proxyGroupOutboundTag(group.ID))
+	if syncedGroup == nil || syncedGroup.Policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("synced inherited group policy = %+v, want least latency", syncedGroup)
+	}
+}
+
+func snapshotGroupByTag(groups []singboxcore.GroupSnapshot, tag string) *singboxcore.GroupSnapshot {
+	for index := range groups {
+		if groups[index].Tag == tag {
+			return &groups[index]
+		}
+	}
+	return nil
 }
 
 func TestRuntimeRevivesTopHealthyBlacklistedCandidates(t *testing.T) {
@@ -438,7 +556,7 @@ func recordRuntimeRevivalHealthSeries(t *testing.T, ctx context.Context, nodeID 
 	}
 }
 
-func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
+func TestDynamicRuntimePlanRoutesChainNodeWithDetour(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -470,7 +588,7 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeCreate(chain) error = %v", err)
 	}
-	if _, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
@@ -478,19 +596,21 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
 		Strategy:         StrategyManual,
 		NodeIDs:          []string{chain.ID},
 		ActiveNodeID:     &chain.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
-	if len(inbounds) != 1 || inbounds[0].Outbound != nodeOutboundTag(chain.ID) {
-		t.Fatalf("runtime inbound outbound = %+v, want chain node tag", inbounds)
+	mappingPlan := dynamicGroupPlanByTag(plan.groups, mappingOutboundTag(mapping.ID))
+	if mappingPlan == nil || len(mappingPlan.members) != 1 || mappingPlan.members[0].tag != nodeOutboundTag(chain.ID) {
+		t.Fatalf("mapping group = %+v, want chain node member", mappingPlan)
 	}
 
-	finalOutbound := findTestOutbound(options.Outbounds, nodeOutboundTag(chain.ID))
+	finalOutbound := findTestOutbound(plan.options.Outbounds, nodeOutboundTag(chain.ID))
 	if finalOutbound == nil {
 		t.Fatalf("chain outbound %q not found", nodeOutboundTag(chain.ID))
 	}
@@ -502,12 +622,12 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithDetour(t *testing.T) {
 	if got := dialer.TakeDialerOptions().Detour; got != wantDetour {
 		t.Fatalf("chain final detour = %q, want %q", got, wantDetour)
 	}
-	if findTestOutbound(options.Outbounds, wantDetour) == nil {
+	if findTestOutbound(plan.options.Outbounds, wantDetour) == nil {
 		t.Fatalf("first chain member outbound %q not found", wantDetour)
 	}
 }
 
-func TestBuildSingBoxOptionsRoutesChainNodeWithGroupMember(t *testing.T) {
+func TestDynamicRuntimePlanRoutesChainNodeWithGroupMember(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -558,7 +678,7 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithGroupMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeCreate(chain) error = %v", err)
 	}
-	if _, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
@@ -566,44 +686,43 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithGroupMember(t *testing.T) {
 		Strategy:         StrategyManual,
 		NodeIDs:          []string{chain.ID},
 		ActiveNodeID:     &chain.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, inbounds, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
-	if len(inbounds) != 1 || inbounds[0].Outbound != nodeOutboundTag(chain.ID) {
-		t.Fatalf("runtime inbound outbound = %+v, want chain node tag", inbounds)
+	mappingPlan := dynamicGroupPlanByTag(plan.groups, mappingOutboundTag(mapping.ID))
+	if mappingPlan == nil || len(mappingPlan.members) != 1 || mappingPlan.members[0].tag != nodeOutboundTag(chain.ID) {
+		t.Fatalf("mapping group = %+v, want chain node member", mappingPlan)
 	}
 
 	firstTag := nodeChainMemberOutboundTag(chain.ID, 0, first.ID)
 	groupTag := nodeChainMemberGroupOutboundTag(chain.ID, 1, group.ID)
 	groupChildTag := nodeChainGroupNodeOutboundTag(chain.ID, 1, 0, groupNode.ID)
-	finalOutbound := findTestOutbound(options.Outbounds, nodeOutboundTag(chain.ID))
+	groupTerminalTag := nodeChainGroupTerminalNodeOutboundTag(chain.ID, 1, 0, second.ID)
+	finalOutbound := findTestOutbound(plan.options.Outbounds, nodeOutboundTag(chain.ID))
 	if finalOutbound == nil {
 		t.Fatalf("chain outbound %q not found", nodeOutboundTag(chain.ID))
 	}
-	dialer, ok := finalOutbound.Options.(option.DialerOptionsWrapper)
+	selector, ok := finalOutbound.Options.(*option.SelectorOutboundOptions)
 	if !ok {
-		t.Fatalf("chain outbound options type = %T, want dialer options", finalOutbound.Options)
+		t.Fatalf("chain outbound options type = %T, want selector options", finalOutbound.Options)
 	}
-	if got := dialer.TakeDialerOptions().Detour; got != groupTag {
-		t.Fatalf("chain final detour = %q, want %q", got, groupTag)
+	if selector.Default != groupTag || !containsString(selector.Outbounds, groupTag) {
+		t.Fatalf("chain outbound selector = %+v, want %q", selector, groupTag)
 	}
-	groupOutbound := findTestOutbound(options.Outbounds, groupTag)
-	if groupOutbound == nil {
-		t.Fatalf("chain group outbound %q not found", groupTag)
+	groupPlan := dynamicGroupPlanByTag(plan.groups, groupTag)
+	if groupPlan == nil {
+		t.Fatalf("chain group plan %q not found in %+v", groupTag, plan.groups)
 	}
-	selector, ok := groupOutbound.Options.(*option.SelectorOutboundOptions)
-	if !ok {
-		t.Fatalf("chain group options type = %T, want selector", groupOutbound.Options)
+	if !dynamicGroupPlanHasMemberTag(groupPlan, groupTerminalTag) {
+		t.Fatalf("chain group members = %+v, want %q", groupPlan.members, groupTerminalTag)
 	}
-	if !containsString(selector.Outbounds, groupChildTag) {
-		t.Fatalf("chain group selector outbounds = %v, want %q", selector.Outbounds, groupChildTag)
-	}
-	groupChildOutbound := findTestOutbound(options.Outbounds, groupChildTag)
+	groupChildOutbound := findTestOutbound(plan.options.Outbounds, groupChildTag)
 	if groupChildOutbound == nil {
 		t.Fatalf("chain group child outbound %q not found", groupChildTag)
 	}
@@ -613,6 +732,17 @@ func TestBuildSingBoxOptionsRoutesChainNodeWithGroupMember(t *testing.T) {
 	}
 	if got := groupChildDialer.TakeDialerOptions().Detour; got != firstTag {
 		t.Fatalf("chain group child detour = %q, want %q", got, firstTag)
+	}
+	groupTerminalOutbound := findTestOutbound(plan.options.Outbounds, groupTerminalTag)
+	if groupTerminalOutbound == nil {
+		t.Fatalf("chain group terminal outbound %q not found", groupTerminalTag)
+	}
+	groupTerminalDialer, ok := groupTerminalOutbound.Options.(option.DialerOptionsWrapper)
+	if !ok {
+		t.Fatalf("chain group terminal options type = %T, want dialer options", groupTerminalOutbound.Options)
+	}
+	if got := groupTerminalDialer.TakeDialerOptions().Detour; got != groupChildTag {
+		t.Fatalf("chain group terminal detour = %q, want %q", got, groupChildTag)
 	}
 }
 
@@ -670,6 +800,265 @@ func TestBuildHealthProbeNodeOutboundsSupportsChainNodes(t *testing.T) {
 	}
 	if findTestOutbound(outbounds, wantDetour) == nil {
 		t.Fatalf("first chain member outbound %q not found", wantDetour)
+	}
+}
+
+func TestBuildHealthProbeNodePlanUsesDynamicGroupForChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "least",
+		Strategy: GroupStrategyLeastLatency,
+		NodeIDs:  []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	plan, err := buildHealthProbeNodePlan(ctx, chain)
+	if err != nil {
+		t.Fatalf("buildHealthProbeNodePlan() error = %v", err)
+	}
+	if plan.tag != nodeOutboundTag(chain.ID) {
+		t.Fatalf("health probe outbound tag = %q, want %q", plan.tag, nodeOutboundTag(chain.ID))
+	}
+	groupTag := nodeChainMemberGroupOutboundTag(chain.ID, 1, group.ID)
+	if _, exists := plan.outbounds[groupTag]; exists {
+		t.Fatalf("health probe plan kept selector outbound %q in static outbounds", groupTag)
+	}
+	groupPlan := dynamicGroupPlanByTag(plan.groups, groupTag)
+	if groupPlan == nil {
+		t.Fatalf("health probe groups = %+v, want chain group %q", plan.groups, groupTag)
+	}
+	if groupPlan.policy.Strategy != singboxcore.BalanceLeastLatency {
+		t.Fatalf("chain group policy strategy = %q, want %q", groupPlan.policy.Strategy, singboxcore.BalanceLeastLatency)
+	}
+	groupChildTag := nodeChainGroupNodeOutboundTag(chain.ID, 1, 0, groupNode.ID)
+	if !dynamicGroupPlanHasMemberTag(groupPlan, groupChildTag) {
+		t.Fatalf("chain group members = %+v, want %q", groupPlan.members, groupChildTag)
+	}
+	finalOutbound := plan.outbounds[nodeOutboundTag(chain.ID)]
+	selector, ok := finalOutbound.Options.(*option.SelectorOutboundOptions)
+	if !ok {
+		t.Fatalf("chain outbound options type = %T, want selector options", finalOutbound.Options)
+	}
+	if selector.Default != groupTag || !containsString(selector.Outbounds, groupTag) {
+		t.Fatalf("health probe chain final selector = %+v, want %q", selector, groupTag)
+	}
+}
+
+func TestStartHealthProbeProxySupportsChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "least",
+		Strategy: GroupStrategyLeastLatency,
+		NodeIDs:  []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	proxyURL, core, err := startHealthProbeProxy(ctx, chain)
+	if err != nil {
+		t.Fatalf("startHealthProbeProxy() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = core.Close()
+	})
+	if proxyURL == nil || proxyURL.Host == "" {
+		t.Fatalf("proxy URL = %+v, want local probe proxy URL", proxyURL)
+	}
+	groupTag := nodeChainMemberGroupOutboundTag(chain.ID, 1, group.ID)
+	if snapshot := snapshotGroupByTag(core.Snapshot().Groups, groupTag); snapshot == nil {
+		t.Fatalf("probe core groups = %+v, want chain group %q", core.Snapshot().Groups, groupTag)
+	}
+}
+
+func TestNodeTestIncludesRoutePathForChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "least",
+		Strategy: GroupStrategyLeastLatency,
+		NodeIDs:  []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	result, err := NodeTest(ctx, chain.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("NodeTest() error = %v", err)
+	}
+	if len(result.RoutePath) != 3 {
+		t.Fatalf("route path = %+v, want three hops", result.RoutePath)
+	}
+	if result.RoutePath[0].Kind != ChainMemberTypeNode || result.RoutePath[0].ID != first.ID {
+		t.Fatalf("first route hop = %+v, want node %q", result.RoutePath[0], first.ID)
+	}
+	if result.RoutePath[1].Kind != ChainMemberTypeGroup || result.RoutePath[1].ID != group.ID {
+		t.Fatalf("second route hop = %+v, want group %q", result.RoutePath[1], group.ID)
+	}
+	if result.RoutePath[2].Kind != ChainMemberTypeNode || result.RoutePath[2].ID != groupNode.ID {
+		t.Fatalf("third route hop = %+v, want selected group node %q", result.RoutePath[2], groupNode.ID)
+	}
+}
+
+func TestNodeTestRotatesLoadBalanceChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNodeA, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node-a",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node-a) error = %v", err)
+	}
+	groupNodeB, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.3",
+		Port:     uint16Ptr(1083),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node-b) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "balance",
+		Strategy: GroupStrategyLoadBalance,
+		NodeIDs:  []string{groupNodeA.ID, groupNodeB.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+
+	firstResult, err := NodeTest(ctx, chain.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("NodeTest(first) error = %v", err)
+	}
+	secondResult, err := NodeTest(ctx, chain.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("NodeTest(second) error = %v", err)
+	}
+	if len(firstResult.RoutePath) < 3 || len(secondResult.RoutePath) < 3 {
+		t.Fatalf("route paths = %+v / %+v, want selected group nodes", firstResult.RoutePath, secondResult.RoutePath)
+	}
+	if firstResult.RoutePath[2].ID == secondResult.RoutePath[2].ID {
+		t.Fatalf("selected group node did not rotate: first=%+v second=%+v", firstResult.RoutePath[2], secondResult.RoutePath[2])
 	}
 }
 
@@ -741,7 +1130,7 @@ func TestBuildNodeRuntimeOutboundsAllowsBlacklistedChainMembers(t *testing.T) {
 	}
 }
 
-func TestBuildSingBoxOptionsIncludesAdditionalProtocolOutbounds(t *testing.T) {
+func TestDynamicRuntimePlanIncludesAdditionalProtocolOutbounds(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -760,20 +1149,21 @@ func TestBuildSingBoxOptionsIncludesAdditionalProtocolOutbounds(t *testing.T) {
 		}
 		nodeIDs = append(nodeIDs, node.ID)
 	}
-	if _, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
 		OutboundProtocol: OutboundProtocolMixed,
 		Strategy:         StrategyManual,
 		NodeIDs:          nodeIDs,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	options, _, err := BuildSingBoxOptions(ctx, nil)
+	plan, err := buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err != nil {
-		t.Fatalf("BuildSingBoxOptions() error = %v", err)
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = %v", err)
 	}
 	wantTypes := map[string]bool{
 		constant.TypeShadowsocks: false,
@@ -782,14 +1172,14 @@ func TestBuildSingBoxOptionsIncludesAdditionalProtocolOutbounds(t *testing.T) {
 		constant.TypeTUIC:        false,
 		constant.TypeSSH:         false,
 	}
-	for _, outbound := range options.Outbounds {
+	for _, outbound := range plan.options.Outbounds {
 		if _, ok := wantTypes[outbound.Type]; ok {
 			wantTypes[outbound.Type] = true
 		}
 	}
 	for outboundType, found := range wantTypes {
 		if !found {
-			t.Fatalf("outbound type %q not found in %+v", outboundType, options.Outbounds)
+			t.Fatalf("outbound type %q not found in %+v", outboundType, plan.options.Outbounds)
 		}
 	}
 }
@@ -828,7 +1218,28 @@ func findTestOutbound(outbounds []option.Outbound, tag string) *option.Outbound 
 	return nil
 }
 
-func TestBuildSingBoxOptionsRejectsCyclicGroups(t *testing.T) {
+func dynamicGroupPlanByTag(groups []dynamicGroupPlan, tag string) *dynamicGroupPlan {
+	for i := range groups {
+		if groups[i].tag == tag {
+			return &groups[i]
+		}
+	}
+	return nil
+}
+
+func dynamicGroupPlanHasMemberTag(group *dynamicGroupPlan, tag string) bool {
+	if group == nil {
+		return false
+	}
+	for _, member := range group.members {
+		if member.tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDynamicRuntimePlanRejectsCyclicGroups(t *testing.T) {
 	initProxyInMemoryDB(t)
 
 	ctx := context.Background()
@@ -859,7 +1270,7 @@ func TestBuildSingBoxOptionsRejectsCyclicGroups(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("Update(first) error = %v", err)
 	}
-	_, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
@@ -872,9 +1283,9 @@ func TestBuildSingBoxOptionsRejectsCyclicGroups(t *testing.T) {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	_, _, err = BuildSingBoxOptions(ctx, nil)
+	_, err = buildDynamicRuntimePlanForMapping(ctx, nil, mapping, nil)
 	if err == nil {
-		t.Fatalf("BuildSingBoxOptions() error = nil, want cyclic group error")
+		t.Fatalf("buildDynamicRuntimePlanForMapping() error = nil, want cyclic group error")
 	}
 }
 
@@ -1819,6 +2230,57 @@ func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.
 	}
 }
 
+func TestMappingUpdatePrunesInheritedOverrideOnRemovedGroup(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "edge",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1080),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:    "auto",
+		NodeIDs: []string{node.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyLeastLatency,
+		GroupIDs:         []string{group.ID},
+		GroupStrategyOverrides: map[string]string{
+			group.ID: GroupStrategyOverrideLoadBalance,
+		},
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	updated, err := MappingUpdate(ctx, nil, mapping.ID, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    mapping.ListenAddress,
+		ListenPort:       mapping.ListenPort,
+		OutboundProtocol: mapping.OutboundProtocol,
+		Strategy:         mapping.Strategy,
+		GroupIDs:         nil,
+	})
+	if err != nil {
+		t.Fatalf("MappingUpdate(remove group) error = %v", err)
+	}
+	if got := decodeGroupStrategyOverrides(updated.GroupStrategyOverridesJSON); len(got) != 0 {
+		t.Fatalf("group strategy overrides = %+v, want empty after group removal", got)
+	}
+}
+
 func TestMappingTestResultIncludesSelectedNodeInfo(t *testing.T) {
 	initProxyInMemoryDB(t)
 	t.Cleanup(func() {
@@ -1895,6 +2357,229 @@ func TestMappingTestResultIncludesSelectedNodeInfo(t *testing.T) {
 			result.NodeTag,
 			node.ID,
 		)
+	}
+}
+
+func TestMappingTestIncludesRoutePathForSelectedChainNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	second, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "exit-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(second) error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:         "A to B",
+		Protocol:     ProtocolChain,
+		ChainNodeIDs: []string{first.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{chain.ID},
+		ActiveNodeID:     &chain.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	result, err := MappingTest(ctx, mapping.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("MappingTest() error = %v", err)
+	}
+	if len(result.RoutePath) != 2 {
+		t.Fatalf("route path = %+v, want two hops", result.RoutePath)
+	}
+	if result.RoutePath[0].ID != first.ID || result.RoutePath[1].ID != second.ID {
+		t.Fatalf("route path = %+v, want %q -> %q", result.RoutePath, first.ID, second.ID)
+	}
+}
+
+func TestMappingTestIncludesRoutePathForSelectedChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNode, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "balance",
+		Strategy: GroupStrategyLoadBalance,
+		NodeIDs:  []string{groupNode.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{chain.ID},
+		ActiveNodeID:     &chain.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	result, err := MappingTest(ctx, mapping.ID, ProxyTestRequest{ProbeURL: "https://example.com/generate_204"})
+	if err != nil {
+		t.Fatalf("MappingTest() error = %v", err)
+	}
+	if len(result.RoutePath) != 3 {
+		t.Fatalf("route path = %+v, want three hops", result.RoutePath)
+	}
+	if result.RoutePath[0].ID != first.ID || result.RoutePath[1].ID != group.ID || result.RoutePath[2].ID != groupNode.ID {
+		t.Fatalf("route path = %+v, want %q -> %q -> %q", result.RoutePath, first.ID, group.ID, groupNode.ID)
+	}
+}
+
+func TestMappingRoutePathReflectsRotatedChainGroupMember(t *testing.T) {
+	initProxyInMemoryDB(t)
+	t.Cleanup(func() {
+		_ = RuntimeStop()
+	})
+
+	ctx := context.Background()
+	first, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "jump-a",
+		Protocol: ProtocolSOCKS5,
+		Server:   "127.0.0.1",
+		Port:     uint16Ptr(1081),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(first) error = %v", err)
+	}
+	groupNodeA, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node-a",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.2",
+		Port:     uint16Ptr(1082),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node-a) error = %v", err)
+	}
+	groupNodeB, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "group-node-b",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.3",
+		Port:     uint16Ptr(1083),
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(group-node-b) error = %v", err)
+	}
+	group, err := GroupCreate(ctx, nil, GroupUpsertRequest{
+		Name:     "balance",
+		Strategy: GroupStrategyLoadBalance,
+		NodeIDs:  []string{groupNodeA.ID, groupNodeB.ID},
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	chain, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "A to G",
+		Protocol: ProtocolChain,
+		ChainMembers: []ChainMemberDTO{
+			{Type: ChainMemberTypeNode, ID: first.ID},
+			{Type: ChainMemberTypeGroup, ID: group.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate(chain) error = %v", err)
+	}
+	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
+		Enabled:          true,
+		ListenAddress:    "127.0.0.1",
+		ListenPort:       freeTCPPort(t),
+		OutboundProtocol: OutboundProtocolMixed,
+		Strategy:         StrategyManual,
+		NodeIDs:          []string{chain.ID},
+		ActiveNodeID:     &chain.ID,
+	})
+	if err != nil {
+		t.Fatalf("MappingCreate() error = %v", err)
+	}
+
+	if _, err := RuntimeReload(ctx); err != nil {
+		t.Fatalf("RuntimeReload() error = %v", err)
+	}
+	groupTag := nodeChainMemberGroupOutboundTag(chain.ID, 1, group.ID)
+	instance := runtimeInstanceForMapping(mapping.ID)
+	if instance == nil || instance.core == nil {
+		t.Fatalf("runtime instance missing for mapping %q", mapping.ID)
+	}
+	if err := instance.core.SelectNode(groupTag, groupNodeA.ID); err != nil {
+		t.Fatalf("SelectNode(groupNodeA) error = %v", err)
+	}
+	firstPath := testRoutePathForMapping(ctx, mapping, RuntimeStatusGet())
+	if len(firstPath) != 3 || firstPath[2].ID != groupNodeA.ID {
+		t.Fatalf("first route path = %+v, want selected group node %q", firstPath, groupNodeA.ID)
+	}
+	if err := instance.core.SelectNode(groupTag, groupNodeB.ID); err != nil {
+		t.Fatalf("SelectNode(groupNodeB) error = %v", err)
+	}
+	secondPath := testRoutePathForMapping(ctx, mapping, RuntimeStatusGet())
+	if len(secondPath) != 3 || secondPath[2].ID != groupNodeB.ID {
+		t.Fatalf("second route path = %+v, want selected group node %q", secondPath, groupNodeB.ID)
 	}
 }
 

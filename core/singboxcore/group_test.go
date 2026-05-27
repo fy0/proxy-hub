@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 func TestRoundRobinSelection(t *testing.T) {
@@ -27,6 +28,40 @@ func TestRoundRobinSelection(t *testing.T) {
 	}
 	if got := candidateIDs(group); !sameStrings(got, []string{"c", "a", "b"}) {
 		t.Fatalf("third order = %v, want c,a,b", got)
+	}
+}
+
+func TestSuccessfulDialUpdatesSelectedNode(t *testing.T) {
+	manager := &fakeOutboundManager{
+		outbounds: map[string]adapter.Outbound{
+			"node-a": fakeOutbound{tag: "node-a", conn: &scriptedConn{}},
+			"node-b": fakeOutbound{tag: "node-b", conn: &scriptedConn{}},
+		},
+		removed: map[string]bool{},
+	}
+	group := NewDynamicGroup("group-auto", manager, Policy{Strategy: BalanceRoundRobin})
+	for _, id := range []string{"a", "b"} {
+		if err := group.AddNode(NewNodeState(id, "node-"+id, option.Outbound{})); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", id, err)
+		}
+	}
+
+	conn, err := group.DialContext(context.Background(), "tcp", M.Socksaddr{})
+	if err != nil {
+		t.Fatalf("DialContext(first) error = %v", err)
+	}
+	_ = conn.Close()
+	if selected := group.Snapshot().Selected; selected != "a" {
+		t.Fatalf("selected after first dial = %q, want a", selected)
+	}
+
+	conn, err = group.DialContext(context.Background(), "tcp", M.Socksaddr{})
+	if err != nil {
+		t.Fatalf("DialContext(second) error = %v", err)
+	}
+	_ = conn.Close()
+	if selected := group.Snapshot().Selected; selected != "b" {
+		t.Fatalf("selected after second dial = %q, want b", selected)
 	}
 }
 
@@ -505,12 +540,57 @@ func blacklistedSnapshotIDs(group *DynamicGroup) []string {
 
 type fakeOutboundManager struct {
 	adapter.OutboundManager
-	removed map[string]bool
+	outbounds map[string]adapter.Outbound
+	removed   map[string]bool
+}
+
+func (m *fakeOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
+	if m == nil {
+		return nil, false
+	}
+	outbound, ok := m.outbounds[tag]
+	return outbound, ok
 }
 
 func (m *fakeOutboundManager) Remove(tag string) error {
 	m.removed[tag] = true
 	return nil
+}
+
+type fakeOutbound struct {
+	tag  string
+	conn net.Conn
+	err  error
+}
+
+func (o fakeOutbound) Type() string {
+	return "fake"
+}
+
+func (o fakeOutbound) Tag() string {
+	return o.tag
+}
+
+func (o fakeOutbound) Network() []string {
+	return []string{"tcp"}
+}
+
+func (o fakeOutbound) Dependencies() []string {
+	return nil
+}
+
+func (o fakeOutbound) DialContext(context.Context, string, M.Socksaddr) (net.Conn, error) {
+	if o.err != nil {
+		return nil, o.err
+	}
+	if o.conn != nil {
+		return o.conn, nil
+	}
+	return &scriptedConn{}, nil
+}
+
+func (o fakeOutbound) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
+	return nil, nil
 }
 
 type scriptedRead struct {

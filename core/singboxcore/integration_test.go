@@ -193,6 +193,66 @@ func TestStartReturnsPortInUseError(t *testing.T) {
 	}
 }
 
+func TestBoxContextRegistersSelectorOutbound(t *testing.T) {
+	core, err := NewCore(Config{
+		Context: context.Background(),
+		Options: option.Options{
+			Log: &option.LogOptions{Disabled: true},
+			Outbounds: append(BaseOutbounds(), option.Outbound{
+				Type: C.TypeSelector,
+				Tag:  "select-direct",
+				Options: &option.SelectorOutboundOptions{
+					Outbounds: []string{C.TypeDirect},
+					Default:   C.TypeDirect,
+				},
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewCore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = core.Close()
+	})
+	if err := core.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+}
+
+func TestRemoveGroupReleasesExclusiveOutbound(t *testing.T) {
+	core, err := NewCore(Config{
+		Context: context.Background(),
+		Options: option.Options{
+			Log:       &option.LogOptions{Disabled: true},
+			Outbounds: BaseOutbounds(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewCore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = core.Close()
+	})
+	if _, err := core.UpsertGroup("group-a", Policy{Strategy: BalanceManual, RemoveTTL: time.Second}); err != nil {
+		t.Fatalf("UpsertGroup() error = %v", err)
+	}
+	if err := core.AddNodeOutbound("group-a", NodeConfig{ID: "node-a", Tag: "node-a", Outbound: option.Outbound{Type: C.TypeDirect, Tag: "node-a", Options: &option.DirectOutboundOptions{}}}); err != nil {
+		t.Fatalf("AddNodeOutbound() error = %v", err)
+	}
+	if _, exists := core.Box().Outbound().Outbound("node-a"); !exists {
+		t.Fatalf("node-a outbound missing before group removal")
+	}
+	if err := core.RemoveGroup("group-a"); err != nil {
+		t.Fatalf("RemoveGroup() error = %v", err)
+	}
+	if _, exists := core.Box().Outbound().Outbound("node-a"); exists {
+		t.Fatalf("node-a outbound still exists after group removal")
+	}
+	if _, exists := core.Box().Outbound().Outbound("group-a"); exists {
+		t.Fatalf("group-a outbound still exists after group removal")
+	}
+}
+
 func proxiedClient(t *testing.T, port uint16, timeout time.Duration) *http.Client {
 	t.Helper()
 	proxyURL, err := url.Parse("http://127.0.0.1:" + strconv.Itoa(int(port)))

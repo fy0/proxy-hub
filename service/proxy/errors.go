@@ -10,6 +10,7 @@ var (
 	ErrInvalidPort           = errors.New("invalid port")
 	ErrInvalidAddress        = errors.New("invalid listen address")
 	ErrNoAvailableNode       = errors.New("no available node")
+	ErrInvalidMapping        = errors.New("invalid port mapping")
 	ErrListenPortTaken       = errors.New("listen port already exists")
 	ErrUTLSRequired          = errors.New("reality requires a binary built with -tags with_utls")
 	ErrSubscriptionNotFound  = errors.New("proxy subscription not found")

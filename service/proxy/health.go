@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"go.uber.org/zap"
@@ -46,6 +45,11 @@ type nodeHealthResultRecord struct {
 	CheckedAt time.Time
 }
 
+type nodeProbeResult struct {
+	err       error
+	routePath []ProxyRouteHopDTO
+}
+
 type healthRunnerState struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -56,6 +60,9 @@ type healthRunnerState struct {
 var (
 	healthRunnerMu sync.Mutex
 	healthRunner   *healthRunnerState
+
+	healthProbeRoundRobinMu      sync.Mutex
+	healthProbeRoundRobinOffsets = map[string]uint64{}
 )
 
 func HealthStart(ctx context.Context, cfg utils.ProxyHealthConfig) {
@@ -232,12 +239,16 @@ func NodeTest(ctx context.Context, nodeID string, req ProxyTestRequest) (*ProxyT
 	}
 	cfg.ProbeURL = probeURL
 	checkedAt := time.Now()
-	health, err := probeAndSaveNodeForced(ctx, nil, node, cfg, checkedAt, true, nodeHealthSourceNodeTest)
+	health, routePath, err := probeAndSaveNodeForcedWithRoutePath(ctx, nil, node, cfg, checkedAt, true, nodeHealthSourceNodeTest)
 	if err != nil {
 		return nil, err
 	}
 
 	result := testResultFromHealth("node", node.ID, node.Name, cfg.ProbeURL, checkedAt, health)
+	result.RoutePath = routePath
+	if len(result.RoutePath) == 0 {
+		result.RoutePath = testRoutePathForNode(ctx, nil, node)
+	}
 	result.Health = ToNodeHealthDTO(health)
 	return result, nil
 }
@@ -279,20 +290,13 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 		result.Error = "port mapping runtime is not running"
 		return result, nil
 	}
-	if node, ok := runtimeSelectedRouteNode(status, mapping.ID); ok {
-		result.NodeName = node.NodeName
-		result.NodeTag = node.NodeTag
-		result.NodeError = node.Error
-		if node.Kind == "node" {
-			result.NodeID = node.NodeID
-		}
-	}
-
 	proxyURL, err := mappingProbeProxyURL(mapping)
 	if err != nil {
 		return nil, err
 	}
 	probeErr, latencyMs := executeHTTPProbe(ctx, probeURL, cfg.Timeout, proxyURL)
+	status = RuntimeStatusGet()
+	applyMappingTestRuntimeSelection(ctx, result, mapping, status)
 	result.LatencyMs = latencyMs
 	if probeErr != nil {
 		result.Error = probeErr.Error()
@@ -303,6 +307,40 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 	result.Available = true
 	result.Health = saveMappingTestNodeHealth(ctx, result)
 	return result, nil
+}
+
+func applyMappingTestRuntimeSelection(ctx context.Context, result *ProxyTestResultDTO, mapping *tables.PortMappingTable, status RuntimeStatus) {
+	if result == nil || mapping == nil {
+		return
+	}
+	if node, ok := runtimeSelectedRouteNode(status, mapping.ID); ok {
+		result.NodeName = node.NodeName
+		result.NodeTag = node.NodeTag
+		result.NodeError = node.Error
+		if node.Kind == "node" {
+			result.NodeID = node.NodeID
+		}
+	}
+	result.RoutePath = testRoutePathForMapping(ctx, mapping, status)
+	if result.NodeID == "" && result.NodeTag == "" {
+		applyTestResultNodeFromRoutePath(result)
+	}
+}
+
+func applyTestResultNodeFromRoutePath(result *ProxyTestResultDTO) {
+	if result == nil {
+		return
+	}
+	for index := len(result.RoutePath) - 1; index >= 0; index-- {
+		hop := result.RoutePath[index]
+		if hop.Kind != ChainMemberTypeNode || strings.TrimSpace(hop.ID) == "" {
+			continue
+		}
+		result.NodeID = hop.ID
+		result.NodeName = hop.Name
+		result.NodeTag = hop.Tag
+		return
+	}
 }
 
 func saveMappingTestNodeHealth(ctx context.Context, result *ProxyTestResultDTO) *ProxyNodeHealthDTO {
@@ -630,43 +668,56 @@ func probeAndSaveNode(ctx context.Context, tx model.DBTx, node *tables.ProxyNode
 }
 
 func probeAndSaveNodeForced(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig, now time.Time, force bool, source string) (*tables.ProxyNodeHealthTable, error) {
+	health, _, err := probeAndSaveNodeForcedWithRoutePath(ctx, tx, node, cfg, now, force, source)
+	return health, err
+}
+
+func probeAndSaveNodeForcedWithRoutePath(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig, now time.Time, force bool, source string) (*tables.ProxyNodeHealthTable, []ProxyRouteHopDTO, error) {
 	if node == nil {
-		return nil, ErrNodeNotFound
+		return nil, nil, ErrNodeNotFound
 	}
 	cfg = normalizeHealthConfig(cfg)
 
 	existing, err := getNodeHealth(ctx, tx, node.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !force && existing != nil && isHealthBlacklisted(existing, now) {
-		return existing, nil
+		return existing, nil, nil
 	}
 
 	started := time.Now()
-	probeErr := probeNode(ctx, node, cfg)
+	probeResult := probeNodeWithRoutePath(ctx, node, cfg)
 	latencyMs := time.Since(started).Milliseconds()
 	if latencyMs < 0 {
 		latencyMs = 0
 	}
 	errorMessage := ""
-	if probeErr != nil {
-		errorMessage = probeErr.Error()
+	if probeResult.err != nil {
+		errorMessage = probeResult.err.Error()
 	}
-	return recordNodeHealthResult(ctx, tx, node.ID, nodeHealthResultRecord{
+	health, err := recordNodeHealthResult(ctx, tx, node.ID, nodeHealthResultRecord{
 		Source:    source,
 		TargetID:  node.ID,
 		ProbeURL:  cfg.ProbeURL,
-		Available: probeErr == nil,
+		Available: probeResult.err == nil,
 		LatencyMs: latencyMs,
 		Error:     errorMessage,
 		CheckedAt: now,
 	})
+	if err != nil {
+		return nil, probeResult.routePath, err
+	}
+	return health, probeResult.routePath, nil
 }
 
 func probeNode(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig) error {
+	return probeNodeWithRoutePath(ctx, node, cfg).err
+}
+
+func probeNodeWithRoutePath(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig) nodeProbeResult {
 	if node == nil {
-		return ErrNodeNotFound
+		return nodeProbeResult{err: ErrNodeNotFound}
 	}
 	probeURL := cfg.ProbeURL
 	if probeURL == "" {
@@ -681,7 +732,7 @@ func probeNode(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.Proxy
 
 	proxyURL, instance, err := startHealthProbeProxy(probeCtx, node)
 	if err != nil {
-		return err
+		return nodeProbeResult{err: err}
 	}
 	defer func() {
 		if closeErr := instance.Close(); closeErr != nil {
@@ -690,7 +741,10 @@ func probeNode(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.Proxy
 	}()
 
 	probeErr, _ := executeHTTPProbe(probeCtx, probeURL, timeout, proxyURL)
-	return probeErr
+	return nodeProbeResult{
+		err:       probeErr,
+		routePath: testRoutePathForNodeState(ctx, nil, node, instance.Snapshot()),
+	}
 }
 
 func normalizeProbeURL(value string, fallback string) (string, error) {
@@ -779,6 +833,300 @@ func testResultFromHealth(targetType, targetID, targetName, probeURL string, che
 		result.NodeError = health.LastError
 	}
 	return result
+}
+
+func testRoutePathForMapping(ctx context.Context, mapping *tables.PortMappingTable, status RuntimeStatus) []ProxyRouteHopDTO {
+	if mapping == nil {
+		return nil
+	}
+	route, ok := runtimeRouteForTag(status, mapping.ID, mappingOutboundTag(mapping.ID))
+	if !ok {
+		return nil
+	}
+	hops := make([]ProxyRouteHopDTO, 0)
+	appendSelectedRouteHops(ctx, route, status.Routes, map[string]bool{}, &hops)
+	return hops
+}
+
+func runtimeRouteForTag(status RuntimeStatus, mappingID string, groupTag string) (RuntimeRoute, bool) {
+	for _, route := range status.Routes {
+		if route.MappingID == mappingID && route.GroupTag == groupTag {
+			return route, true
+		}
+	}
+	return RuntimeRoute{}, false
+}
+
+func appendSelectedRouteHops(ctx context.Context, route RuntimeRoute, routes []RuntimeRoute, visited map[string]bool, hops *[]ProxyRouteHopDTO) {
+	if visited[route.GroupTag] {
+		return
+	}
+	visited[route.GroupTag] = true
+	selected := selectedRuntimeRouteNode(route)
+	if selected == nil {
+		return
+	}
+	appendSelectedRuntimeNodeHops(ctx, route.MappingID, *selected, routes, visited, hops)
+}
+
+func appendSelectedRuntimeNodeHops(ctx context.Context, mappingID string, selected RuntimeRouteNode, routes []RuntimeRoute, visited map[string]bool, hops *[]ProxyRouteHopDTO) {
+	if selected.Kind == "node" {
+		if len(appendNodeRoutePath(ctx, nil, selected.NodeID, mappingID, routes, hops)) > 0 {
+			return
+		}
+	}
+	hop := routeHopFromRuntimeRouteNode(selected)
+	hydrateRouteHopName(ctx, nil, &hop)
+	*hops = append(*hops, hop)
+	if selected.Kind != "group" {
+		return
+	}
+	if childRoute, ok := runtimeRouteForTag(RuntimeStatus{Routes: routes}, mappingID, selected.NodeTag); ok {
+		appendSelectedRouteHops(ctx, childRoute, routes, visited, hops)
+	}
+}
+
+func appendNodeRoutePath(ctx context.Context, tx model.DBTx, nodeID string, mappingID string, routes []RuntimeRoute, hops *[]ProxyRouteHopDTO) []ProxyRouteHopDTO {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	nodes, err := findNodesByIDs(ctx, tx, []string{nodeID})
+	if err != nil || len(nodes) != 1 {
+		return nil
+	}
+	nodePath := testRoutePathForNodeWithRuntimeRoutes(ctx, tx, nodes[0], mappingID, routes)
+	if len(nodePath) == 0 {
+		return nil
+	}
+	*hops = append(*hops, nodePath...)
+	return nodePath
+}
+
+func selectedRuntimeRouteNode(route RuntimeRoute) *RuntimeRouteNode {
+	for index := range route.Nodes {
+		if route.Nodes[index].Selected {
+			return &route.Nodes[index]
+		}
+	}
+	if route.SelectedMemberID == "" && route.SelectedMemberTag == "" {
+		return fallbackRuntimeRouteNode(route)
+	}
+	for index := range route.Nodes {
+		node := &route.Nodes[index]
+		if node.NodeID == route.SelectedMemberID || node.NodeTag == route.SelectedMemberTag {
+			return node
+		}
+	}
+	return fallbackRuntimeRouteNode(route)
+}
+
+func fallbackRuntimeRouteNode(route RuntimeRoute) *RuntimeRouteNode {
+	var fallback *RuntimeRouteNode
+	for index := range route.Nodes {
+		node := &route.Nodes[index]
+		if fallback == nil {
+			fallback = node
+			continue
+		}
+		if node.LastCheckedAt.After(fallback.LastCheckedAt) {
+			fallback = node
+			continue
+		}
+		if fallback.LastCheckedAt.IsZero() && node.Error != "" {
+			fallback = node
+		}
+	}
+	return fallback
+}
+
+func routeHopFromRuntimeRouteNode(node RuntimeRouteNode) ProxyRouteHopDTO {
+	id := node.NodeID
+	if node.Kind == ChainMemberTypeGroup {
+		id = firstNonEmpty(runtimeRouteGroupID(node.NodeTag), id)
+	} else if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(node.NodeTag); ok {
+		id = firstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
+	}
+	return ProxyRouteHopDTO{
+		Kind: firstNonEmpty(node.Kind, "node"),
+		ID:   id,
+		Name: node.NodeName,
+		Tag:  node.NodeTag,
+	}
+}
+
+func testRoutePathForNode(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable) []ProxyRouteHopDTO {
+	return testRoutePathForNodeWithGroupSnapshots(ctx, tx, node, nil)
+}
+
+func testRoutePathForNodeWithRuntimeRoutes(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, mappingID string, routes []RuntimeRoute) []ProxyRouteHopDTO {
+	if len(routes) == 0 || strings.TrimSpace(mappingID) == "" {
+		return testRoutePathForNode(ctx, tx, node)
+	}
+	return testRoutePathForNodeWithGroupSnapshotsAndRuntimeRoutes(ctx, tx, node, nil, mappingID, routes)
+}
+
+func testRoutePathForNodeState(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, state singboxcore.CoreState) []ProxyRouteHopDTO {
+	groups := make(map[string]singboxcore.GroupSnapshot, len(state.Groups))
+	for _, group := range state.Groups {
+		if strings.TrimSpace(group.Tag) != "" {
+			groups[group.Tag] = group
+		}
+	}
+	return testRoutePathForNodeWithGroupSnapshotsAndRuntimeRoutes(ctx, tx, node, groups, "", nil)
+}
+
+func testRoutePathForNodeWithGroupSnapshots(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, groups map[string]singboxcore.GroupSnapshot) []ProxyRouteHopDTO {
+	return testRoutePathForNodeWithGroupSnapshotsAndRuntimeRoutes(ctx, tx, node, groups, "", nil)
+}
+
+func testRoutePathForNodeWithGroupSnapshotsAndRuntimeRoutes(ctx context.Context, tx model.DBTx, node *tables.ProxyNodeTable, groups map[string]singboxcore.GroupSnapshot, mappingID string, routes []RuntimeRoute) []ProxyRouteHopDTO {
+	if node == nil {
+		return nil
+	}
+	if normalizeProtocol(node.Protocol) != ProtocolChain {
+		return []ProxyRouteHopDTO{routeHopFromNode(node, nodeOutboundTag(node.ID))}
+	}
+	members := chainMembersForNode(node)
+	if len(members) == 0 {
+		return []ProxyRouteHopDTO{routeHopFromNode(node, nodeOutboundTag(node.ID))}
+	}
+	hops := make([]ProxyRouteHopDTO, 0, len(members))
+	for index, member := range members {
+		switch normalizeChainMemberType(member.Type) {
+		case ChainMemberTypeNode:
+			nodes, err := findNodesByIDs(ctx, tx, []string{member.ID})
+			if err != nil || len(nodes) != 1 {
+				hops = append(hops, ProxyRouteHopDTO{Kind: ChainMemberTypeNode, ID: member.ID, Tag: nodeChainMemberOutboundTag(node.ID, index, member.ID)})
+				continue
+			}
+			hops = append(hops, routeHopFromNode(nodes[0], nodeChainMemberOutboundTag(node.ID, index, member.ID)))
+		case ChainMemberTypeGroup:
+			foundGroups, err := findGroupsByIDs(ctx, tx, []string{member.ID})
+			if err != nil || len(foundGroups) != 1 {
+				hops = append(hops, ProxyRouteHopDTO{Kind: ChainMemberTypeGroup, ID: member.ID, Tag: nodeChainMemberGroupOutboundTag(node.ID, index, member.ID)})
+			} else {
+				hops = append(hops, routeHopFromGroup(foundGroups[0], nodeChainMemberGroupOutboundTag(node.ID, index, member.ID)))
+			}
+			groupTag := nodeChainMemberGroupOutboundTag(node.ID, index, member.ID)
+			if route, ok := runtimeRouteForTag(RuntimeStatus{Routes: routes}, mappingID, groupTag); ok {
+				appendSelectedRouteHops(ctx, route, routes, map[string]bool{}, &hops)
+				continue
+			}
+			appendSelectedGroupSnapshotRouteHops(ctx, tx, groupTag, groups, map[string]bool{}, &hops)
+		}
+	}
+	return hops
+}
+
+func appendSelectedGroupSnapshotRouteHops(ctx context.Context, tx model.DBTx, groupTag string, groups map[string]singboxcore.GroupSnapshot, visited map[string]bool, hops *[]ProxyRouteHopDTO) {
+	if len(groups) == 0 || hops == nil {
+		return
+	}
+	groupTag = strings.TrimSpace(groupTag)
+	if groupTag == "" || visited[groupTag] {
+		return
+	}
+	group, ok := groups[groupTag]
+	if !ok {
+		return
+	}
+	visited[groupTag] = true
+
+	selected := selectedGroupSnapshotNode(group)
+	if selected == nil {
+		return
+	}
+	routeNode := runtimeRouteNodeFromSnapshot(group, *selected, groups)
+	hop := routeHopFromRuntimeRouteNode(routeNode)
+	hydrateRouteHopName(ctx, tx, &hop)
+	*hops = append(*hops, hop)
+	if routeNode.Kind == ChainMemberTypeGroup {
+		appendSelectedGroupSnapshotRouteHops(ctx, tx, routeNode.NodeTag, groups, visited, hops)
+	}
+}
+
+func selectedGroupSnapshotNode(group singboxcore.GroupSnapshot) *singboxcore.NodeSnapshot {
+	for index := range group.Nodes {
+		if group.Nodes[index].ID == group.Selected {
+			return &group.Nodes[index]
+		}
+	}
+	var fallback *singboxcore.NodeSnapshot
+	for index := range group.Nodes {
+		node := &group.Nodes[index]
+		if fallback == nil {
+			fallback = node
+			continue
+		}
+		if node.LastCheckedAt.After(fallback.LastCheckedAt) {
+			fallback = node
+			continue
+		}
+		if fallback.LastCheckedAt.IsZero() && node.LastError != "" {
+			fallback = node
+		}
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return nil
+}
+
+func hydrateRouteHopName(ctx context.Context, tx model.DBTx, hop *ProxyRouteHopDTO) {
+	if hop == nil {
+		return
+	}
+	switch hop.Kind {
+	case ChainMemberTypeNode:
+		nodes, err := findNodesByIDs(ctx, tx, []string{hop.ID})
+		if err == nil && len(nodes) == 1 {
+			hop.Name = firstNonEmpty(hop.Name, nodes[0].Name)
+		}
+	case ChainMemberTypeGroup:
+		groupID := firstNonEmpty(runtimeRouteGroupID(hop.Tag), hop.ID)
+		if groupID != "" {
+			hop.ID = groupID
+		}
+		groups, err := findGroupsByIDs(ctx, tx, []string{hop.ID})
+		if err == nil && len(groups) == 1 {
+			hop.Name = firstNonEmpty(hop.Name, groups[0].Name)
+		}
+	case "builtin":
+		hop.Name = firstNonEmpty(hop.Name, hop.Tag, hop.ID)
+	}
+}
+
+func routeHopFromNode(node *tables.ProxyNodeTable, tag string) ProxyRouteHopDTO {
+	if node == nil {
+		return ProxyRouteHopDTO{Kind: ChainMemberTypeNode, Tag: tag}
+	}
+	return ProxyRouteHopDTO{Kind: ChainMemberTypeNode, ID: node.ID, Name: node.Name, Tag: tag}
+}
+
+func routeHopFromGroup(group *tables.ProxyGroupTable, tag string) ProxyRouteHopDTO {
+	if group == nil {
+		return ProxyRouteHopDTO{Kind: ChainMemberTypeGroup, Tag: tag}
+	}
+	return ProxyRouteHopDTO{Kind: ChainMemberTypeGroup, ID: group.ID, Name: group.Name, Tag: tag}
+}
+
+func groupNameMapForRouteHop(ctx context.Context, groupIDs []string) map[string]string {
+	groupIDs = uniqueNonEmpty(groupIDs)
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	groups, err := findGroupsByIDs(ctx, nil, groupIDs)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]string, len(groups))
+	for _, group := range groups {
+		if group != nil {
+			names[group.ID] = group.Name
+		}
+	}
+	return names
 }
 
 func runtimeNodeErrorFromProbe(nodeTag string, fallback string) string {
@@ -887,8 +1235,8 @@ func mappingProbeProxyURL(mapping *tables.PortMappingTable) (*url.URL, error) {
 	return proxyURL, nil
 }
 
-func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*url.URL, *box.Box, error) {
-	outboundTag, nodeOutbounds, err := buildHealthProbeNodeOutbounds(ctx, node)
+func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*url.URL, *singboxcore.Core, error) {
+	plan, err := buildHealthProbeNodePlan(ctx, node)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -902,6 +1250,7 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 	}
 
 	inboundTag := "health-in-" + node.ID
+	rules := []option.Rule{buildInboundRouteRule(inboundTag, plan.tag)}
 	options := option.Options{
 		Log: &option.LogOptions{
 			Level:        "error",
@@ -921,56 +1270,103 @@ func startHealthProbeProxy(ctx context.Context, node *tables.ProxyNodeTable) (*u
 				},
 			},
 		},
-		Outbounds: append([]option.Outbound{
-			{
-				Type:    constant.TypeDirect,
-				Tag:     constant.TypeDirect,
-				Options: &option.DirectOutboundOptions{},
-			},
-			{
-				Type:    constant.TypeBlock,
-				Tag:     constant.TypeBlock,
-				Options: &option.StubOptions{},
-			},
-		}, nodeOutbounds...),
+		Outbounds: append(singboxcore.BaseOutbounds(), sortedOutbounds(plan.outbounds)...),
 		Route: &option.RouteOptions{
-			Rules: []option.Rule{buildInboundRouteRule(inboundTag, outboundTag)},
+			Rules: rules,
 			Final: constant.TypeBlock,
 		},
 	}
-	instance, err := box.New(box.Options{
+	core, err := singboxcore.NewCore(singboxcore.Config{
 		Options: options,
-		Context: singboxcore.BoxContext(ctx),
+		Context: ctx,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := instance.Start(); err != nil {
-		_ = instance.Close()
+	probeInstance := &runtimeInstance{core: core}
+	if _, err := applyDynamicRuntimePlan(ctx, &dynamicRuntimePlan{groups: plan.groups}, probeInstance); err != nil {
+		_ = core.Close()
+		return nil, nil, err
+	}
+	if err := core.Start(); err != nil {
+		_ = core.Close()
 		return nil, nil, err
 	}
 	proxyURL, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", listenPort))
 	if err != nil {
-		_ = instance.Close()
+		_ = core.Close()
 		return nil, nil, err
 	}
-	return proxyURL, instance, nil
+	return proxyURL, core, nil
+}
+
+type healthProbeNodePlan struct {
+	tag       string
+	outbounds map[string]option.Outbound
+	groups    []dynamicGroupPlan
+}
+
+func buildHealthProbeNodePlan(ctx context.Context, node *tables.ProxyNodeTable) (*healthProbeNodePlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+	builder := &dynamicPlanBuilder{
+		ctx:                ctx,
+		tx:                 model.GetTx(nil).WithContext(ctx),
+		outbounds:          map[string]option.Outbound{},
+		outboundNodes:      map[string]*tables.ProxyNodeTable{},
+		groupPlans:         map[string]*dynamicGroupPlan{},
+		blacklistedNodeIDs: map[string]struct{}{},
+		excludedNodeIDs:    map[string]struct{}{},
+	}
+	member, err := builder.memberForNode(node)
+	if err != nil {
+		return nil, err
+	}
+	if member.tag == "" {
+		return nil, ErrNoAvailableNode
+	}
+	plan := &healthProbeNodePlan{
+		tag:       member.tag,
+		outbounds: builder.outbounds,
+		groups:    sortedGroupPlans(builder.groupPlans),
+	}
+	rotateHealthProbeRoundRobinGroups(plan.groups)
+	return plan, nil
+}
+
+func rotateHealthProbeRoundRobinGroups(groups []dynamicGroupPlan) {
+	if len(groups) == 0 {
+		return
+	}
+	healthProbeRoundRobinMu.Lock()
+	defer healthProbeRoundRobinMu.Unlock()
+	for index := range groups {
+		group := &groups[index]
+		if group.policy.Strategy != singboxcore.BalanceRoundRobin || len(group.members) <= 1 {
+			continue
+		}
+		offset := healthProbeRoundRobinOffsets[group.tag] % uint64(len(group.members))
+		healthProbeRoundRobinOffsets[group.tag]++
+		if offset == 0 {
+			continue
+		}
+		rotated := append([]dynamicMemberPlan{}, group.members[offset:]...)
+		rotated = append(rotated, group.members[:offset]...)
+		group.members = rotated
+		group.selected = selectedDynamicMemberID(group.members, group.selected)
+	}
 }
 
 func buildHealthProbeNodeOutbounds(ctx context.Context, node *tables.ProxyNodeTable) (string, []option.Outbound, error) {
-	outboundTags := map[string]struct{}{
-		constant.TypeDirect: {},
-		constant.TypeBlock:  {},
+	plan, err := buildHealthProbeNodePlan(ctx, node)
+	if err != nil {
+		return "", nil, err
 	}
-	return buildNodeRuntimeOutbounds(
-		ctx,
-		nil,
-		node,
-		outboundTags,
-		map[string]*tables.ProxyNodeTable{},
-		map[string]*tables.ProxyNodeTable{},
-		map[string]string{},
-	)
+	return plan.tag, sortedOutbounds(plan.outbounds), nil
 }
 
 func reserveHealthProbePort() (uint16, error) {

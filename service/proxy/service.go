@@ -639,19 +639,20 @@ func MappingCreate(ctx context.Context, tx model.DBTx, req MappingUpsertRequest)
 	}
 
 	mapping := &tables.PortMappingTable{
-		Enabled:          normalized.Enabled,
-		ListenAddress:    normalized.ListenAddress,
-		ListenPort:       normalized.ListenPort,
-		Order:            order,
-		OutboundProtocol: normalized.OutboundProtocol,
-		Username:         normalized.Username,
-		Password:         normalized.Password,
-		Strategy:         normalized.Strategy,
-		NodeIDsJSON:      encodeStringSlice(normalized.NodeIDs),
-		ActiveNodeID:     valueOrEmpty(normalized.ActiveNodeID),
-		GroupIDsJSON:     encodeStringSlice(normalized.GroupIDs),
-		ActiveGroupID:    valueOrEmpty(normalized.ActiveGroupID),
-		Remark:           normalized.Remark,
+		Enabled:                    normalized.Enabled,
+		ListenAddress:              normalized.ListenAddress,
+		ListenPort:                 normalized.ListenPort,
+		Order:                      order,
+		OutboundProtocol:           normalized.OutboundProtocol,
+		Username:                   normalized.Username,
+		Password:                   normalized.Password,
+		Strategy:                   normalized.Strategy,
+		NodeIDsJSON:                encodeStringSlice(normalized.NodeIDs),
+		ActiveNodeID:               valueOrEmpty(normalized.ActiveNodeID),
+		GroupIDsJSON:               encodeStringSlice(normalized.GroupIDs),
+		GroupStrategyOverridesJSON: encodeGroupStrategyOverrides(normalized.GroupStrategyOverrides),
+		ActiveGroupID:              valueOrEmpty(normalized.ActiveGroupID),
+		Remark:                     normalized.Remark,
 	}
 	if err := tx.Create(mapping).Error; err != nil {
 		if isUniqueConstraintError(err) {
@@ -679,19 +680,20 @@ func MappingUpdate(ctx context.Context, tx model.DBTx, id string, req MappingUps
 	}
 
 	if err := tx.Model(&mapping).Updates(map[string]any{
-		"enabled":           normalized.Enabled,
-		"listen_address":    normalized.ListenAddress,
-		"listen_port":       normalized.ListenPort,
-		"outbound_protocol": normalized.OutboundProtocol,
-		"username":          normalized.Username,
-		"password":          normalized.Password,
-		"strategy":          normalized.Strategy,
-		"node_ids_json":     encodeStringSlice(normalized.NodeIDs),
-		"active_node_id":    valueOrEmpty(normalized.ActiveNodeID),
-		"group_ids_json":    encodeStringSlice(normalized.GroupIDs),
-		"active_group_id":   valueOrEmpty(normalized.ActiveGroupID),
-		"remark":            normalized.Remark,
-		"updated_at":        time.Now(),
+		"enabled":                       normalized.Enabled,
+		"listen_address":                normalized.ListenAddress,
+		"listen_port":                   normalized.ListenPort,
+		"outbound_protocol":             normalized.OutboundProtocol,
+		"username":                      normalized.Username,
+		"password":                      normalized.Password,
+		"strategy":                      normalized.Strategy,
+		"node_ids_json":                 encodeStringSlice(normalized.NodeIDs),
+		"active_node_id":                valueOrEmpty(normalized.ActiveNodeID),
+		"group_ids_json":                encodeStringSlice(normalized.GroupIDs),
+		"group_strategy_overrides_json": encodeGroupStrategyOverrides(normalized.GroupStrategyOverrides),
+		"active_group_id":               valueOrEmpty(normalized.ActiveGroupID),
+		"remark":                        normalized.Remark,
+		"updated_at":                    time.Now(),
 	}).Error; err != nil {
 		if isUniqueConstraintError(err) {
 			return nil, ErrListenPortTaken
@@ -1337,6 +1339,16 @@ func ensureGroupNotReferencedByChains(ctx context.Context, tx model.DBTx, groupI
 
 func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID string, req MappingUpsertRequest) (*MappingUpsertRequest, error) {
 	normalized := req
+	inheritedGroupStrategyOverrides := false
+	if normalized.GroupStrategyOverrides == nil && mappingID != "" {
+		var existing tables.PortMappingTable
+		if err := tx.WithContext(ctx).First(&existing, "id = ?", mappingID).Error; err == nil {
+			normalized.GroupStrategyOverrides = decodeGroupStrategyOverrides(existing.GroupStrategyOverridesJSON)
+			inheritedGroupStrategyOverrides = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
 	normalized.ListenAddress = strings.TrimSpace(normalized.ListenAddress)
 	if normalized.ListenAddress == "" {
 		normalized.ListenAddress = "127.0.0.1"
@@ -1377,6 +1389,18 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	normalized.GroupIDs = make([]string, 0, len(groups))
 	for _, group := range groups {
 		normalized.GroupIDs = append(normalized.GroupIDs, group.ID)
+	}
+	if inheritedGroupStrategyOverrides {
+		normalized.GroupStrategyOverrides = normalizeGroupStrategyOverrides(normalized.GroupStrategyOverrides, normalized.GroupIDs)
+	} else {
+		groupStrategyOverrides, err := normalizeMappingGroupStrategyOverrides(
+			normalized.GroupStrategyOverrides,
+			normalized.GroupIDs,
+		)
+		if err != nil {
+			return nil, err
+		}
+		normalized.GroupStrategyOverrides = groupStrategyOverrides
 	}
 	activeGroup := ""
 	if normalized.ActiveGroupID != nil {
@@ -1520,6 +1544,45 @@ func normalizeGroupStrategy(strategy string) string {
 	default:
 		return GroupStrategySelector
 	}
+}
+
+func normalizeGroupStrategyOverride(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "", GroupStrategyOverrideInherit:
+		return GroupStrategyOverrideInherit
+	case GroupStrategyOverrideLoadBalance:
+		return GroupStrategyOverrideLoadBalance
+	case GroupStrategyOverrideLeastLatency:
+		return GroupStrategyOverrideLeastLatency
+	default:
+		return ""
+	}
+}
+
+func normalizeMappingGroupStrategyOverrides(values map[string]string, groupIDs []string) (map[string]string, error) {
+	result := map[string]string{}
+	if len(values) == 0 {
+		return result, nil
+	}
+	allowed := stringSet(groupIDs)
+	for groupID, strategy := range values {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			continue
+		}
+		if _, ok := allowed[groupID]; !ok {
+			return nil, ErrInvalidMapping
+		}
+		normalized := normalizeGroupStrategyOverride(strategy)
+		if normalized == "" {
+			return nil, ErrInvalidMapping
+		}
+		if normalized == GroupStrategyOverrideInherit {
+			continue
+		}
+		result[groupID] = normalized
+	}
+	return result, nil
 }
 
 func normalizeGroupType(value string) string {

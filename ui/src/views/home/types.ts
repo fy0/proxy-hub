@@ -3,6 +3,7 @@ import type {
   ImportPreviewItem,
   ImportPreviewResult,
   MappingSwitchTargetType,
+  GroupStrategyOverride,
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
@@ -113,6 +114,17 @@ export interface HomeViewContext {
     group: ProxyGroup
   ) => 'success' | 'failure' | 'probing' | 'unknown';
   groupRouteHealthTitle: (mapping: PortMapping, group: ProxyGroup) => string;
+  groupStrategyOverrideOptions: Readable<Array<{ label: string; value: GroupStrategyOverride }>>;
+  mappingGroupStrategyOverride: (
+    mapping: PortMapping,
+    group: ProxyGroup
+  ) => GroupStrategyOverride;
+  mappingGroupStrategyLabel: (mapping: PortMapping, group: ProxyGroup) => string;
+  setMappingGroupStrategyOverride: (
+    mapping: PortMapping,
+    group: ProxyGroup,
+    strategy: GroupStrategyOverride
+  ) => Promise<void>;
   openNewMappingDialog: () => void;
 
   nodeSearch: Ref<string>;

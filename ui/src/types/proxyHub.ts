@@ -24,6 +24,8 @@ export type ProxyGroupType = 'manual' | 'subscription';
 
 export type ProxyGroupStrategy = 'selector' | 'url-test' | 'load-balance' | 'least-latency';
 
+export type GroupStrategyOverride = 'inherit' | 'load-balance' | 'least-latency';
+
 export type ImportPreviewType = 'node' | 'group' | 'builtin' | 'failure';
 
 export type ImportPreviewAction = 'import' | 'update' | 'skip' | 'fail';
@@ -146,6 +148,7 @@ export interface PortMapping {
   nodeIds: string[];
   activeNodeId: string | null;
   groupIds: string[];
+  groupStrategyOverrides: Record<string, GroupStrategyOverride>;
   activeGroupId: string | null;
   remark: string;
   createdAt: string;
@@ -218,4 +221,17 @@ export interface ProxyTestResult {
   nodeName: string;
   nodeTag: string;
   nodeError: string;
+  routePath: ProxyRouteHop[];
+}
+
+export interface ProxyRouteHop {
+  kind: 'node' | 'group' | 'builtin' | string;
+  id: string;
+  name: string;
+  tag: string;
+}
+
+export interface ProxyRoutePathItem {
+  hop: ProxyRouteHop;
+  selected?: ProxyRouteHop;
 }

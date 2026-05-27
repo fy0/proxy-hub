@@ -363,7 +363,7 @@ func (g *DynamicGroup) DialContext(ctx context.Context, network string, destinat
 		}
 		node.SetLatency(time.Since(started))
 		node.markAlive()
-		if policy.Strategy == BalanceLeastLatency {
+		if policy.Strategy != BalanceManual {
 			g.setSelected(node.ID)
 		}
 		node.incActive()
@@ -397,7 +397,7 @@ func (g *DynamicGroup) ListenPacket(ctx context.Context, destination M.Socksaddr
 			continue
 		}
 		node.markAlive()
-		if policy.Strategy == BalanceLeastLatency {
+		if policy.Strategy != BalanceManual {
 			g.setSelected(node.ID)
 		}
 		node.incActive()
@@ -682,6 +682,26 @@ func (g *DynamicGroup) referencedTags() map[string]struct{} {
 		}
 	}
 	return result
+}
+
+func (g *DynamicGroup) outboundTags() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	tags := make([]string, 0, len(g.nodes))
+	for _, node := range g.nodes {
+		if node == nil {
+			continue
+		}
+		nodeTags := node.Tags
+		if len(nodeTags) == 0 {
+			nodeTags = []string{node.Tag}
+		}
+		tags = append(tags, nodeTags...)
+	}
+	return uniqueNonEmpty(tags)
 }
 
 func (g *DynamicGroup) ensureSelected() {

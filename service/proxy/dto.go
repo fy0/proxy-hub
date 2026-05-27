@@ -39,6 +39,10 @@ const (
 	GroupStrategyLoadBalance  = "load-balance"
 	GroupStrategyLeastLatency = "least-latency"
 
+	GroupStrategyOverrideInherit      = "inherit"
+	GroupStrategyOverrideLoadBalance  = "load-balance"
+	GroupStrategyOverrideLeastLatency = "least-latency"
+
 	ChainMemberTypeNode  = "node"
 	ChainMemberTypeGroup = "group"
 
@@ -130,22 +134,23 @@ type ProxyGroupDTO struct {
 }
 
 type PortMappingDTO struct {
-	ID               string    `json:"id"`
-	Enabled          bool      `json:"enabled"`
-	ListenAddress    string    `json:"listenAddress"`
-	ListenPort       uint16    `json:"listenPort"`
-	Order            int64     `json:"order"`
-	OutboundProtocol string    `json:"outboundProtocol"`
-	Username         string    `json:"username"`
-	Password         string    `json:"password"`
-	Strategy         string    `json:"strategy"`
-	NodeIDs          []string  `json:"nodeIds"`
-	ActiveNodeID     *string   `json:"activeNodeId"`
-	GroupIDs         []string  `json:"groupIds"`
-	ActiveGroupID    *string   `json:"activeGroupId"`
-	Remark           string    `json:"remark"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID                     string            `json:"id"`
+	Enabled                bool              `json:"enabled"`
+	ListenAddress          string            `json:"listenAddress"`
+	ListenPort             uint16            `json:"listenPort"`
+	Order                  int64             `json:"order"`
+	OutboundProtocol       string            `json:"outboundProtocol"`
+	Username               string            `json:"username"`
+	Password               string            `json:"password"`
+	Strategy               string            `json:"strategy"`
+	NodeIDs                []string          `json:"nodeIds"`
+	ActiveNodeID           *string           `json:"activeNodeId"`
+	GroupIDs               []string          `json:"groupIds"`
+	GroupStrategyOverrides map[string]string `json:"groupStrategyOverrides"`
+	ActiveGroupID          *string           `json:"activeGroupId"`
+	Remark                 string            `json:"remark"`
+	CreatedAt              time.Time         `json:"createdAt"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
 type StateSnapshotDTO struct {
@@ -284,6 +289,14 @@ type ProxyTestResultDTO struct {
 	NodeName   string              `json:"nodeName,omitempty"`
 	NodeTag    string              `json:"nodeTag,omitempty"`
 	NodeError  string              `json:"nodeError,omitempty"`
+	RoutePath  []ProxyRouteHopDTO  `json:"routePath,omitempty"`
+}
+
+type ProxyRouteHopDTO struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	Tag  string `json:"tag,omitempty"`
 }
 
 type SubscriptionUpsertRequest struct {
@@ -305,18 +318,19 @@ type GroupUpsertRequest struct {
 }
 
 type MappingUpsertRequest struct {
-	Enabled          bool     `json:"enabled"`
-	ListenAddress    string   `json:"listenAddress" validate:"required,max=64"`
-	ListenPort       uint16   `json:"listenPort" validate:"required,min=1,max=65535"`
-	OutboundProtocol string   `json:"outboundProtocol" validate:"required"`
-	Username         string   `json:"username,omitempty" validate:"omitempty,max=255"`
-	Password         string   `json:"password,omitempty" validate:"omitempty,max=500"`
-	Strategy         string   `json:"strategy" validate:"required"`
-	NodeIDs          []string `json:"nodeIds,omitempty"`
-	ActiveNodeID     *string  `json:"activeNodeId,omitempty"`
-	GroupIDs         []string `json:"groupIds,omitempty"`
-	ActiveGroupID    *string  `json:"activeGroupId,omitempty"`
-	Remark           string   `json:"remark,omitempty" validate:"omitempty,max=500"`
+	Enabled                bool              `json:"enabled"`
+	ListenAddress          string            `json:"listenAddress" validate:"required,max=64"`
+	ListenPort             uint16            `json:"listenPort" validate:"required,min=1,max=65535"`
+	OutboundProtocol       string            `json:"outboundProtocol" validate:"required"`
+	Username               string            `json:"username,omitempty" validate:"omitempty,max=255"`
+	Password               string            `json:"password,omitempty" validate:"omitempty,max=500"`
+	Strategy               string            `json:"strategy" validate:"required"`
+	NodeIDs                []string          `json:"nodeIds,omitempty"`
+	ActiveNodeID           *string           `json:"activeNodeId,omitempty"`
+	GroupIDs               []string          `json:"groupIds,omitempty"`
+	GroupStrategyOverrides map[string]string `json:"groupStrategyOverrides,omitempty"`
+	ActiveGroupID          *string           `json:"activeGroupId,omitempty"`
+	Remark                 string            `json:"remark,omitempty" validate:"omitempty,max=500"`
 }
 
 const (
@@ -488,22 +502,23 @@ func ToMappingDTO(mapping *tables.PortMappingTable) *PortMappingDTO {
 	activeNodeID := stringPtrOrNil(mapping.ActiveNodeID)
 	activeGroupID := stringPtrOrNil(mapping.ActiveGroupID)
 	return &PortMappingDTO{
-		ID:               mapping.ID,
-		Enabled:          mapping.Enabled,
-		ListenAddress:    mapping.ListenAddress,
-		ListenPort:       mapping.ListenPort,
-		Order:            mapping.Order,
-		OutboundProtocol: mapping.OutboundProtocol,
-		Username:         mapping.Username,
-		Password:         mapping.Password,
-		Strategy:         mapping.Strategy,
-		NodeIDs:          decodeStringSlice(mapping.NodeIDsJSON),
-		ActiveNodeID:     activeNodeID,
-		GroupIDs:         decodeStringSlice(mapping.GroupIDsJSON),
-		ActiveGroupID:    activeGroupID,
-		Remark:           mapping.Remark,
-		CreatedAt:        mapping.CreatedAt,
-		UpdatedAt:        mapping.UpdatedAt,
+		ID:                     mapping.ID,
+		Enabled:                mapping.Enabled,
+		ListenAddress:          mapping.ListenAddress,
+		ListenPort:             mapping.ListenPort,
+		Order:                  mapping.Order,
+		OutboundProtocol:       mapping.OutboundProtocol,
+		Username:               mapping.Username,
+		Password:               mapping.Password,
+		Strategy:               mapping.Strategy,
+		NodeIDs:                decodeStringSlice(mapping.NodeIDsJSON),
+		ActiveNodeID:           activeNodeID,
+		GroupIDs:               decodeStringSlice(mapping.GroupIDsJSON),
+		GroupStrategyOverrides: decodeGroupStrategyOverrides(mapping.GroupStrategyOverridesJSON),
+		ActiveGroupID:          activeGroupID,
+		Remark:                 mapping.Remark,
+		CreatedAt:              mapping.CreatedAt,
+		UpdatedAt:              mapping.UpdatedAt,
 	}
 }
 
@@ -602,6 +617,54 @@ func decodeStringSlice(raw string) []string {
 		return []string{}
 	}
 	return values
+}
+
+func encodeGroupStrategyOverrides(values map[string]string) string {
+	values = normalizeGroupStrategyOverrides(values, nil)
+	if len(values) == 0 {
+		return "{}"
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func decodeGroupStrategyOverrides(raw string) map[string]string {
+	if raw == "" {
+		return map[string]string{}
+	}
+	var values map[string]string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return map[string]string{}
+	}
+	return normalizeGroupStrategyOverrides(values, nil)
+}
+
+func normalizeGroupStrategyOverrides(values map[string]string, allowedGroupIDs []string) map[string]string {
+	result := map[string]string{}
+	if len(values) == 0 {
+		return result
+	}
+	allowed := stringSet(allowedGroupIDs)
+	for groupID, strategy := range values {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			continue
+		}
+		if allowedGroupIDs != nil {
+			if _, ok := allowed[groupID]; !ok {
+				continue
+			}
+		}
+		strategy = normalizeGroupStrategyOverride(strategy)
+		if strategy == "" || strategy == GroupStrategyOverrideInherit {
+			continue
+		}
+		result[groupID] = strategy
+	}
+	return result
 }
 
 func encodeChainMembers(members []ChainMemberDTO) string {

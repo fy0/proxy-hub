@@ -1090,6 +1090,7 @@ func mapError(err error) error {
 		errors.Is(err, proxyService.ErrUnsupportedProtocol),
 		errors.Is(err, proxyService.ErrUnsupportedURI),
 		errors.Is(err, proxyService.ErrNoAvailableNode),
+		errors.Is(err, proxyService.ErrInvalidMapping),
 		errors.Is(err, proxyService.ErrUTLSRequired),
 		errors.Is(err, proxyService.ErrInvalidSubscription),
 		errors.Is(err, proxyService.ErrInvalidGroup),

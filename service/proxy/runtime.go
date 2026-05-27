@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -205,6 +206,8 @@ var singBoxRuntime = &runtimeManager{
 		UpdatedAt: time.Now(),
 	},
 }
+
+var nodeChainGroupTerminalNodeTagPattern = regexp.MustCompile(`^node-chain-(.+)-(\d{2})-node-(\d{2})-final-.+$`)
 
 func RuntimeStatusGet() RuntimeStatus {
 	singBoxRuntime.mu.Lock()
@@ -413,15 +416,6 @@ func syncRuntimeMappingDynamic(ctx context.Context, mapping *tables.PortMappingT
 	return true, setRuntimeMappingInstance(mapping.ID, existing, nextInboundStatus, excludedNodes), nil
 }
 
-func BuildSingBoxOptions(ctx context.Context, tx model.DBTx) (option.Options, []RuntimeInbound, error) {
-	mappings, err := enabledRuntimeMappings(ctx, tx)
-	if err != nil {
-		return option.Options{}, nil, err
-	}
-	options, inbounds, _, err := buildSingBoxOptionsFromMappingsWithExcludedNodes(ctx, tx, mappings, nil)
-	return options, inbounds, err
-}
-
 func enabledRuntimeMappings(ctx context.Context, tx model.DBTx) ([]*tables.PortMappingTable, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -433,132 +427,6 @@ func enabledRuntimeMappings(ctx context.Context, tx model.DBTx) ([]*tables.PortM
 		return nil, err
 	}
 	return mappings, nil
-}
-
-func buildSingBoxOptionsFromMappingsWithExcludedNodes(
-	ctx context.Context,
-	tx model.DBTx,
-	mappings []*tables.PortMappingTable,
-	excludedNodeIDs map[string]struct{},
-) (option.Options, []RuntimeInbound, map[string]*tables.ProxyNodeTable, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	tx = model.GetTx(tx).WithContext(ctx)
-	outbounds := []option.Outbound{
-		{
-			Type:    constant.TypeDirect,
-			Tag:     constant.TypeDirect,
-			Options: &option.DirectOutboundOptions{},
-		},
-		{
-			Type:    constant.TypeBlock,
-			Tag:     constant.TypeBlock,
-			Options: &option.StubOptions{},
-		},
-	}
-	outboundTags := map[string]struct{}{
-		constant.TypeDirect: {},
-		constant.TypeBlock:  {},
-	}
-	blacklistedNodeIDs, err := nodeHealthBlacklistedIDs(ctx, tx)
-	if err != nil {
-		return option.Options{}, nil, nil, err
-	}
-	for nodeID := range excludedNodeIDs {
-		blacklistedNodeIDs[nodeID] = struct{}{}
-	}
-	nodeCache := map[string]*tables.ProxyNodeTable{}
-	outboundNodeCache := map[string]*tables.ProxyNodeTable{}
-	groupCache := map[string]*tables.ProxyGroupTable{}
-	nodeOutboundCache := map[string]string{}
-	inbounds := make([]option.Inbound, 0, len(mappings))
-	rules := make([]option.Rule, 0, len(mappings))
-	statusInbounds := make([]RuntimeInbound, 0, len(mappings))
-
-	for _, mapping := range mappings {
-		nodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(mapping.NodeIDsJSON))
-		if err != nil {
-			return option.Options{}, nil, nil, err
-		}
-
-		memberTags := make([]string, 0, len(nodes))
-		for _, node := range nodes {
-			if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
-				continue
-			}
-			tag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache)
-			if err != nil {
-				return option.Options{}, nil, outboundNodeCache, nodeBuildError{node: node, err: err}
-			}
-			memberTags = append(memberTags, tag)
-			outbounds = append(outbounds, nodeOutbounds...)
-		}
-
-		groups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(mapping.GroupIDsJSON))
-		if err != nil {
-			return option.Options{}, nil, nil, err
-		}
-		for _, proxyGroup := range groups {
-			groupTag, groupOutbounds, err := buildProxyGroupOutbounds(
-				ctx,
-				tx,
-				proxyGroup,
-				outboundTags,
-				nodeCache,
-				outboundNodeCache,
-				nodeOutboundCache,
-				groupCache,
-				blacklistedNodeIDs,
-				map[string]bool{},
-			)
-			if err != nil {
-				if buildErr, ok := asNodeBuildError(err); ok {
-					return option.Options{}, nil, outboundNodeCache, buildErr
-				}
-				return option.Options{}, nil, outboundNodeCache, err
-			}
-			memberTags = append(memberTags, groupTag)
-			outbounds = append(outbounds, groupOutbounds...)
-		}
-
-		routeTag, groupOutbound := buildMappingOutbound(mapping, memberTags)
-		if groupOutbound != nil {
-			if _, exists := outboundTags[routeTag]; !exists {
-				outbounds = append(outbounds, *groupOutbound)
-				outboundTags[routeTag] = struct{}{}
-			}
-		}
-
-		inbound, err := buildMappingInbound(mapping)
-		if err != nil {
-			return option.Options{}, nil, nil, err
-		}
-		inbounds = append(inbounds, inbound)
-		rules = append(rules, buildInboundRouteRule(inbound.Tag, routeTag))
-		statusInbounds = append(statusInbounds, RuntimeInbound{
-			MappingID: mapping.ID,
-			Tag:       inbound.Tag,
-			Listen:    mappingRuntimeListen(mapping),
-			Outbound:  routeTag,
-		})
-	}
-
-	options := option.Options{
-		Log: &option.LogOptions{
-			Level:        "warn",
-			Output:       singBoxLogOutputPath(),
-			Timestamp:    true,
-			DisableColor: true,
-		},
-		Inbounds:  inbounds,
-		Outbounds: outbounds,
-		Route: &option.RouteOptions{
-			Rules: rules,
-			Final: constant.TypeDirect,
-		},
-	}
-	return options, statusInbounds, outboundNodeCache, nil
 }
 
 func buildDynamicRuntimePlanForMapping(
@@ -595,14 +463,15 @@ func buildDynamicRuntimePlanForMapping(
 	}
 
 	builder := &dynamicPlanBuilder{
-		ctx:                ctx,
-		tx:                 tx,
-		outbounds:          map[string]option.Outbound{},
-		outboundNodes:      map[string]*tables.ProxyNodeTable{},
-		groupPlans:         map[string]*dynamicGroupPlan{},
-		blacklistedNodeIDs: blacklistedNodeIDs,
-		excludedNodeIDs:    excludedNodeIDs,
-		mappingID:          mapping.ID,
+		ctx:                    ctx,
+		tx:                     tx,
+		outbounds:              map[string]option.Outbound{},
+		outboundNodes:          map[string]*tables.ProxyNodeTable{},
+		groupPlans:             map[string]*dynamicGroupPlan{},
+		blacklistedNodeIDs:     blacklistedNodeIDs,
+		excludedNodeIDs:        excludedNodeIDs,
+		mappingID:              mapping.ID,
+		groupStrategyOverrides: decodeGroupStrategyOverrides(mapping.GroupStrategyOverridesJSON),
 	}
 
 	members := make([]dynamicMemberPlan, 0)
@@ -637,7 +506,7 @@ func buildDynamicRuntimePlanForMapping(
 		return nil, err
 	}
 	for _, proxyGroup := range groups {
-		member, err := builder.memberForGroup(proxyGroup, map[string]bool{})
+		member, err := builder.memberForMappingGroup(proxyGroup)
 		if err != nil {
 			return nil, err
 		}
@@ -772,6 +641,9 @@ func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, inst
 		return nil, errors.New("runtime instance was not created")
 	}
 	excludedNodes := make([]RuntimeExcludedNode, 0)
+	if err := removeStaleDynamicGroups(instance.core, plan.groups); err != nil {
+		return excludedNodes, err
+	}
 	for _, group := range plan.groups {
 		if _, err := instance.core.UpsertGroup(group.tag, group.policy); err != nil {
 			return excludedNodes, err
@@ -783,6 +655,31 @@ func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, inst
 	instance.inbound = plan.inbound
 	instance.inboundKey = plan.inboundKey
 	return excludedNodes, nil
+}
+
+func removeStaleDynamicGroups(core *singboxcore.Core, groups []dynamicGroupPlan) error {
+	if core == nil {
+		return nil
+	}
+	desired := map[string]struct{}{}
+	for _, group := range groups {
+		if strings.TrimSpace(group.tag) != "" {
+			desired[group.tag] = struct{}{}
+		}
+	}
+	var joined error
+	for _, snapshot := range core.Snapshot().Groups {
+		if _, ok := desired[snapshot.Tag]; ok {
+			continue
+		}
+		if err := core.RemoveGroup(snapshot.Tag); err != nil && !errors.Is(err, singboxcore.ErrGroupNotFound) {
+			joined = errors.Join(joined, err)
+		}
+	}
+	if joined != nil {
+		return joined
+	}
+	return core.GC()
 }
 
 func applyDynamicRuntimePlanForMapping(
@@ -908,14 +805,15 @@ func addBuiltinMember(core *singboxcore.Core, groupTag string, member dynamicMem
 }
 
 type dynamicPlanBuilder struct {
-	ctx                context.Context
-	tx                 model.DBTx
-	outbounds          map[string]option.Outbound
-	outboundNodes      map[string]*tables.ProxyNodeTable
-	groupPlans         map[string]*dynamicGroupPlan
-	blacklistedNodeIDs map[string]struct{}
-	excludedNodeIDs    map[string]struct{}
-	mappingID          string
+	ctx                    context.Context
+	tx                     model.DBTx
+	outbounds              map[string]option.Outbound
+	outboundNodes          map[string]*tables.ProxyNodeTable
+	groupPlans             map[string]*dynamicGroupPlan
+	blacklistedNodeIDs     map[string]struct{}
+	excludedNodeIDs        map[string]struct{}
+	mappingID              string
+	groupStrategyOverrides map[string]string
 }
 
 func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]dynamicMemberPlan, error) {
@@ -1153,6 +1051,22 @@ func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamic
 	return dynamicMemberPlan{id: node.ID, tag: tag, outbound: outbound, outbounds: outbounds}, nil
 }
 
+func (b *dynamicPlanBuilder) memberForMappingGroup(proxyGroup *tables.ProxyGroupTable) (dynamicMemberPlan, error) {
+	if proxyGroup == nil {
+		return dynamicMemberPlan{}, nil
+	}
+	override := normalizeGroupStrategyOverride(b.groupStrategyOverrides[proxyGroup.ID])
+	if override == "" || override == GroupStrategyOverrideInherit {
+		return b.memberForGroup(proxyGroup, map[string]bool{})
+	}
+	return b.memberForGroupWithPolicy(
+		proxyGroup,
+		mappingProxyGroupOutboundTag(b.mappingID, proxyGroup.ID),
+		policyForGroupStrategyOverride(proxyGroup, override),
+		map[string]bool{},
+	)
+}
+
 func (b *dynamicPlanBuilder) cacheDynamicChainGroups(node *tables.ProxyNodeTable) {
 	if node == nil || normalizeProtocol(node.Protocol) != ProtocolChain {
 		return
@@ -1239,8 +1153,15 @@ func staticSelectorDynamicMembers(
 				}
 			}
 			id := tag
+			terminalTag := false
+			if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(tag); ok {
+				terminalTag = true
+				id = firstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
+			}
 			if node := outboundNodes[tag]; node != nil && strings.TrimSpace(node.ID) != "" {
-				id = node.ID
+				if !terminalTag {
+					id = node.ID
+				}
 			}
 			members = append(members, dynamicMemberPlan{
 				id:       id,
@@ -1326,7 +1247,22 @@ func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, 
 	if proxyGroup == nil {
 		return dynamicMemberPlan{}, nil
 	}
-	tag := proxyGroupOutboundTag(proxyGroup.ID)
+	return b.memberForGroupWithPolicy(proxyGroup, proxyGroupOutboundTag(proxyGroup.ID), policyForGroup(proxyGroup), visiting)
+}
+
+func (b *dynamicPlanBuilder) memberForGroupWithPolicy(
+	proxyGroup *tables.ProxyGroupTable,
+	tag string,
+	policy singboxcore.Policy,
+	visiting map[string]bool,
+) (dynamicMemberPlan, error) {
+	if proxyGroup == nil {
+		return dynamicMemberPlan{}, nil
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		tag = proxyGroupOutboundTag(proxyGroup.ID)
+	}
 	if existing := b.groupPlans[tag]; existing != nil {
 		return dynamicMemberPlan{
 			id:  proxyGroup.ID,
@@ -1394,7 +1330,7 @@ func (b *dynamicPlanBuilder) memberForGroup(proxyGroup *tables.ProxyGroupTable, 
 	}
 	b.groupPlans[tag] = &dynamicGroupPlan{
 		tag:      tag,
-		policy:   policyForGroup(proxyGroup),
+		policy:   policy,
 		members:  members,
 		selected: members[0].id,
 	}
@@ -1464,6 +1400,17 @@ func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
 		TrafficFailureCallback:   recordRuntimeTrafficFailure,
 	}
+}
+
+func policyForGroupStrategyOverride(group *tables.ProxyGroupTable, override string) singboxcore.Policy {
+	policy := policyForGroup(group)
+	switch normalizeGroupStrategyOverride(override) {
+	case GroupStrategyOverrideLoadBalance:
+		policy.Strategy = singboxcore.BalanceRoundRobin
+	case GroupStrategyOverrideLeastLatency:
+		policy.Strategy = singboxcore.BalanceLeastLatency
+	}
+	return policy
 }
 
 func groupUsesLeastLatencyPolicy(group *tables.ProxyGroupTable) bool {
@@ -1632,126 +1579,6 @@ func buildMappingInbound(mapping *tables.PortMappingTable) (option.Inbound, erro
 	}
 }
 
-func buildMappingOutbound(mapping *tables.PortMappingTable, nodeTags []string) (string, *option.Outbound) {
-	if len(nodeTags) == 0 {
-		return constant.TypeBlock, nil
-	}
-	if len(nodeTags) == 1 {
-		return nodeTags[0], nil
-	}
-
-	activeTag := ""
-	if normalizeStrategy(mapping.Strategy) == StrategyManual {
-		if mapping.ActiveGroupID != "" {
-			activeTag = proxyGroupOutboundTag(mapping.ActiveGroupID)
-		}
-		if activeTag == "" && mapping.ActiveNodeID != "" {
-			activeTag = nodeOutboundTag(mapping.ActiveNodeID)
-		}
-	}
-	if activeTag == "" || !containsString(nodeTags, activeTag) {
-		activeTag = nodeTags[0]
-	}
-
-	groupTag := mappingOutboundTag(mapping.ID)
-	return groupTag, &option.Outbound{
-		Type: constant.TypeSelector,
-		Tag:  groupTag,
-		Options: &option.SelectorOutboundOptions{
-			Outbounds: nodeTags,
-			Default:   activeTag,
-		},
-	}
-}
-
-func buildProxyGroupOutbounds(
-	ctx context.Context,
-	tx model.DBTx,
-	proxyGroup *tables.ProxyGroupTable,
-	outboundTags map[string]struct{},
-	nodeCache map[string]*tables.ProxyNodeTable,
-	outboundNodeCache map[string]*tables.ProxyNodeTable,
-	nodeOutboundCache map[string]string,
-	groupCache map[string]*tables.ProxyGroupTable,
-	blacklistedNodeIDs map[string]struct{},
-	visiting map[string]bool,
-) (string, []option.Outbound, error) {
-	if proxyGroup == nil {
-		return constant.TypeBlock, nil, nil
-	}
-	tag := proxyGroupOutboundTag(proxyGroup.ID)
-	if _, exists := outboundTags[tag]; exists {
-		return tag, nil, nil
-	}
-	if visiting[proxyGroup.ID] {
-		return "", nil, fmt.Errorf("%w: cyclic group %s", ErrInvalidGroup, proxyGroup.Name)
-	}
-	visiting[proxyGroup.ID] = true
-	defer delete(visiting, proxyGroup.ID)
-
-	memberTags := make([]string, 0)
-	outbounds := make([]option.Outbound, 0)
-
-	for _, builtin := range decodeStringSlice(proxyGroup.BuiltinTagsJSON) {
-		switch builtin {
-		case constantDirect:
-			memberTags = append(memberTags, constant.TypeDirect)
-		case constantReject, constantRejectDrop:
-			memberTags = append(memberTags, constant.TypeBlock)
-		}
-	}
-
-	nodes, err := findNodesByGroupOrIDs(ctx, tx, proxyGroup.ID, decodeStringSlice(proxyGroup.NodeIDsJSON))
-	if err != nil {
-		return "", nil, err
-	}
-	for _, node := range nodes {
-		if _, blacklisted := blacklistedNodeIDs[node.ID]; blacklisted {
-			continue
-		}
-		nodeTag, nodeOutbounds, err := buildNodeRuntimeOutbounds(ctx, tx, node, outboundTags, nodeCache, outboundNodeCache, nodeOutboundCache)
-		if err != nil {
-			return "", nil, nodeBuildError{node: node, err: err}
-		}
-		memberTags = append(memberTags, nodeTag)
-		outbounds = append(outbounds, nodeOutbounds...)
-	}
-
-	childGroups, err := findGroupsByIDs(ctx, tx, decodeStringSlice(proxyGroup.GroupIDsJSON))
-	if err != nil {
-		return "", nil, err
-	}
-	for _, childGroup := range childGroups {
-		groupCache[childGroup.ID] = childGroup
-		childTag, childOutbounds, err := buildProxyGroupOutbounds(
-			ctx,
-			tx,
-			childGroup,
-			outboundTags,
-			nodeCache,
-			outboundNodeCache,
-			nodeOutboundCache,
-			groupCache,
-			blacklistedNodeIDs,
-			visiting,
-		)
-		if err != nil {
-			return "", nil, err
-		}
-		memberTags = append(memberTags, childTag)
-		outbounds = append(outbounds, childOutbounds...)
-	}
-
-	memberTags = uniqueNonEmpty(memberTags)
-	if len(memberTags) == 0 {
-		memberTags = []string{constant.TypeBlock}
-	}
-	groupOutbound := buildProxyGroupOutbound(proxyGroup, tag, memberTags)
-	outbounds = append(outbounds, groupOutbound)
-	outboundTags[tag] = struct{}{}
-	return tag, outbounds, nil
-}
-
 func buildNodeRuntimeOutbounds(
 	ctx context.Context,
 	tx model.DBTx,
@@ -1859,6 +1686,30 @@ func buildChainRuntimeOutbounds(
 	detourTag := ""
 	var last chainBuildResult
 	for index, member := range members {
+		if index == len(members)-2 &&
+			normalizeChainMemberType(member.Type) == ChainMemberTypeGroup &&
+			normalizeChainMemberType(members[index+1].Type) == ChainMemberTypeNode {
+			result, memberOutbounds, handled, err := buildTerminalChainGroupRuntimeOutbounds(
+				ctx,
+				tx,
+				chainID,
+				index,
+				member,
+				members[index+1],
+				detourTag,
+				outboundTags,
+				outboundNodeCache,
+			)
+			if err != nil {
+				return chainBuildResult{}, nil, err
+			}
+			if handled {
+				outbounds = append(outbounds, memberOutbounds...)
+				detourTag = result.tag
+				last = result
+				break
+			}
+		}
 		result, memberOutbounds, err := buildChainMemberRuntimeOutbounds(
 			ctx,
 			tx,
@@ -2058,6 +1909,98 @@ func buildChainGroupMemberRuntimeOutbounds(
 	return chainBuildResult{tag: groupTag}, outbounds, nil
 }
 
+func buildTerminalChainGroupRuntimeOutbounds(
+	ctx context.Context,
+	tx model.DBTx,
+	chainID string,
+	index int,
+	groupMember ChainMemberDTO,
+	finalMember ChainMemberDTO,
+	detourTag string,
+	outboundTags map[string]struct{},
+	outboundNodeCache map[string]*tables.ProxyNodeTable,
+) (chainBuildResult, []option.Outbound, bool, error) {
+	groups, err := findGroupsByIDs(ctx, tx, []string{groupMember.ID})
+	if err != nil {
+		return chainBuildResult{}, nil, false, err
+	}
+	if len(groups) != 1 {
+		return chainBuildResult{}, nil, false, ErrInvalidChain
+	}
+	group := groups[0]
+	if group == nil {
+		return chainBuildResult{}, nil, false, ErrInvalidChain
+	}
+	if len(decodeStringSlice(group.GroupIDsJSON)) > 0 || len(decodeStringSlice(group.BuiltinTagsJSON)) > 0 {
+		return chainBuildResult{}, nil, false, nil
+	}
+
+	finalNodes, err := findNodesByIDs(ctx, tx, []string{finalMember.ID})
+	if err != nil {
+		return chainBuildResult{}, nil, false, err
+	}
+	if len(finalNodes) != 1 || normalizeProtocol(finalNodes[0].Protocol) == ProtocolChain {
+		return chainBuildResult{}, nil, false, ErrInvalidChain
+	}
+	finalNode := finalNodes[0]
+
+	groupTag := nodeChainMemberGroupOutboundTag(chainID, index, group.ID)
+	if _, exists := outboundTags[groupTag]; exists {
+		return chainBuildResult{tag: groupTag}, nil, true, nil
+	}
+
+	nodes, err := findNodesByGroupOrIDs(ctx, tx, group.ID, decodeStringSlice(group.NodeIDsJSON))
+	if err != nil {
+		return chainBuildResult{}, nil, false, err
+	}
+	if len(nodes) == 0 {
+		return chainBuildResult{}, nil, false, nil
+	}
+
+	memberTags := make([]string, 0, len(nodes))
+	outbounds := make([]option.Outbound, 0, len(nodes)*2+1)
+	for memberIndex, childNode := range nodes {
+		if normalizeProtocol(childNode.Protocol) == ProtocolChain {
+			return chainBuildResult{}, nil, false, ErrInvalidChain
+		}
+		childTag := nodeChainGroupNodeOutboundTag(chainID, index, memberIndex, childNode.ID)
+		childResult, childOutbounds, err := buildChainNodeMemberRuntimeOutbound(
+			childNode,
+			childTag,
+			detourTag,
+			outboundTags,
+			outboundNodeCache,
+		)
+		if err != nil {
+			return chainBuildResult{}, nil, false, err
+		}
+		outbounds = append(outbounds, childOutbounds...)
+
+		finalTag := nodeChainGroupTerminalNodeOutboundTag(chainID, index, memberIndex, finalNode.ID)
+		finalResult, finalOutbounds, err := buildChainNodeMemberRuntimeOutbound(
+			finalNode,
+			finalTag,
+			childResult.tag,
+			outboundTags,
+			outboundNodeCache,
+		)
+		if err != nil {
+			return chainBuildResult{}, nil, false, err
+		}
+		outbounds = append(outbounds, finalOutbounds...)
+		memberTags = append(memberTags, finalResult.tag)
+	}
+
+	memberTags = uniqueNonEmpty(memberTags)
+	if len(memberTags) == 0 {
+		return chainBuildResult{}, nil, false, nil
+	}
+	groupOutbound := buildProxyGroupOutbound(group, groupTag, memberTags)
+	outbounds = append(outbounds, groupOutbound)
+	outboundTags[groupTag] = struct{}{}
+	return chainBuildResult{tag: groupTag}, outbounds, true, nil
+}
+
 func setOutboundDetour(outbound *option.Outbound, detour string) error {
 	if outbound == nil || strings.TrimSpace(detour) == "" {
 		return nil
@@ -2253,6 +2196,51 @@ func nodeChainGroupNodeOutboundTag(chainID string, groupIndex int, memberIndex i
 	return fmt.Sprintf("node-chain-%s-%02d-node-%02d-%s", strings.TrimSpace(chainID), groupIndex, memberIndex, strings.TrimSpace(nodeID))
 }
 
+func nodeChainGroupTerminalNodeOutboundTag(chainID string, groupIndex int, memberIndex int, nodeID string) string {
+	return fmt.Sprintf("node-chain-%s-%02d-node-%02d-final-%s", strings.TrimSpace(chainID), groupIndex, memberIndex, strings.TrimSpace(nodeID))
+}
+
+func parseNodeChainGroupTerminalNodeTag(tag string) (string, int, int, bool) {
+	match := nodeChainGroupTerminalNodeTagPattern.FindStringSubmatch(strings.TrimSpace(tag))
+	if match == nil {
+		return "", 0, 0, false
+	}
+	groupIndex, err := strconv.Atoi(match[2])
+	if err != nil {
+		return "", 0, 0, false
+	}
+	memberIndex, err := strconv.Atoi(match[3])
+	if err != nil {
+		return "", 0, 0, false
+	}
+	return match[1], groupIndex, memberIndex, true
+}
+
+func runtimeChainGroupMemberNodeID(chainID string, groupIndex int, memberIndex int) string {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return ""
+	}
+	ctx := context.Background()
+	nodes, err := findNodesByIDs(ctx, nil, []string{chainID})
+	if err != nil || len(nodes) != 1 {
+		return ""
+	}
+	members := chainMembersForNode(nodes[0])
+	if groupIndex < 0 || groupIndex >= len(members) || normalizeChainMemberType(members[groupIndex].Type) != ChainMemberTypeGroup {
+		return ""
+	}
+	groups, err := findGroupsByIDs(ctx, nil, []string{members[groupIndex].ID})
+	if err != nil || len(groups) != 1 {
+		return ""
+	}
+	groupNodes, err := findNodesByGroupOrIDs(ctx, nil, groups[0].ID, decodeStringSlice(groups[0].NodeIDsJSON))
+	if err != nil || memberIndex < 0 || memberIndex >= len(groupNodes) {
+		return ""
+	}
+	return groupNodes[memberIndex].ID
+}
+
 func mappingInboundTag(id string) string {
 	return "mapping-in-" + id
 }
@@ -2263,6 +2251,10 @@ func mappingOutboundTag(id string) string {
 
 func proxyGroupOutboundTag(id string) string {
 	return "group-" + id
+}
+
+func mappingProxyGroupOutboundTag(mappingID string, groupID string) string {
+	return fmt.Sprintf("mapping-group-%s-group-%s", strings.TrimSpace(mappingID), strings.TrimSpace(groupID))
 }
 
 func runtimeFailureFromMapping(mapping *tables.PortMappingTable, err error) RuntimeInboundFailure {
@@ -2838,6 +2830,21 @@ func runtimeRoutesLocked() []RuntimeRoute {
 	return routes
 }
 
+func runtimeRouteGroupID(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if strings.HasPrefix(tag, "mapping-group-") {
+		if index := strings.LastIndex(tag, "-group-"); index >= 0 {
+			return tag[index+len("-group-"):]
+		}
+	}
+	if strings.HasPrefix(tag, "node-chain-") {
+		if index := strings.LastIndex(tag, "-group-"); index >= 0 {
+			return tag[index+len("-group-"):]
+		}
+	}
+	return strings.TrimPrefix(tag, "group-")
+}
+
 func runtimeRouteFromSnapshot(mappingID string, group singboxcore.GroupSnapshot, groups map[string]singboxcore.GroupSnapshot) RuntimeRoute {
 	route := RuntimeRoute{
 		MappingID:      mappingID,
@@ -2890,7 +2897,7 @@ func runtimeRouteNodeKind(node singboxcore.NodeSnapshot, groups map[string]singb
 	if node.Tag == constant.TypeDirect || node.Tag == constant.TypeBlock || node.ID == constant.TypeDirect || node.ID == constant.TypeBlock {
 		return "builtin"
 	}
-	if _, ok := groups[node.Tag]; ok {
+	if _, ok := groups[node.Tag]; ok || strings.HasPrefix(node.Tag, "mapping-group-") {
 		return "group"
 	}
 	return "node"
@@ -2980,9 +2987,15 @@ func hydrateRuntimeRouteNames(ctx context.Context, routes []RuntimeRoute) []Runt
 			switch node.Kind {
 			case "node":
 				nodeIDs = append(nodeIDs, node.NodeID)
+				if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(node.NodeTag); ok {
+					nodeIDs = append(nodeIDs, runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex))
+				}
 			case "group":
 				groupIDs = append(groupIDs, node.NodeID)
 			}
+		}
+		if strings.HasPrefix(route.GroupTag, "mapping-group-") {
+			groupIDs = append(groupIDs, runtimeRouteGroupID(route.GroupTag))
 		}
 		if route.SelectedNodeID != "" {
 			switch route.SelectedNodeKind {
@@ -2996,6 +3009,15 @@ func hydrateRuntimeRouteNames(ctx context.Context, routes []RuntimeRoute) []Runt
 	nodeNames := runtimeNodeNames(ctx, uniqueNonEmpty(nodeIDs))
 	groupNames := runtimeGroupNames(ctx, uniqueNonEmpty(groupIDs))
 	for routeIndex := range routes {
+		if strings.HasPrefix(routes[routeIndex].GroupTag, "mapping-group-") {
+			groupID := runtimeRouteGroupID(routes[routeIndex].GroupTag)
+			if routes[routeIndex].SelectedNodeID == "" {
+				routes[routeIndex].SelectedNodeID = groupID
+				routes[routeIndex].SelectedNodeTag = routes[routeIndex].GroupTag
+				routes[routeIndex].SelectedNodeKind = "group"
+			}
+			routes[routeIndex].SelectedNodeName = firstNonEmpty(groupNames[groupID], groupID)
+		}
 		for nodeIndex := range routes[routeIndex].Nodes {
 			node := &routes[routeIndex].Nodes[nodeIndex]
 			node.NodeName = runtimeRouteDisplayName(*node, nodeNames, groupNames)
@@ -3047,9 +3069,13 @@ func runtimeGroupNames(ctx context.Context, ids []string) map[string]string {
 func runtimeRouteDisplayName(node RuntimeRouteNode, nodeNames map[string]string, groupNames map[string]string) string {
 	switch node.Kind {
 	case "node":
+		if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(node.NodeTag); ok {
+			memberNodeID := runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex)
+			return firstNonEmpty(nodeNames[memberNodeID], memberNodeID, nodeNames[node.NodeID], node.NodeID)
+		}
 		return firstNonEmpty(nodeNames[node.NodeID], node.NodeID)
 	case "group":
-		return firstNonEmpty(groupNames[node.NodeID], node.NodeID)
+		return firstNonEmpty(groupNames[node.NodeID], groupNames[runtimeRouteGroupID(node.NodeTag)], node.NodeID)
 	case "builtin":
 		return firstNonEmpty(node.NodeTag, node.NodeID)
 	default:

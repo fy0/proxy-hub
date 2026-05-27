@@ -398,25 +398,30 @@ func mappingDTOToTable(dto *PortMappingDTO, nodeIDs, groupIDs map[string]struct{
 			return nil, invalidSettingsBackup("mapping references missing group")
 		}
 	}
+	groupStrategyOverrides, err := normalizeMappingGroupStrategyOverrides(dto.GroupStrategyOverrides, normalizedGroupIDs)
+	if err != nil {
+		return nil, invalidSettingsBackup("mapping group strategy override is invalid")
+	}
 	activeGroupID := valueOrEmpty(dto.ActiveGroupID)
 	if activeGroupID != "" && !containsString(normalizedGroupIDs, activeGroupID) {
 		return nil, invalidSettingsBackup("mapping active group is not in group list")
 	}
 
 	row := &tables.PortMappingTable{
-		Enabled:          dto.Enabled,
-		ListenAddress:    strings.TrimSpace(dto.ListenAddress),
-		ListenPort:       dto.ListenPort,
-		Order:            dto.Order,
-		OutboundProtocol: normalizeOutboundProtocol(dto.OutboundProtocol),
-		Username:         strings.TrimSpace(dto.Username),
-		Password:         strings.TrimSpace(dto.Password),
-		Strategy:         normalizeStrategy(dto.Strategy),
-		NodeIDsJSON:      encodeStringSlice(normalizedNodeIDs),
-		ActiveNodeID:     activeNodeID,
-		GroupIDsJSON:     encodeStringSlice(normalizedGroupIDs),
-		ActiveGroupID:    activeGroupID,
-		Remark:           strings.TrimSpace(dto.Remark),
+		Enabled:                    dto.Enabled,
+		ListenAddress:              strings.TrimSpace(dto.ListenAddress),
+		ListenPort:                 dto.ListenPort,
+		Order:                      dto.Order,
+		OutboundProtocol:           normalizeOutboundProtocol(dto.OutboundProtocol),
+		Username:                   strings.TrimSpace(dto.Username),
+		Password:                   strings.TrimSpace(dto.Password),
+		Strategy:                   normalizeStrategy(dto.Strategy),
+		NodeIDsJSON:                encodeStringSlice(normalizedNodeIDs),
+		ActiveNodeID:               activeNodeID,
+		GroupIDsJSON:               encodeStringSlice(normalizedGroupIDs),
+		GroupStrategyOverridesJSON: encodeGroupStrategyOverrides(groupStrategyOverrides),
+		ActiveGroupID:              activeGroupID,
+		Remark:                     strings.TrimSpace(dto.Remark),
 	}
 	row.ID = strings.TrimSpace(dto.ID)
 	row.CreatedAt = dto.CreatedAt

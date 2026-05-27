@@ -50,6 +50,7 @@ import type {
   ChainMember,
   ImportPreviewResult,
   MappingSwitchTargetType,
+  GroupStrategyOverride,
   OutboundProtocol,
   PortMapping,
   ProxyGroup,
@@ -57,6 +58,7 @@ import type {
   ProxyNode,
   ProxyNodeHealth,
   ProxyNodeOption,
+  ProxyRoutePathItem,
   ProxyTestResult,
   ProxyProtocol,
   RouteStrategy,
@@ -150,6 +152,20 @@ const strategyOptions = computed<Array<{ label: string; value: RouteStrategy }>>
   { label: strategyLabels.value['load-balance'], value: 'load-balance' },
   { label: strategyLabels.value.manual, value: 'manual' },
   { label: strategyLabels.value['least-latency'], value: 'least-latency' },
+]);
+
+const groupStrategyOverrideLabels = computed<Record<GroupStrategyOverride, string>>(() => ({
+  inherit: t('home.groupStrategyOverride.inherit'),
+  'load-balance': t('home.groupStrategy.load-balance'),
+  'least-latency': t('home.groupStrategy.least-latency'),
+}));
+
+const groupStrategyOverrideOptions = computed<
+  Array<{ label: string; value: GroupStrategyOverride }>
+>(() => [
+  { label: groupStrategyOverrideLabels.value.inherit, value: 'inherit' },
+  { label: groupStrategyOverrideLabels.value['load-balance'], value: 'load-balance' },
+  { label: groupStrategyOverrideLabels.value['least-latency'], value: 'least-latency' },
 ]);
 
 const {
@@ -509,6 +525,23 @@ function mappingGroups(mapping: PortMapping): ProxyGroup[] {
     .filter((group): group is ProxyGroup => Boolean(group));
 }
 
+function mappingGroupStrategyOverride(
+  mapping: PortMapping,
+  group: ProxyGroup
+): GroupStrategyOverride {
+  return mapping.groupStrategyOverrides[group.id] ?? 'inherit';
+}
+
+function mappingGroupStrategyLabel(mapping: PortMapping, group: ProxyGroup): string {
+  const override = mappingGroupStrategyOverride(mapping, group);
+  if (override === 'inherit') {
+    return t(`home.groupStrategy.${group.strategy}`);
+  }
+  return t('home.groupStrategyOverride.overrideLabel', {
+    strategy: groupStrategyOverrideLabels.value[override],
+  });
+}
+
 function groupNodeIds(group: ProxyGroup, visited = new Set<string>()): string[] {
   if (visited.has(group.id)) return [];
   visited.add(group.id);
@@ -531,6 +564,10 @@ function proxyGroupRuntimeTag(groupId: string): string {
   return `group-${groupId}`;
 }
 
+function mappingProxyGroupRuntimeTag(mappingId: string, groupId: string): string {
+  return `mapping-group-${mappingId}-group-${groupId}`;
+}
+
 function mappingRuntimeRoute(mapping: PortMapping): RuntimeRoute | null {
   const rootTag = mappingRuntimeGroupTag(mapping);
   return (
@@ -541,7 +578,10 @@ function mappingRuntimeRoute(mapping: PortMapping): RuntimeRoute | null {
 }
 
 function proxyGroupRuntimeRoute(mapping: PortMapping, group: ProxyGroup): RuntimeRoute | null {
-  const groupTag = proxyGroupRuntimeTag(group.id);
+  const groupTag =
+    mappingGroupStrategyOverride(mapping, group) === 'inherit'
+      ? proxyGroupRuntimeTag(group.id)
+      : mappingProxyGroupRuntimeTag(mapping.id, group.id);
   return (
     runtimeRoutes.value.find(
       route => route.mappingId === mapping.id && route.groupTag === groupTag
@@ -1765,6 +1805,7 @@ async function saveMappingDialog(): Promise<void> {
         nodeIds: [],
         activeNodeId: null,
         groupIds: [],
+        groupStrategyOverrides: {},
         activeGroupId: null,
         enabled: true,
         remark: mappingForm.remark,
@@ -1967,7 +2008,9 @@ async function removeNodeFromMapping(mapping: PortMapping, nodeId: string): Prom
 
 async function removeGroupFromMapping(mapping: PortMapping, groupId: string): Promise<void> {
   const groupIds = mapping.groupIds.filter(id => id !== groupId);
-  const patch: Partial<PortMapping> = { groupIds };
+  const groupStrategyOverrides = { ...mapping.groupStrategyOverrides };
+  delete groupStrategyOverrides[groupId];
+  const patch: Partial<PortMapping> = { groupIds, groupStrategyOverrides };
   if (shouldUseManualActiveRoute(mapping)) {
     patch.activeGroupId =
       mapping.activeGroupId === groupId ? groupIds[0] || null : mapping.activeGroupId;
@@ -1975,6 +2018,25 @@ async function removeGroupFromMapping(mapping: PortMapping, groupId: string): Pr
 
   try {
     await updateMapping(mapping.id, patch);
+  } catch {
+    // The composable exposes the backend error in the notice bar.
+  }
+}
+
+async function setMappingGroupStrategyOverride(
+  mapping: PortMapping,
+  group: ProxyGroup,
+  strategy: GroupStrategyOverride
+): Promise<void> {
+  const groupStrategyOverrides = { ...mapping.groupStrategyOverrides };
+  if (strategy === 'inherit') {
+    delete groupStrategyOverrides[group.id];
+  } else {
+    groupStrategyOverrides[group.id] = strategy;
+  }
+
+  try {
+    await updateMapping(mapping.id, { groupStrategyOverrides });
   } catch {
     // The composable exposes the backend error in the notice bar.
   }
@@ -2601,6 +2663,67 @@ function testNodeError(result: ProxyTestResult | null): string {
   return result?.nodeError?.trim() || '';
 }
 
+function testRoutePath(result: ProxyTestResult | null) {
+  return result?.routePath?.filter(hop => hop.name || hop.id || hop.tag) ?? [];
+}
+
+function testRoutePathItems(result: ProxyTestResult | null): ProxyRoutePathItem[] {
+  const path = testRoutePath(result);
+  const items: ProxyRoutePathItem[] = [];
+  for (let index = 0; index < path.length; index += 1) {
+    const hop = path[index];
+    if (isSelectedGroupMemberHop(hop, items, path, index)) {
+      items[items.length - 1].selected = hop;
+      continue;
+    }
+    items.push({ hop });
+  }
+  return items;
+}
+
+function isSelectedGroupMemberHop(
+  hop: ProxyTestResult['routePath'][number],
+  items: ProxyRoutePathItem[],
+  path: ProxyTestResult['routePath'],
+  index: number
+): boolean {
+  if (!items.length || hop.kind !== 'node') return false;
+  const previous = items[items.length - 1];
+  if (previous.hop.kind !== 'group' || previous.selected) return false;
+  if (chainGroupNodeTagInfo(hop.tag)) return true;
+  const next = path[index + 1];
+  return Boolean(next && next.kind === 'node' && chainGroupTagInfo(previous.hop.tag));
+}
+
+function chainGroupTagInfo(tag: string): { chainId: string; index: string } | null {
+  const match = tag.match(/^node-chain-(.+)-(\d{2})-group-.+$/);
+  return match ? { chainId: match[1], index: match[2] } : null;
+}
+
+function chainGroupNodeTagInfo(tag: string): { chainId: string; index: string } | null {
+  const match = tag.match(/^node-chain-(.+)-(\d{2})-node-\d{2}-.+$/);
+  return match ? { chainId: match[1], index: match[2] } : null;
+}
+
+function testRouteHopLabel(hop: ProxyTestResult['routePath'][number]): string {
+  return hop.name || hop.id || hop.tag || '-';
+}
+
+function testRouteHopKindLabel(hop: ProxyTestResult['routePath'][number]): string {
+  switch (hop.kind) {
+    case 'group':
+      return t('home.routeKind.group');
+    case 'builtin':
+      return t('home.routeKind.builtin');
+    default:
+      return t('home.routeKind.node');
+  }
+}
+
+function testRouteSelectedLabel(hop: ProxyTestResult['routePath'][number]): string {
+  return t('home.test.selectedNode', { node: testRouteHopLabel(hop) });
+}
+
 function nodeHealthTitle(node: ProxyNode, mapping?: PortMapping): string {
   const runtimeNode = mapping ? runtimeRouteNodeFor(mapping, 'node', node.id) : null;
   if (runtimeNode) {
@@ -2717,6 +2840,10 @@ const homeContext = {
   groupRouteLatencyLabel,
   groupRouteHealthState,
   groupRouteHealthTitle,
+  groupStrategyOverrideOptions,
+  mappingGroupStrategyOverride,
+  mappingGroupStrategyLabel,
+  setMappingGroupStrategyOverride,
   openNewMappingDialog,
   nodeSearch,
   hideEmptyNodeGroups,
@@ -4152,6 +4279,27 @@ const homeContext = {
               <dd>{{ testDialog.result.nodeTag }}</dd>
             </div>
           </dl>
+
+          <div v-if="testRoutePathItems(testDialog.result).length" class="test-route-path">
+            <strong>{{ t('home.test.routePath') }}</strong>
+            <ol>
+              <li
+                v-for="(item, index) in testRoutePathItems(testDialog.result)"
+                :key="`${item.hop.tag}-${index}`"
+              >
+                <span>{{ index + 1 }}</span>
+                <div>
+                  <em>{{ testRouteHopKindLabel(item.hop) }}</em>
+                  <strong>{{ testRouteHopLabel(item.hop) }}</strong>
+                  <small v-if="item.hop.tag">{{ item.hop.tag }}</small>
+                  <div v-if="item.selected" class="test-route-selected">
+                    <em>{{ testRouteSelectedLabel(item.selected) }}</em>
+                    <small v-if="item.selected.tag">{{ item.selected.tag }}</small>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </div>
 
           <p v-if="testDialog.error || testDialog.result?.error" class="test-error">
             {{ testDialog.error || testDialog.result?.error }}

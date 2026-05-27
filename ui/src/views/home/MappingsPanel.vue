@@ -52,6 +52,10 @@ const {
   groupRouteLatencyLabel,
   groupRouteHealthState,
   groupRouteHealthTitle,
+  groupStrategyOverrideOptions,
+  mappingGroupStrategyOverride,
+  mappingGroupStrategyLabel,
+  setMappingGroupStrategyOverride,
   openNewMappingDialog,
 } = props.context;
 </script>
@@ -295,6 +299,21 @@ const {
                     <Edit3 class="size-4" aria-hidden="true" />
                     <span>{{ t('common.editGroup') }}</span>
                   </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    v-for="option in groupStrategyOverrideOptions"
+                    :key="option.value"
+                    class="route-actions-menu-item"
+                    @select="setMappingGroupStrategyOverride(mapping, group, option.value)"
+                  >
+                    <Check
+                      class="size-4"
+                      :style="{ opacity: mappingGroupStrategyOverride(mapping, group) === option.value ? 1 : 0 }"
+                      aria-hidden="true"
+                    />
+                    <span>{{ option.label }}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
                     class="route-actions-menu-item"
@@ -311,7 +330,7 @@ const {
             </div>
             <span class="route-card-meta">
               <span class="route-kind-badge group">{{ t('home.routeKind.group') }}</span>
-              <span class="route-detail">{{ t(`home.groupStrategy.${group.strategy}`) }}</span>
+              <span class="route-detail">{{ mappingGroupStrategyLabel(mapping, group) }}</span>
             </span>
             <span
               class="route-health group-route-health"

@@ -51,6 +51,7 @@ import type {
   ImportPreviewResult,
   ImportPreviewType,
   MappingSwitchTargetType,
+  GroupStrategyOverride,
   PortMapping,
   ProxyGroup,
   ProxyGroupStrategy,
@@ -60,6 +61,7 @@ import type {
   ProxyNodeHealth,
   ProxyNodeOption,
   ProxyProtocol,
+  ProxyRouteHop,
   ProxySubscription,
   ProxyTestResult,
   RuntimeRoute,
@@ -94,6 +96,7 @@ interface MappingInput {
   nodeIds: string[];
   activeNodeId: string | null;
   groupIds: string[];
+  groupStrategyOverrides: Record<string, GroupStrategyOverride>;
   activeGroupId: string | null;
   enabled: boolean;
   remark: string;
@@ -223,6 +226,28 @@ function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
 function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
   if (value === 'url-test' || value === 'load-balance' || value === 'least-latency') return value;
   return 'selector';
+}
+
+function normalizeGroupStrategyOverride(
+  value: string | null | undefined
+): GroupStrategyOverride {
+  if (value === 'load-balance' || value === 'least-latency') return value;
+  return 'inherit';
+}
+
+function normalizeGroupStrategyOverrides(
+  value: Record<string, string> | null | undefined,
+  groupIds?: string[]
+): Record<string, GroupStrategyOverride> {
+  const allowed = groupIds ? new Set(groupIds) : null;
+  const result: Record<string, GroupStrategyOverride> = {};
+  for (const [groupId, strategy] of Object.entries(value ?? {})) {
+    const id = groupId.trim();
+    if (!id || (allowed && !allowed.has(id))) continue;
+    const normalized = normalizeGroupStrategyOverride(strategy);
+    if (normalized !== 'inherit') result[id] = normalized;
+  }
+  return result;
 }
 
 function normalizePreviewType(value: string | null | undefined): ImportPreviewType {
@@ -552,7 +577,23 @@ function toProxyTestResult(dto: ProxyTestResultDto): ProxyTestResult {
     nodeName: dto.nodeName ?? '',
     nodeTag: dto.nodeTag ?? '',
     nodeError: dto.nodeError ?? '',
+    routePath: toProxyRoutePath(dto.routePath),
   };
+}
+
+function toProxyRoutePath(value: ProxyTestResultDto['routePath']): ProxyRouteHop[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(item => {
+      if (!item || typeof item !== 'object') return null;
+      return {
+        kind: typeof item.kind === 'string' ? item.kind : 'node',
+        id: typeof item.id === 'string' ? item.id : '',
+        name: typeof item.name === 'string' ? item.name : '',
+        tag: typeof item.tag === 'string' ? item.tag : '',
+      };
+    })
+    .filter((item): item is ProxyRouteHop => Boolean(item));
 }
 
 function toProxySubscription(dto: ProxySubscriptionDto): ProxySubscription {
@@ -591,6 +632,7 @@ function toProxyGroup(dto: ProxyGroupDto): ProxyGroup {
 }
 
 function toPortMapping(dto: PortMappingDto): PortMapping {
+  const groupIds = dto.groupIds ?? [];
   return {
     id: dto.id,
     enabled: dto.enabled,
@@ -603,7 +645,8 @@ function toPortMapping(dto: PortMappingDto): PortMapping {
     strategy: normalizeStrategy(dto.strategy),
     nodeIds: dto.nodeIds ?? [],
     activeNodeId: dto.activeNodeId,
-    groupIds: dto.groupIds ?? [],
+    groupIds,
+    groupStrategyOverrides: normalizeGroupStrategyOverrides(dto.groupStrategyOverrides, groupIds),
     activeGroupId: dto.activeGroupId,
     remark: dto.remark,
     createdAt: dto.createdAt,
@@ -793,6 +836,7 @@ function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
 function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
   const strategy = normalizeStrategy(input.strategy);
   const useManualActiveRoute = strategy === 'manual';
+  const groupIds = input.groupIds.map(groupId => groupId.trim()).filter(Boolean);
   return {
     enabled: input.enabled,
     listenAddress: input.listenAddress.trim() || '0.0.0.0',
@@ -803,7 +847,8 @@ function mappingToRequest(input: MappingInput): MappingUpsertRequestWritable {
     strategy,
     nodeIds: input.nodeIds,
     activeNodeId: useManualActiveRoute ? (input.activeNodeId ?? undefined) : undefined,
-    groupIds: input.groupIds,
+    groupIds,
+    groupStrategyOverrides: normalizeGroupStrategyOverrides(input.groupStrategyOverrides, groupIds),
     activeGroupId: useManualActiveRoute ? (input.activeGroupId ?? undefined) : undefined,
     remark: input.remark.trim(),
   };
@@ -854,6 +899,8 @@ function mergeMappingPatch(mapping: PortMapping, patch: Partial<MappingInput>): 
         : patch.activeNodeId
       : null,
     groupIds: patch.groupIds ?? mapping.groupIds,
+    groupStrategyOverrides:
+      patch.groupStrategyOverrides ?? mapping.groupStrategyOverrides,
     activeGroupId: useManualActiveRoute
       ? patch.activeGroupId === undefined
         ? mapping.activeGroupId
@@ -950,6 +997,8 @@ function removeGroupFromLocalState(id: string): void {
   );
   mappings.value = mappings.value.map(mapping => {
     const groupIds = mapping.groupIds.filter(groupId => groupId !== id);
+    const groupStrategyOverrides = { ...mapping.groupStrategyOverrides };
+    delete groupStrategyOverrides[id];
     const activeGroupId =
       mapping.strategy === 'manual'
         ? mapping.activeGroupId === id
@@ -960,6 +1009,7 @@ function removeGroupFromLocalState(id: string): void {
     return {
       ...mapping,
       groupIds,
+      groupStrategyOverrides: normalizeGroupStrategyOverrides(groupStrategyOverrides, groupIds),
       activeGroupId,
       updatedAt: new Date().toISOString(),
     };
