@@ -326,6 +326,7 @@ const chainNodeForm = reactive({
   remark: '',
 });
 const chainNodeError = ref('');
+const isCreatingChainNode = ref(false);
 const chainNodeGroupsExpanded = ref(false);
 
 const subscriptionForm = reactive({
@@ -2310,10 +2311,15 @@ async function handleImport(): Promise<void> {
 }
 
 async function handleChainNodeSubmit(): Promise<void> {
+  if (isCreatingChainNode.value) return;
+
   if (chainNodeForm.chainMembers.length < 2) {
     chainNodeError.value = t('home.messages.chainNodesRequired');
     return;
   }
+
+  isCreatingChainNode.value = true;
+  chainNodeError.value = '';
 
   try {
     const node = await addNode({
@@ -2337,6 +2343,8 @@ async function handleChainNodeSubmit(): Promise<void> {
   } catch (error) {
     chainNodeError.value =
       error instanceof Error ? error.message : t('home.messages.requestFailed');
+  } finally {
+    isCreatingChainNode.value = false;
   }
 }
 
@@ -3221,8 +3229,9 @@ const homeContext = {
           <Button type="button" variant="outline" @click="closeAddNodeDialog">{{
             t('common.cancel')
           }}</Button>
-          <Button type="submit">
-            <Check class="size-4" aria-hidden="true" />
+          <Button type="submit" :disabled="isCreatingChainNode">
+            <RefreshCw v-if="isCreatingChainNode" class="size-4 spin-icon" aria-hidden="true" />
+            <Check v-else class="size-4" aria-hidden="true" />
             {{ t('common.save') }}
           </Button>
         </div>
