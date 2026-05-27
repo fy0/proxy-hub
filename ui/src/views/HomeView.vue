@@ -3464,7 +3464,6 @@ const homeContext = {
             <select v-model="manualGroupForm.strategy">
               <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
               <option value="load-balance">{{ t('home.groupStrategy.load-balance') }}</option>
-              <option value="url-test">{{ t('home.groupStrategy.url-test') }}</option>
               <option value="least-latency">{{ t('home.groupStrategy.least-latency') }}</option>
             </select>
           </label>

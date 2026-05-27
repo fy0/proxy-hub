@@ -22,7 +22,7 @@ export type ChainMemberType = 'node' | 'group';
 
 export type ProxyGroupType = 'manual' | 'subscription';
 
-export type ProxyGroupStrategy = 'selector' | 'url-test' | 'load-balance' | 'least-latency';
+export type ProxyGroupStrategy = 'selector' | 'load-balance' | 'least-latency';
 
 export type GroupStrategyOverride = 'inherit' | 'load-balance' | 'least-latency';
 

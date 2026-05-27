@@ -805,14 +805,23 @@ proxy-groups:
 		t.Fatalf("GroupList() error = %v", err)
 	}
 	var allGroup *tables.ProxyGroupTable
+	var autoGroup *tables.ProxyGroupTable
 	for _, group := range groups {
 		if group.Name == "all" {
 			allGroup = group
-			break
+		}
+		if group.Name == "auto" {
+			autoGroup = group
 		}
 	}
 	if allGroup == nil {
 		t.Fatalf("all group not found in %+v", groups)
+	}
+	if autoGroup == nil {
+		t.Fatalf("auto group not found in %+v", groups)
+	}
+	if autoGroup.Strategy != GroupStrategyLeastLatency {
+		t.Fatalf("auto group strategy = %q, want %q", autoGroup.Strategy, GroupStrategyLeastLatency)
 	}
 	if len(decodeStringSlice(allGroup.NodeIDsJSON)) != 2 {
 		t.Fatalf("all group node IDs = %v, want 2", decodeStringSlice(allGroup.NodeIDsJSON))

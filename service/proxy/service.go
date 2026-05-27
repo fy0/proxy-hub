@@ -1786,12 +1786,10 @@ func normalizeStrategy(strategy string) string {
 
 func normalizeGroupStrategy(strategy string) string {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case GroupStrategyURLTest, StrategyFailover:
-		return GroupStrategyURLTest
+	case GroupStrategyURLTest, StrategyFailover, GroupStrategyLeastLatency:
+		return GroupStrategyLeastLatency
 	case GroupStrategyLoadBalance:
 		return GroupStrategyLoadBalance
-	case GroupStrategyLeastLatency:
-		return GroupStrategyLeastLatency
 	default:
 		return GroupStrategySelector
 	}

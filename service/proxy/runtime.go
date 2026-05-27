@@ -1417,18 +1417,14 @@ func groupUsesLeastLatencyPolicy(group *tables.ProxyGroupTable) bool {
 	if group == nil {
 		return false
 	}
-	strategy := normalizeGroupStrategy(group.Strategy)
-	return strategy == GroupStrategyLeastLatency ||
-		(group.Type == GroupTypeSubscription && strategy == GroupStrategyURLTest)
+	return normalizeGroupStrategy(group.Strategy) == GroupStrategyLeastLatency
 }
 
 func groupUsesRoundRobinPolicy(group *tables.ProxyGroupTable) bool {
 	if group == nil {
 		return false
 	}
-	strategy := normalizeGroupStrategy(group.Strategy)
-	return strategy == GroupStrategyLoadBalance ||
-		(group.Type == GroupTypeManual && strategy == GroupStrategyURLTest)
+	return normalizeGroupStrategy(group.Strategy) == GroupStrategyLoadBalance
 }
 
 func minPositive(value int, max int) int {

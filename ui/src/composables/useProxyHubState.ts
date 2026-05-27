@@ -224,7 +224,9 @@ function normalizeGroupType(value: string | null | undefined): ProxyGroupType {
 }
 
 function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStrategy {
-  if (value === 'url-test' || value === 'load-balance' || value === 'least-latency') return value;
+  const strategy = value?.toLowerCase();
+  if (strategy === 'url-test' || strategy === 'least-latency') return 'least-latency';
+  if (strategy === 'load-balance') return 'load-balance';
   return 'selector';
 }
 

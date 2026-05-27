@@ -986,7 +986,7 @@ func parseClashProxyGroup(group map[string]any, nodeNames map[string]struct{}, g
 func normalizeClashGroupStrategy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case GroupStrategyURLTest:
-		return GroupStrategyURLTest
+		return GroupStrategyLeastLatency
 	default:
 		return GroupStrategySelector
 	}

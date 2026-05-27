@@ -177,7 +177,6 @@ export const messages = {
       groupStrategy: {
         selector: '手动选择',
         'load-balance': '负载均衡',
-        'url-test': '自动测速',
         'least-latency': '最低延迟',
       },
       groupStrategyOverride: {
@@ -705,7 +704,6 @@ export const messages = {
       groupStrategy: {
         selector: 'Manual select',
         'load-balance': 'Load balance',
-        'url-test': 'URL test',
         'least-latency': 'Least latency',
       },
       groupStrategyOverride: {

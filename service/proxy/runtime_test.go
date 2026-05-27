@@ -180,6 +180,9 @@ func TestDynamicRuntimePlanDoesNotEmitURLTestOutbounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupCreate() error = %v", err)
 	}
+	if group.Strategy != GroupStrategyLeastLatency {
+		t.Fatalf("GroupCreate(url-test) strategy = %q, want %q", group.Strategy, GroupStrategyLeastLatency)
+	}
 	mapping, err := MappingCreate(ctx, nil, MappingUpsertRequest{
 		Enabled:          true,
 		ListenAddress:    "127.0.0.1",
@@ -249,25 +252,16 @@ func TestLeastLatencyMappingUsesLeastLatencyPolicy(t *testing.T) {
 	}
 }
 
-func TestSubscriptionURLTestGroupUsesLeastLatencyPolicy(t *testing.T) {
-	group := &tables.ProxyGroupTable{
-		Type:     GroupTypeSubscription,
-		Strategy: GroupStrategyURLTest,
-	}
-	policy := policyForGroup(group)
-	if policy.Strategy != singboxcore.BalanceLeastLatency {
-		t.Fatalf("subscription url-test policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceLeastLatency)
-	}
-}
-
-func TestManualURLTestGroupKeepsRoundRobinPolicy(t *testing.T) {
-	group := &tables.ProxyGroupTable{
-		Type:     GroupTypeManual,
-		Strategy: GroupStrategyURLTest,
-	}
-	policy := policyForGroup(group)
-	if policy.Strategy != singboxcore.BalanceRoundRobin {
-		t.Fatalf("manual url-test policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRoundRobin)
+func TestURLTestGroupAliasUsesLeastLatencyPolicy(t *testing.T) {
+	for _, groupType := range []string{GroupTypeSubscription, GroupTypeManual} {
+		group := &tables.ProxyGroupTable{
+			Type:     groupType,
+			Strategy: GroupStrategyURLTest,
+		}
+		policy := policyForGroup(group)
+		if policy.Strategy != singboxcore.BalanceLeastLatency {
+			t.Fatalf("%s url-test policy strategy = %q, want %q", groupType, policy.Strategy, singboxcore.BalanceLeastLatency)
+		}
 	}
 }
 
