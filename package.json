@@ -1,6 +1,6 @@
 {
   "name": "pxhub",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Simple proxy format conversion tool with local SOCKS5/HTTP endpoints.",
   "bin": {
     "pxhub": "npm-bin/proxy-hub.js",
@@ -12,11 +12,11 @@
     "npm:pack:dry-run": "npm pack --dry-run"
   },
   "optionalDependencies": {
-    "@proxy-hub/linux-x64": "1.0.2",
-    "@proxy-hub/linux-arm64": "1.0.2",
-    "@proxy-hub/darwin-x64": "1.0.2",
-    "@proxy-hub/darwin-arm64": "1.0.2",
-    "@proxy-hub/win32-x64": "1.0.2"
+    "@proxy-hub/linux-x64": "1.0.3",
+    "@proxy-hub/linux-arm64": "1.0.3",
+    "@proxy-hub/darwin-x64": "1.0.3",
+    "@proxy-hub/darwin-arm64": "1.0.3",
+    "@proxy-hub/win32-x64": "1.0.3"
   },
   "keywords": [
     "proxy",
