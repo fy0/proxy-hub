@@ -8,7 +8,6 @@
   },
   "scripts": {
     "npm:build": "python build-npm-multipackage.py",
-    "npm:publish:all": "python publish-all-packages.py",
     "npm:pack:dry-run": "npm pack --dry-run"
   },
   "optionalDependencies": {

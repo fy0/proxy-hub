@@ -29,6 +29,10 @@ def is_github_actions() -> bool:
     return os.getenv("GITHUB_ACTIONS") == "true"
 
 
+def has_github_actions_oidc() -> bool:
+    return bool(os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") and os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL"))
+
+
 def read_package_name(package_json: Path) -> tuple[str, str]:
     with package_json.open("r", encoding="utf-8") as f:
         pkg = json.load(f)
@@ -58,14 +62,17 @@ def main() -> int:
 
     main_package_name, _ = read_package_name(main_package_json)
 
-    print("\n[auth] npm whoami")
-    auth_result = run_command(["npm", "whoami"], cwd=root_dir)
-    if auth_result != 0:
-        if is_github_actions() and os.getenv("NODE_AUTH_TOKEN"):
-            print("[auth] npm whoami failed, but NODE_AUTH_TOKEN is set in GitHub Actions")
-        else:
-            print("[error] npm authentication failed")
-            return auth_result
+    if is_github_actions() and has_github_actions_oidc():
+        print("\n[auth] using GitHub Actions OIDC trusted publishing; skipping npm whoami")
+    else:
+        print("\n[auth] npm whoami")
+        auth_result = run_command(["npm", "whoami"], cwd=root_dir)
+        if auth_result != 0:
+            if is_github_actions() and os.getenv("NODE_AUTH_TOKEN"):
+                print("[auth] npm whoami failed, but NODE_AUTH_TOKEN is set in GitHub Actions")
+            else:
+                print("[error] npm authentication failed")
+                return auth_result
 
     publish_cmd = ["npm", "publish", "--access", "public", "--tag", args.tag]
 

@@ -1,0 +1,76 @@
+name: npm publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Extract npm release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "npm publish workflow must run from a v* tag, got ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION_MAIN="${TAG_NAME#v}"
+          BUILD_DATE="$(date +%Y%m%d)"
+
+          echo "TAG_NAME=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_MAIN=${VERSION_MAIN}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_BUILD_METADATA=+${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend dependencies
+        working-directory: ./ui
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Generate OpenAPI client
+        run: |
+          go run -tags with_utls . --gen-openapi=./ui/openapi.json
+          pnpm --dir ui run generate-client
+
+      - name: Build npm packages
+        run: |
+          python3 build-npm-multipackage.py \
+            --version "${{ steps.version.outputs.VERSION_MAIN }}" \
+            --version-main "${{ steps.version.outputs.VERSION_MAIN }}" \
+            --version-build-metadata "${{ steps.version.outputs.VERSION_BUILD_METADATA }}" \
+            --app-channel stable
+
+      - name: Publish npm packages
+        run: python3 publish-all-packages.py --tag latest

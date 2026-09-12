@@ -254,7 +254,6 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
         },
         "scripts": {
             "npm:build": "python build-npm-multipackage.py",
-            "npm:publish:all": "python publish-all-packages.py",
             "npm:pack:dry-run": "npm pack --dry-run",
         },
         "optionalDependencies": optional_deps,
@@ -343,7 +342,7 @@ def main() -> int:
     create_main_package(root_dir, args.version, args.package_name)
 
     print("\nBuild complete.")
-    print("Publish with: python publish-all-packages.py")
+    print("Publish with GitHub Actions: push a v* tag or run the npm publish workflow on a tag.")
     return 0
 
 
