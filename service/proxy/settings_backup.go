@@ -75,7 +75,7 @@ func SettingsExport(ctx context.Context, tx model.DBTx) (*SettingsBackupDTO, err
 		SchemaVersion: SettingsBackupSchemaVersion,
 		ExportedAt:    time.Now().UTC(),
 		Data: SettingsBackupDataDTO{
-			Nodes:         ToNodeDTOsWithGroups(nodes, groups),
+			Nodes:         ToNodeDTOs(nodes, NodeDTOOptions{Groups: groups}),
 			Groups:        ToGroupDTOs(groups),
 			Subscriptions: ToSubscriptionDTOs(subscriptions),
 			Mappings:      ToMappingDTOs(mappings),

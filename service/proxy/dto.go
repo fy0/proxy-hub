@@ -346,12 +346,30 @@ type MappingSwitchRequest struct {
 	TargetID   string `json:"targetId" validate:"required"`
 }
 
-func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {
+// NodeDTOOptions 控制节点 DTO 的可选填充内容：健康状态与组归属。
+type NodeDTOOptions struct {
+	// Health 是单节点 DTO 使用的健康快照，优先于 HealthByNodeID。
+	Health *tables.ProxyNodeHealthTable
+	// HealthByNodeID 供批量转换时按节点 ID 取健康快照。
+	HealthByNodeID map[string]*tables.ProxyNodeHealthTable
+	// Groups 提供后按组成员关系计算完整 GroupIDs；为 nil 时仅回退到遗留 GroupID。
+	Groups []*tables.ProxyGroupTable
+}
+
+func ToNodeDTO(node *tables.ProxyNodeTable, opts ...NodeDTOOptions) *ProxyNodeDTO {
 	if node == nil {
 		return nil
 	}
+	var opt NodeDTOOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	chainMembers := chainMembersForNode(node)
-	return &ProxyNodeDTO{
+	groupIDs := stringSliceOrEmpty(node.GroupID)
+	if opt.Groups != nil {
+		groupIDs = groupIDsForNodeFromGroups(node.ID, node.GroupID, opt.Groups)
+	}
+	dto := &ProxyNodeDTO{
 		ID:             node.ID,
 		Name:           node.Name,
 		Protocol:       node.Protocol,
@@ -366,35 +384,16 @@ func ToNodeDTO(node *tables.ProxyNodeTable) *ProxyNodeDTO {
 		ChainMembers:   chainMembers,
 		SubscriptionID: node.SubscriptionID,
 		GroupID:        node.GroupID,
-		GroupIDs:       stringSliceOrEmpty(node.GroupID),
+		GroupIDs:       groupIDs,
 		SourceKey:      node.SourceKey,
 		CreatedAt:      node.CreatedAt,
 		UpdatedAt:      node.UpdatedAt,
 	}
-}
-
-func ToNodeDTOWithGroups(node *tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) *ProxyNodeDTO {
-	dto := ToNodeDTO(node)
-	if dto == nil {
-		return nil
-	}
-	dto.GroupIDs = groupIDsForNodeFromGroups(node.ID, node.GroupID, groups)
-	return dto
-}
-
-func ToNodeDTOWithHealth(node *tables.ProxyNodeTable, health *tables.ProxyNodeHealthTable) *ProxyNodeDTO {
-	dto := ToNodeDTO(node)
-	if dto == nil {
-		return nil
-	}
-	dto.Health = ToNodeHealthDTO(health)
-	return dto
-}
-
-func ToNodeDTOWithHealthAndGroups(node *tables.ProxyNodeTable, health *tables.ProxyNodeHealthTable, groups []*tables.ProxyGroupTable) *ProxyNodeDTO {
-	dto := ToNodeDTOWithGroups(node, groups)
-	if dto == nil {
-		return nil
+	var health *tables.ProxyNodeHealthTable
+	if opt.Health != nil {
+		health = opt.Health
+	} else if opt.HealthByNodeID != nil && node != nil {
+		health = opt.HealthByNodeID[node.ID]
 	}
 	dto.Health = ToNodeHealthDTO(health)
 	return dto
@@ -525,42 +524,14 @@ func ToMappingDTO(mapping *tables.PortMappingTable) *PortMappingDTO {
 	}
 }
 
-func ToNodeDTOs(nodes []*tables.ProxyNodeTable) []*ProxyNodeDTO {
-	items := make([]*ProxyNodeDTO, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, ToNodeDTO(node))
+func ToNodeDTOs(nodes []*tables.ProxyNodeTable, opts ...NodeDTOOptions) []*ProxyNodeDTO {
+	var opt NodeDTOOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
-	return items
-}
-
-func ToNodeDTOsWithGroups(nodes []*tables.ProxyNodeTable, groups []*tables.ProxyGroupTable) []*ProxyNodeDTO {
 	items := make([]*ProxyNodeDTO, 0, len(nodes))
 	for _, node := range nodes {
-		items = append(items, ToNodeDTOWithGroups(node, groups))
-	}
-	return items
-}
-
-func ToNodeDTOsWithHealth(nodes []*tables.ProxyNodeTable, healthByNodeID map[string]*tables.ProxyNodeHealthTable) []*ProxyNodeDTO {
-	items := make([]*ProxyNodeDTO, 0, len(nodes))
-	for _, node := range nodes {
-		var health *tables.ProxyNodeHealthTable
-		if healthByNodeID != nil && node != nil {
-			health = healthByNodeID[node.ID]
-		}
-		items = append(items, ToNodeDTOWithHealth(node, health))
-	}
-	return items
-}
-
-func ToNodeDTOsWithHealthAndGroups(nodes []*tables.ProxyNodeTable, healthByNodeID map[string]*tables.ProxyNodeHealthTable, groups []*tables.ProxyGroupTable) []*ProxyNodeDTO {
-	items := make([]*ProxyNodeDTO, 0, len(nodes))
-	for _, node := range nodes {
-		var health *tables.ProxyNodeHealthTable
-		if healthByNodeID != nil && node != nil {
-			health = healthByNodeID[node.ID]
-		}
-		items = append(items, ToNodeDTOWithHealthAndGroups(node, health, groups))
+		items = append(items, ToNodeDTO(node, opt))
 	}
 	return items
 }

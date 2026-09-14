@@ -298,7 +298,7 @@ func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*Nod
 		return nil, err
 	}
 	for _, node := range importedNodes {
-		result.Items = append(result.Items, ToNodeDTOWithGroups(node, groups))
+		result.Items = append(result.Items, ToNodeDTO(node, NodeDTOOptions{Groups: groups}))
 	}
 	result.Imported = len(result.Items)
 	result.Failed = len(result.Failures)
@@ -461,7 +461,7 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 		return result, err
 	}
 	for i, node := range importedNodes {
-		result.Items[i] = ToNodeDTOWithGroups(node, groups)
+		result.Items[i] = ToNodeDTO(node, NodeDTOOptions{Groups: groups})
 	}
 
 	result.Failed = len(result.Failures)
@@ -865,7 +865,7 @@ func StateSnapshot(ctx context.Context, tx model.DBTx, options ...StateSnapshotO
 			return nil, err
 		}
 		healthByNodeID := NodeHealthMap(ctx, tx, nodeIDsFromNodes(nodes))
-		nodeDTOs = ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
+		nodeDTOs = ToNodeDTOs(nodes, NodeDTOOptions{HealthByNodeID: healthByNodeID, Groups: groups})
 	}
 
 	runtimeStatus := RuntimeStatusGet()

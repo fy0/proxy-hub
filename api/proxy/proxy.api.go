@@ -451,7 +451,7 @@ func nodeListHandler(ctx context.Context, input *nodeListInput) (*nodeListOutput
 		return nil, mapError(err)
 	}
 	output := &nodeListOutput{}
-	output.Body.Items = proxyService.ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
+	output.Body.Items = proxyService.ToNodeDTOs(nodes, proxyService.NodeDTOOptions{HealthByNodeID: healthByNodeID, Groups: groups})
 	output.Body.Total = total
 	output.Body.Page = page
 	output.Body.Size = size
@@ -1126,7 +1126,7 @@ func nodeDTOWithGroups(ctx context.Context, node *tables.ProxyNodeTable) (*proxy
 	if err != nil {
 		return nil, err
 	}
-	return proxyService.ToNodeDTOWithGroups(node, groups), nil
+	return proxyService.ToNodeDTO(node, proxyService.NodeDTOOptions{Groups: groups}), nil
 }
 
 func humanaError(code int, message string) error {
