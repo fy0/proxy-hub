@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"proxy-hub/model"
@@ -227,13 +228,37 @@ func SubscriptionPreview(ctx context.Context, tx model.DBTx, req SubscriptionUps
 	return PreviewImportRaw(ctx, tx, raw)
 }
 
+var subscriptionSyncMu sync.Mutex
+
 func SubscriptionSync(ctx context.Context, tx model.DBTx, id string, req SubscriptionSyncRequest) (*NodeImportResult, error) {
+	subscriptionSyncMu.Lock()
+	defer subscriptionSyncMu.Unlock()
+
 	if tx != nil {
 		return subscriptionSyncInTx(ctx, tx, id, req)
 	}
+
+	// fetchSubscription 有 30s 超时，放在写事务外，避免长时间锁住 SQLite 其他写入。
+	raw := strings.TrimSpace(req.Raw)
+	if raw == "" {
+		var subscription tables.ProxySubscriptionTable
+		if err := model.GetTx(tx).WithContext(ctx).First(&subscription, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrSubscriptionNotFound
+			}
+			return nil, err
+		}
+		fetched, err := fetchSubscription(ctx, subscription.URL)
+		if err != nil {
+			_ = markSubscriptionSyncFailure(ctx, nil, id, err)
+			return nil, err
+		}
+		raw = fetched
+	}
+
 	var result *NodeImportResult
 	err := model.Transaction(ctx, func(inner model.DBTx) error {
-		synced, err := subscriptionSyncInTx(ctx, inner, id, req)
+		synced, err := subscriptionSyncInTx(ctx, inner, id, SubscriptionSyncRequest{Raw: raw})
 		if err != nil {
 			return err
 		}
