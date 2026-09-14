@@ -102,6 +102,49 @@ func TestUpdateConfigWritesConfigFile(t *testing.T) {
 	}
 }
 
+func TestReadConfigToleratesLegacyKeys(t *testing.T) {
+	tempDir := t.TempDir()
+	chdirForTest(t, tempDir)
+
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	resetConfigForTest(t, filepath.Join(binDir, "proxy-hub"), filepath.Join(tempDir, "home"))
+
+	legacy := "serveAt: :5050\n" +
+		"webUrl: /ui\n" +
+		"attachmentSizeLimit: 1024\n" +
+		"domain: 127.0.0.1:3020\n" +
+		"registerOpen: false\n" +
+		"imageCompress: false\n" +
+		"attachmentConfig:\n" +
+		"  useS3: true\n" +
+		"  endpoint: http://example.com\n" +
+		"  bucket: legacy\n" +
+		"  accessKey: \"\"\n" +
+		"  secretKey: \"\"\n" +
+		"  token: \"\"\n"
+	if err := os.MkdirAll(filepath.Join(tempDir, "data"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(data) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "data", "config.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("WriteFile(legacy config) error = %v", err)
+	}
+
+	cfg := ReadConfig()
+
+	if cfg.ServeAt != ":5050" {
+		t.Fatalf("ServeAt = %q, want legacy value", cfg.ServeAt)
+	}
+	if cfg.StaticMountPath != "/ui" {
+		t.Fatalf("StaticMountPath = %q, want legacy webUrl value", cfg.StaticMountPath)
+	}
+	if cfg.RequestBodyLimitKB != 1024 {
+		t.Fatalf("RequestBodyLimitKB = %d, want legacy attachmentSizeLimit value", cfg.RequestBodyLimitKB)
+	}
+}
+
 func resetConfigForTest(t *testing.T, executablePath, homeDir string) {
 	t.Helper()
 

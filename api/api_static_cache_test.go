@@ -41,8 +41,8 @@ func newMountedStaticTestApp(t *testing.T, webURL string) *fiber.App {
 	t.Helper()
 
 	cfg := &utils.AppConfig{
-		WebUrl:      webURL,
-		UIOverwrite: filepath.Join("testdata", "static-cache"),
+		StaticMountPath: webURL,
+		UIOverwrite:     filepath.Join("testdata", "static-cache"),
 	}
 
 	app := fiber.New()

@@ -306,9 +306,9 @@ func TestRequestBodyLimitBytesDefaultsTo64MB(t *testing.T) {
 	}{
 		{name: "nil config", cfg: nil, want: defaultBodyLimitBytes},
 		{name: "zero limit", cfg: &utils.AppConfig{}, want: defaultBodyLimitBytes},
-		{name: "below default", cfg: &utils.AppConfig{AttachmentSizeLimit: 8192}, want: defaultBodyLimitBytes},
-		{name: "at default", cfg: &utils.AppConfig{AttachmentSizeLimit: 65536}, want: defaultBodyLimitBytes},
-		{name: "above default", cfg: &utils.AppConfig{AttachmentSizeLimit: 131072}, want: 128 * 1024 * 1024},
+		{name: "below default", cfg: &utils.AppConfig{RequestBodyLimitKB: 8192}, want: defaultBodyLimitBytes},
+		{name: "at default", cfg: &utils.AppConfig{RequestBodyLimitKB: 65536}, want: defaultBodyLimitBytes},
+		{name: "above default", cfg: &utils.AppConfig{RequestBodyLimitKB: 131072}, want: 128 * 1024 * 1024},
 	}
 
 	for _, tt := range tests {

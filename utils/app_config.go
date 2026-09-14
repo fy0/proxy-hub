@@ -14,15 +14,6 @@ import (
 	"github.com/samber/lo"
 )
 
-type AttachmentConfig struct {
-	UseS3     bool   `json:"useS3" yaml:"useS3" koanf:"useS3"`
-	Endpoint  string `json:"endpoint" yaml:"endpoint" koanf:"endpoint"`
-	Bucket    string `json:"bucket" yaml:"bucket" koanf:"bucket"`
-	AccessKey string `json:"accessKey" yaml:"accessKey" koanf:"accessKey"`
-	SecretKey string `json:"secretKey" yaml:"secretKey" koanf:"secretKey"`
-	Token     string `json:"token" yaml:"token" koanf:"token"`
-}
-
 type ProxyHealthConfig struct {
 	Enabled           bool          `json:"enabled" yaml:"enabled" koanf:"enabled"`
 	ProbeURL          string        `json:"probeUrl" yaml:"probeUrl" koanf:"probeUrl"`
@@ -46,26 +37,24 @@ func DefaultProxyHealthConfig() ProxyHealthConfig {
 }
 
 type AppConfig struct {
-	ServeAt             string            `json:"serveAt" yaml:"serveAt" koanf:"serveAt"`
-	Domain              string            `json:"domain" yaml:"domain" koanf:"domain"`
-	RegisterOpen        bool              `json:"registerOpen" yaml:"registerOpen" koanf:"registerOpen"`
-	WebUrl              string            `json:"webUrl" yaml:"webUrl" koanf:"webUrl"`
-	AttachmentSizeLimit int64             `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit" koanf:"attachmentSizeLimit"`
-	ImageCompress       bool              `json:"imageCompress" yaml:"imageCompress" koanf:"imageCompress"`
-	LogFile             string            `json:"logFile" yaml:"logFile" koanf:"logFile"`
-	LogLevel            string            `json:"logLevel" yaml:"logLevel" koanf:"logLevel"`
-	DBLogLevel          int               `json:"dbLogLevel" yaml:"dbLogLevel" koanf:"dbLogLevel"`
-	CorsAllowOrigins    string            `json:"corsAllowOrigins" yaml:"corsAllowOrigins" koanf:"corsAllowOrigins"`
-	UIOverwrite         string            `json:"uiOverwrite" yaml:"uiOverwrite" koanf:"uiOverwrite"`
-	AutoMigrate         bool              `json:"autoMigrate" yaml:"autoMigrate" koanf:"autoMigrate"`
-	OpenAPIEnabled      bool              `json:"openapiEnabled" yaml:"openapiEnabled" koanf:"openapiEnabled"`
-	DocsPath            string            `json:"docsPath" yaml:"docsPath" koanf:"docsPath"`
-	APITitle            string            `json:"apiTitle" yaml:"apiTitle" koanf:"apiTitle"`
-	APIVersion          string            `json:"apiVersion" yaml:"apiVersion" koanf:"apiVersion"`
-	AttachmentConfig    AttachmentConfig  `json:"attachmentConfig" yaml:"attachmentConfig" koanf:"attachmentConfig"`
-	ProxyHealth         ProxyHealthConfig `json:"proxyHealth" yaml:"proxyHealth" koanf:"proxyHealth"`
-	DSN                 string            `json:"dbUrl" yaml:"dbUrl" koanf:"dbUrl"`
-	PrintConfig         bool              `json:"printConfig" yaml:"printConfig" koanf:"printConfig"`
+	ServeAt string `json:"serveAt" yaml:"serveAt" koanf:"serveAt"`
+	// StaticMountPath 是静态资源的挂载路径，历史配置键名为 webUrl（旧字段名 WebUrl）。
+	StaticMountPath string `json:"webUrl" yaml:"webUrl" koanf:"webUrl"`
+	// RequestBodyLimitKB 是 HTTP 请求体上限（KB），历史配置键名为 attachmentSizeLimit（旧字段名 AttachmentSizeLimit）。
+	RequestBodyLimitKB int64             `json:"attachmentSizeLimit" yaml:"attachmentSizeLimit" koanf:"attachmentSizeLimit"`
+	LogFile            string            `json:"logFile" yaml:"logFile" koanf:"logFile"`
+	LogLevel           string            `json:"logLevel" yaml:"logLevel" koanf:"logLevel"`
+	DBLogLevel         int               `json:"dbLogLevel" yaml:"dbLogLevel" koanf:"dbLogLevel"`
+	CorsAllowOrigins   string            `json:"corsAllowOrigins" yaml:"corsAllowOrigins" koanf:"corsAllowOrigins"`
+	UIOverwrite        string            `json:"uiOverwrite" yaml:"uiOverwrite" koanf:"uiOverwrite"`
+	AutoMigrate        bool              `json:"autoMigrate" yaml:"autoMigrate" koanf:"autoMigrate"`
+	OpenAPIEnabled     bool              `json:"openapiEnabled" yaml:"openapiEnabled" koanf:"openapiEnabled"`
+	DocsPath           string            `json:"docsPath" yaml:"docsPath" koanf:"docsPath"`
+	APITitle           string            `json:"apiTitle" yaml:"apiTitle" koanf:"apiTitle"`
+	APIVersion         string            `json:"apiVersion" yaml:"apiVersion" koanf:"apiVersion"`
+	ProxyHealth        ProxyHealthConfig `json:"proxyHealth" yaml:"proxyHealth" koanf:"proxyHealth"`
+	DSN                string            `json:"dbUrl" yaml:"dbUrl" koanf:"dbUrl"`
+	PrintConfig        bool              `json:"printConfig" yaml:"printConfig" koanf:"printConfig"`
 }
 
 var configStore = koanf.New(".")
@@ -78,26 +67,20 @@ func ReadConfig() *AppConfig {
 	configPath = filepath.Join(dataDir, "config.yaml")
 
 	defaults := AppConfig{
-		ServeAt:             ":3020",
-		Domain:              "127.0.0.1:3020",
-		RegisterOpen:        true,
-		WebUrl:              "/",
-		AttachmentSizeLimit: 65536,
-		ImageCompress:       true,
-		LogFile:             filepath.Join(dataDir, "service.log"),
-		LogLevel:            "info",
-		CorsAllowOrigins:    "*",
-		AutoMigrate:         true,
-		OpenAPIEnabled:      true,
-		DocsPath:            "/docs",
-		APITitle:            "Proxy Hub API",
-		APIVersion:          "1.0.0",
-		AttachmentConfig: AttachmentConfig{
-			UseS3: false,
-		},
-		ProxyHealth: DefaultProxyHealthConfig(),
-		DSN:         filepath.Join(dataDir, "data.db"),
-		PrintConfig: true,
+		ServeAt:            ":3020",
+		StaticMountPath:    "/",
+		RequestBodyLimitKB: 65536,
+		LogFile:            filepath.Join(dataDir, "service.log"),
+		LogLevel:           "info",
+		CorsAllowOrigins:   "*",
+		AutoMigrate:        true,
+		OpenAPIEnabled:     true,
+		DocsPath:           "/docs",
+		APITitle:           "Proxy Hub API",
+		APIVersion:         "1.0.0",
+		ProxyHealth:        DefaultProxyHealthConfig(),
+		DSN:                filepath.Join(dataDir, "data.db"),
+		PrintConfig:        true,
 	}
 
 	configStore = koanf.New(".")

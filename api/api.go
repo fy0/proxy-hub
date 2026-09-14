@@ -183,7 +183,7 @@ func mountStatic(app *fiber.App, cfg *utils.AppConfig, assets embed.FS, logger *
 		fs = http.FS(assets)
 	}
 
-	mountPath := cfg.WebUrl
+	mountPath := cfg.StaticMountPath
 	mountPath = normalizeStaticMountPath(mountPath)
 
 	app.Use(mountPath, func(c *fiber.Ctx) error {
@@ -267,10 +267,10 @@ func setNoCacheHeaders(c *fiber.Ctx) {
 }
 
 func requestBodyLimitBytes(cfg *utils.AppConfig) int {
-	if cfg == nil || cfg.AttachmentSizeLimit <= 0 {
+	if cfg == nil || cfg.RequestBodyLimitKB <= 0 {
 		return defaultBodyLimitBytes
 	}
-	bodyLimit := int(cfg.AttachmentSizeLimit * 1024)
+	bodyLimit := int(cfg.RequestBodyLimitKB * 1024)
 	if bodyLimit < defaultBodyLimitBytes {
 		return defaultBodyLimitBytes
 	}
