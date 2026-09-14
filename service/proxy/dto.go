@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -703,7 +704,7 @@ func chainMembersForNode(node *tables.ProxyNodeTable) []ChainMemberDTO {
 }
 
 func chainMembersFromNodeIDs(nodeIDs []string) []ChainMemberDTO {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	members := make([]ChainMemberDTO, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		members = append(members, ChainMemberDTO{Type: ChainMemberTypeNode, ID: nodeID})
@@ -773,12 +774,12 @@ func stringSliceOrEmpty(value string) []string {
 func groupIDsForNodeFromGroups(nodeID string, legacyGroupID string, groups []*tables.ProxyGroupTable) []string {
 	values := stringSliceOrEmpty(legacyGroupID)
 	for _, group := range groups {
-		if group == nil || !containsString(decodeStringSlice(group.NodeIDsJSON), nodeID) {
+		if group == nil || !slices.Contains(decodeStringSlice(group.NodeIDsJSON), nodeID) {
 			continue
 		}
 		values = append(values, group.ID)
 	}
-	return uniqueNonEmpty(values)
+	return proxyuri.UniqueNonEmpty(values)
 }
 
 func stringPtrOrNil(value string) *string {

@@ -3,11 +3,13 @@ package proxy
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 
 	"gorm.io/gorm"
 )
@@ -165,7 +167,7 @@ func normalizeGroupRequest(ctx context.Context, tx model.DBTx, req GroupUpsertRe
 	for _, node := range nodes {
 		nodeIDs = append(nodeIDs, node.ID)
 	}
-	if len(nodeIDs) != len(uniqueNonEmpty(normalized.NodeIDs)) {
+	if len(nodeIDs) != len(proxyuri.UniqueNonEmpty(normalized.NodeIDs)) {
 		return nil, errMissingReferences(ErrNodeNotFound, normalized.NodeIDs, nodeIDs)
 	}
 	normalized.NodeIDs = nodeIDs
@@ -173,7 +175,7 @@ func normalizeGroupRequest(ctx context.Context, tx model.DBTx, req GroupUpsertRe
 }
 
 func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []string) error {
-	groupIDs = uniqueNonEmpty(groupIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(groupIDs) == 0 {
 		return nil
 	}
@@ -185,12 +187,12 @@ func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []strin
 	for _, mapping := range mappings {
 		nextGroupIDs := decodeStringSlice(mapping.GroupIDsJSON)
 		for _, groupID := range groupIDs {
-			nextGroupIDs = removeString(nextGroupIDs, groupID)
+			nextGroupIDs = slices.DeleteFunc(nextGroupIDs, func(v string) bool { return v == groupID })
 		}
 		active := mapping.ActiveGroupID
 		if normalizeStrategy(mapping.Strategy) != StrategyManual {
 			active = ""
-		} else if containsString(groupIDs, active) {
+		} else if slices.Contains(groupIDs, active) {
 			active = ""
 			if len(nextGroupIDs) > 0 {
 				active = nextGroupIDs[0]
@@ -213,7 +215,7 @@ func cleanupGroupReferences(ctx context.Context, tx model.DBTx, groupIDs []strin
 	for _, group := range groups {
 		nextGroupIDs := decodeStringSlice(group.GroupIDsJSON)
 		for _, groupID := range groupIDs {
-			nextGroupIDs = removeString(nextGroupIDs, groupID)
+			nextGroupIDs = slices.DeleteFunc(nextGroupIDs, func(v string) bool { return v == groupID })
 		}
 		if err := tx.Model(group).Updates(map[string]any{
 			"group_ids_json": encodeStringSlice(nextGroupIDs),
@@ -230,7 +232,7 @@ func addNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs
 	if groupID == "" {
 		return nil
 	}
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil
 	}
@@ -263,7 +265,7 @@ func addNodesToGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs
 
 func clearNodeGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {
 	groupID = strings.TrimSpace(groupID)
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if groupID == "" || len(nodeIDs) == 0 {
 		return nil
 	}
@@ -277,7 +279,7 @@ func clearNodeGroup(ctx context.Context, tx model.DBTx, groupID string, nodeIDs 
 
 func addNodesToGroupMembership(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {
 	groupID = strings.TrimSpace(groupID)
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if groupID == "" || len(nodeIDs) == 0 {
 		return nil
 	}
@@ -288,7 +290,7 @@ func addNodesToGroupMembership(ctx context.Context, tx model.DBTx, groupID strin
 		}
 		return err
 	}
-	nextNodeIDs := uniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
+	nextNodeIDs := proxyuri.UniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
 	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nextNodeIDs, nil); err != nil {
 		return err
 	}
@@ -310,8 +312,8 @@ func ensureGroupMembersKeepChainMemberGroupsValid(
 		return nil
 	}
 	nextGroup := &tables.ProxyGroupTable{
-		NodeIDsJSON:  encodeStringSlice(uniqueNonEmpty(nodeIDs)),
-		GroupIDsJSON: encodeStringSlice(removeString(uniqueNonEmpty(groupIDs), groupID)),
+		NodeIDsJSON:  encodeStringSlice(proxyuri.UniqueNonEmpty(nodeIDs)),
+		GroupIDsJSON: encodeStringSlice(slices.DeleteFunc(proxyuri.UniqueNonEmpty(groupIDs), func(v string) bool { return v == groupID })),
 	}
 	nextGroup.ID = groupID
 	return ensureChainMemberGroupsValid(ctx, tx, []*tables.ProxyGroupTable{nextGroup}, nil)
@@ -319,7 +321,7 @@ func ensureGroupMembersKeepChainMemberGroupsValid(
 
 func removeNodesFromGroupMembership(ctx context.Context, tx model.DBTx, groupID string, nodeIDs []string) error {
 	groupID = strings.TrimSpace(groupID)
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if groupID == "" || len(nodeIDs) == 0 {
 		return nil
 	}
@@ -332,7 +334,7 @@ func removeNodesFromGroupMembership(ctx context.Context, tx model.DBTx, groupID 
 	}
 	nextNodeIDs := decodeStringSlice(group.NodeIDsJSON)
 	for _, nodeID := range nodeIDs {
-		nextNodeIDs = removeString(nextNodeIDs, nodeID)
+		nextNodeIDs = slices.DeleteFunc(nextNodeIDs, func(v string) bool { return v == nodeID })
 	}
 	return tx.WithContext(ctx).Model(&group).Updates(map[string]any{
 		"node_ids_json": encodeStringSlice(nextNodeIDs),
@@ -342,11 +344,11 @@ func removeNodesFromGroupMembership(ctx context.Context, tx model.DBTx, groupID 
 
 func differenceStrings(values, excluded []string) []string {
 	excludedSet := make(map[string]struct{}, len(excluded))
-	for _, value := range uniqueNonEmpty(excluded) {
+	for _, value := range proxyuri.UniqueNonEmpty(excluded) {
 		excludedSet[value] = struct{}{}
 	}
 	result := make([]string, 0)
-	for _, value := range uniqueNonEmpty(values) {
+	for _, value := range proxyuri.UniqueNonEmpty(values) {
 		if _, ok := excludedSet[value]; ok {
 			continue
 		}

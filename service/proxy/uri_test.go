@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/base64"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/sagernet/sing-box/constant"
@@ -191,7 +192,7 @@ func TestBuildNodeOutboundFromVLESSH2URI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseNodeURI() error = %v", err)
 	}
-	if !containsString(node.Tags, "h2") {
+	if !slices.Contains(node.Tags, "h2") {
 		t.Fatalf("Tags = %v, want h2 tag", node.Tags)
 	}
 
@@ -224,7 +225,7 @@ func TestBuildNodeOutboundFromVMessURL(t *testing.T) {
 	if node.Protocol != ProtocolVMess {
 		t.Fatalf("Protocol = %q, want %q", node.Protocol, ProtocolVMess)
 	}
-	if !containsString(node.Tags, "grpc") || !containsString(node.Tags, "tls") {
+	if !slices.Contains(node.Tags, "grpc") || !slices.Contains(node.Tags, "tls") {
 		t.Fatalf("Tags = %v, want grpc and tls", node.Tags)
 	}
 

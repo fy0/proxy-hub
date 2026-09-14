@@ -21,7 +21,9 @@ import (
 	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 	"proxy-hub/utils"
+	"slices"
 )
 
 type RuntimeInbound struct {
@@ -146,10 +148,10 @@ func (m dynamicMemberPlan) outboundTags() []string {
 			tags = append(tags, outbound.Tag)
 		}
 	}
-	if !containsString(tags, m.tag) {
+	if !slices.Contains(tags, m.tag) {
 		tags = append(tags, m.tag)
 	}
-	return uniqueNonEmpty(tags)
+	return proxyuri.UniqueNonEmpty(tags)
 }
 
 func (err nodeBuildError) Error() string {
@@ -178,7 +180,7 @@ func (err dynamicMemberError) Error() string {
 	if err.err == nil {
 		return ""
 	}
-	name := firstNonEmpty(err.member.id, err.member.tag)
+	name := proxyuri.FirstNonEmpty(err.member.id, err.member.tag)
 	if name == "" {
 		return err.err.Error()
 	}
@@ -312,7 +314,7 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 }
 
 func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatus, error) {
-	mappingIDs = uniqueNonEmpty(mappingIDs)
+	mappingIDs = proxyuri.UniqueNonEmpty(mappingIDs)
 	if len(mappingIDs) == 0 {
 		return RuntimeStatusGet(), nil
 	}
@@ -830,7 +832,7 @@ func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]
 }
 
 func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string, groupTag string) (bool, error) {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return false, nil
 	}
@@ -864,7 +866,7 @@ func (b *dynamicPlanBuilder) reviveIfAllCandidatesBlacklisted(nodeIDs []string, 
 }
 
 func (b *dynamicPlanBuilder) blacklistRevivalNodeIDs(nodeIDs []string, limit int) ([]string, error) {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
@@ -1137,7 +1139,7 @@ func staticSelectorDynamicMembers(
 	outbounds map[string]option.Outbound,
 	outboundNodes map[string]*tables.ProxyNodeTable,
 ) []dynamicMemberPlan {
-	tags = uniqueNonEmpty(tags)
+	tags = proxyuri.UniqueNonEmpty(tags)
 	members := make([]dynamicMemberPlan, 0, len(tags))
 	for _, tag := range tags {
 		switch tag {
@@ -1155,7 +1157,7 @@ func staticSelectorDynamicMembers(
 			terminalTag := false
 			if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(tag); ok {
 				terminalTag = true
-				id = firstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
+				id = proxyuri.FirstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
 			}
 			if node := outboundNodes[tag]; node != nil && strings.TrimSpace(node.ID) != "" {
 				if !terminalTag {
@@ -1224,9 +1226,9 @@ func outboundTagsForSelector(outbound option.Outbound) []string {
 func selectedSelectorOutboundTag(outbound option.Outbound) string {
 	switch options := outbound.Options.(type) {
 	case *option.SelectorOutboundOptions:
-		return firstNonEmpty(options.Default, firstString(options.Outbounds))
+		return proxyuri.FirstNonEmpty(options.Default, firstString(options.Outbounds))
 	case option.SelectorOutboundOptions:
-		return firstNonEmpty(options.Default, firstString(options.Outbounds))
+		return proxyuri.FirstNonEmpty(options.Default, firstString(options.Outbounds))
 	default:
 		return ""
 	}
@@ -1894,7 +1896,7 @@ func buildChainGroupMemberRuntimeOutbounds(
 		outbounds = append(outbounds, childOutbounds...)
 	}
 
-	memberTags = uniqueNonEmpty(memberTags)
+	memberTags = proxyuri.UniqueNonEmpty(memberTags)
 	if len(memberTags) == 0 {
 		memberTags = []string{constant.TypeBlock}
 	}
@@ -1986,7 +1988,7 @@ func buildTerminalChainGroupRuntimeOutbounds(
 		memberTags = append(memberTags, finalResult.tag)
 	}
 
-	memberTags = uniqueNonEmpty(memberTags)
+	memberTags = proxyuri.UniqueNonEmpty(memberTags)
 	if len(memberTags) == 0 {
 		return chainBuildResult{}, nil, false, nil
 	}
@@ -2271,7 +2273,7 @@ func runtimeFailureFromInbound(inbound RuntimeInbound, err error) RuntimeInbound
 }
 
 func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeIDs []string) ([]string, error) {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return []string{}, nil
 	}
@@ -2367,7 +2369,7 @@ func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeID
 }
 
 func runtimeAffectedMappingIDsByGroups(ctx context.Context, tx model.DBTx, groupIDs []string) ([]string, error) {
-	groupIDs = uniqueNonEmpty(groupIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(groupIDs) == 0 {
 		return []string{}, nil
 	}
@@ -2414,14 +2416,14 @@ func runtimeAffectedMappingIDsByGroups(ctx context.Context, tx model.DBTx, group
 		if err != nil {
 			return nil, err
 		}
-		return uniqueNonEmpty(append(groupMappingIDs, nodeMappingIDs...)), nil
+		return proxyuri.UniqueNonEmpty(append(groupMappingIDs, nodeMappingIDs...)), nil
 	}
 	return runtimeAffectedMappingIDsByNodesAndGroups(ctx, tx, nil, expandedGroupIDs)
 }
 
 func runtimeAffectedMappingIDsByNodesAndGroups(ctx context.Context, tx model.DBTx, nodeIDs []string, groupIDs []string) ([]string, error) {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
-	groupIDs = uniqueNonEmpty(groupIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(nodeIDs) == 0 && len(groupIDs) == 0 {
 		return []string{}, nil
 	}
@@ -2439,7 +2441,7 @@ func runtimeAffectedMappingIDsByNodesAndGroups(ctx context.Context, tx model.DBT
 			mappingIDs = append(mappingIDs, mapping.ID)
 		}
 	}
-	return uniqueNonEmpty(mappingIDs), nil
+	return proxyuri.UniqueNonEmpty(mappingIDs), nil
 }
 
 func expandAffectedGroups(groups []*tables.ProxyGroupTable, affected map[string]struct{}) {
@@ -2579,7 +2581,7 @@ func runtimeExcludedNodeFromNode(
 	}
 	if node != nil {
 		excluded.NodeID = node.ID
-		excluded.NodeName = firstNonEmpty(node.Name, node.ID)
+		excluded.NodeName = proxyuri.FirstNonEmpty(node.Name, node.ID)
 	}
 	return excluded
 }
@@ -2879,7 +2881,7 @@ func runtimeRouteNodeFromSnapshot(group singboxcore.GroupSnapshot, node singboxc
 		LatencyFallback:   node.LatencyFallback,
 		LatencySlowCount:  node.LatencySlowCount,
 		LatencyMs:         node.LastLatencyMs,
-		Error:             firstNonEmpty(node.LastProbeError, node.LastError),
+		Error:             proxyuri.FirstNonEmpty(node.LastProbeError, node.LastError),
 		LastCheckedAt:     node.LastCheckedAt,
 		LastSuccessAt:     node.LastSuccessAt,
 		ProbeStartedAt:    node.ProbeStartedAt,
@@ -2902,7 +2904,7 @@ func runtimeSnapshotNodeAvailable(node singboxcore.NodeSnapshot) bool {
 	if !node.Enabled || node.Tombstoned || node.Blacklisted || node.Health == singboxcore.HealthDead {
 		return false
 	}
-	return firstNonEmpty(node.LastProbeError, node.LastError) == ""
+	return proxyuri.FirstNonEmpty(node.LastProbeError, node.LastError) == ""
 }
 
 func resolveSelectedRuntimeRouteNode(group singboxcore.GroupSnapshot, groups map[string]singboxcore.GroupSnapshot, visited map[string]bool) *RuntimeRouteNode {
@@ -3001,8 +3003,8 @@ func hydrateRuntimeRouteNames(ctx context.Context, routes []RuntimeRoute) []Runt
 			}
 		}
 	}
-	nodeNames := runtimeNodeNames(ctx, uniqueNonEmpty(nodeIDs))
-	groupNames := runtimeGroupNames(ctx, uniqueNonEmpty(groupIDs))
+	nodeNames := runtimeNodeNames(ctx, proxyuri.UniqueNonEmpty(nodeIDs))
+	groupNames := runtimeGroupNames(ctx, proxyuri.UniqueNonEmpty(groupIDs))
 	for routeIndex := range routes {
 		if strings.HasPrefix(routes[routeIndex].GroupTag, "mapping-group-") {
 			groupID := runtimeRouteGroupID(routes[routeIndex].GroupTag)
@@ -3011,7 +3013,7 @@ func hydrateRuntimeRouteNames(ctx context.Context, routes []RuntimeRoute) []Runt
 				routes[routeIndex].SelectedNodeTag = routes[routeIndex].GroupTag
 				routes[routeIndex].SelectedNodeKind = "group"
 			}
-			routes[routeIndex].SelectedNodeName = firstNonEmpty(groupNames[groupID], groupID)
+			routes[routeIndex].SelectedNodeName = proxyuri.FirstNonEmpty(groupNames[groupID], groupID)
 		}
 		for nodeIndex := range routes[routeIndex].Nodes {
 			node := &routes[routeIndex].Nodes[nodeIndex]
@@ -3066,13 +3068,13 @@ func runtimeRouteDisplayName(node RuntimeRouteNode, nodeNames map[string]string,
 	case "node":
 		if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(node.NodeTag); ok {
 			memberNodeID := runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex)
-			return firstNonEmpty(nodeNames[memberNodeID], memberNodeID, nodeNames[node.NodeID], node.NodeID)
+			return proxyuri.FirstNonEmpty(nodeNames[memberNodeID], memberNodeID, nodeNames[node.NodeID], node.NodeID)
 		}
-		return firstNonEmpty(nodeNames[node.NodeID], node.NodeID)
+		return proxyuri.FirstNonEmpty(nodeNames[node.NodeID], node.NodeID)
 	case "group":
-		return firstNonEmpty(groupNames[node.NodeID], groupNames[runtimeRouteGroupID(node.NodeTag)], node.NodeID)
+		return proxyuri.FirstNonEmpty(groupNames[node.NodeID], groupNames[runtimeRouteGroupID(node.NodeTag)], node.NodeID)
 	case "builtin":
-		return firstNonEmpty(node.NodeTag, node.NodeID)
+		return proxyuri.FirstNonEmpty(node.NodeTag, node.NodeID)
 	default:
 		return node.NodeID
 	}

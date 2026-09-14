@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -292,9 +294,9 @@ func groupDTOToTable(dto *ProxyGroupDTO, subscriptionIDs map[string]struct{}) (*
 		Strategy:        normalizeGroupStrategy(dto.Strategy),
 		SubscriptionID:  subscriptionID,
 		SourceKey:       strings.TrimSpace(dto.SourceKey),
-		NodeIDsJSON:     encodeStringSlice(uniqueNonEmpty(dto.NodeIDs)),
-		GroupIDsJSON:    encodeStringSlice(uniqueNonEmpty(dto.GroupIDs)),
-		BuiltinTagsJSON: encodeStringSlice(uniqueNonEmpty(dto.BuiltinTags)),
+		NodeIDsJSON:     encodeStringSlice(proxyuri.UniqueNonEmpty(dto.NodeIDs)),
+		GroupIDsJSON:    encodeStringSlice(proxyuri.UniqueNonEmpty(dto.GroupIDs)),
+		BuiltinTagsJSON: encodeStringSlice(proxyuri.UniqueNonEmpty(dto.BuiltinTags)),
 		IncludesAll:     dto.IncludesAll,
 		Filter:          strings.TrimSpace(dto.Filter),
 		Remark:          strings.TrimSpace(dto.Remark),
@@ -325,7 +327,7 @@ func nodeDTOToTable(dto *ProxyNodeDTO, subscriptionIDs, groupIDs map[string]stru
 			return nil, invalidSettingsBackup("node references missing group")
 		}
 	}
-	for _, groupID := range uniqueNonEmpty(dto.GroupIDs) {
+	for _, groupID := range proxyuri.UniqueNonEmpty(dto.GroupIDs) {
 		if _, ok := groupIDs[groupID]; !ok {
 			return nil, invalidSettingsBackup("node references missing group")
 		}
@@ -355,7 +357,7 @@ func nodeDTOToTable(dto *ProxyNodeDTO, subscriptionIDs, groupIDs map[string]stru
 		Username:         strings.TrimSpace(dto.Username),
 		Password:         strings.TrimSpace(dto.Password),
 		RawURI:           strings.TrimSpace(dto.RawURI),
-		TagsJSON:         encodeStringSlice(uniqueNonEmpty(dto.Tags)),
+		TagsJSON:         encodeStringSlice(proxyuri.UniqueNonEmpty(dto.Tags)),
 		Remark:           strings.TrimSpace(dto.Remark),
 		ChainNodeIDsJSON: encodeStringSlice(chainNodeIDs),
 		ChainMembersJSON: encodeChainMembers(chainMembers),
@@ -381,18 +383,18 @@ func mappingDTOToTable(dto *PortMappingDTO, nodeIDs, groupIDs map[string]struct{
 		return nil, invalidSettingsBackup("mapping listen port is required")
 	}
 
-	normalizedNodeIDs := uniqueNonEmpty(dto.NodeIDs)
+	normalizedNodeIDs := proxyuri.UniqueNonEmpty(dto.NodeIDs)
 	for _, nodeID := range normalizedNodeIDs {
 		if _, ok := nodeIDs[nodeID]; !ok {
 			return nil, invalidSettingsBackup("mapping references missing node")
 		}
 	}
 	activeNodeID := valueOrEmpty(dto.ActiveNodeID)
-	if activeNodeID != "" && !containsString(normalizedNodeIDs, activeNodeID) {
+	if activeNodeID != "" && !slices.Contains(normalizedNodeIDs, activeNodeID) {
 		return nil, invalidSettingsBackup("mapping active node is not in node list")
 	}
 
-	normalizedGroupIDs := uniqueNonEmpty(dto.GroupIDs)
+	normalizedGroupIDs := proxyuri.UniqueNonEmpty(dto.GroupIDs)
 	for _, groupID := range normalizedGroupIDs {
 		if _, ok := groupIDs[groupID]; !ok {
 			return nil, invalidSettingsBackup("mapping references missing group")
@@ -403,7 +405,7 @@ func mappingDTOToTable(dto *PortMappingDTO, nodeIDs, groupIDs map[string]struct{
 		return nil, invalidSettingsBackup("mapping group strategy override is invalid")
 	}
 	activeGroupID := valueOrEmpty(dto.ActiveGroupID)
-	if activeGroupID != "" && !containsString(normalizedGroupIDs, activeGroupID) {
+	if activeGroupID != "" && !slices.Contains(normalizedGroupIDs, activeGroupID) {
 		return nil, invalidSettingsBackup("mapping active group is not in group list")
 	}
 

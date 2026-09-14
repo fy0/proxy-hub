@@ -11,7 +11,6 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
-	"github.com/samber/lo"
 )
 
 type ProxyHealthConfig struct {
@@ -84,7 +83,9 @@ func ReadConfig() *AppConfig {
 	}
 
 	configStore = koanf.New(".")
-	lo.Must0(configStore.Load(structs.Provider(&defaults, "yaml"), nil))
+	if err := configStore.Load(structs.Provider(&defaults, "yaml"), nil); err != nil {
+		panic(err)
+	}
 
 	provider := file.Provider(configPath)
 	if err := configStore.Load(provider, yaml.Parser()); err != nil {

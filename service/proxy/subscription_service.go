@@ -16,6 +16,8 @@ import (
 
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
@@ -456,7 +458,7 @@ func syncSubscriptionRaw(ctx context.Context, tx model.DBTx, subscription *table
 		if err := tx.Model(group).Updates(map[string]any{
 			"strategy":          parsedGroup.Strategy,
 			"node_ids_json":     encodeStringSlice(nodeIDs),
-			"group_ids_json":    encodeStringSlice(removeString(groupIDs, group.ID)),
+			"group_ids_json":    encodeStringSlice(slices.DeleteFunc(groupIDs, func(v string) bool { return v == group.ID })),
 			"builtin_tags_json": encodeStringSlice(parsedGroup.BuiltinTags),
 			"includes_all":      parsedGroup.IncludesAll,
 			"filter":            parsedGroup.Filter,
@@ -547,7 +549,7 @@ func upsertSubscriptionNodeRows(ctx context.Context, tx model.DBTx, nodes []*tab
 }
 
 func deleteSubscriptionNodesBulk(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil
 	}
@@ -567,7 +569,7 @@ func deleteSubscriptionNodesBulk(ctx context.Context, tx model.DBTx, nodeIDs []s
 }
 
 func ensureNodesNotReferencedByActiveChains(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil
 	}
@@ -591,7 +593,7 @@ func ensureNodesNotReferencedByActiveChains(ctx context.Context, tx model.DBTx, 
 }
 
 func cleanupNodeReferences(ctx context.Context, tx model.DBTx, nodeIDs []string) error {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil
 	}
@@ -601,11 +603,11 @@ func cleanupNodeReferences(ctx context.Context, tx model.DBTx, nodeIDs []string)
 		return err
 	}
 	for _, mapping := range mappings {
-		nextNodeIDs := removeStrings(decodeStringSlice(mapping.NodeIDsJSON), nodeIDs)
+		nextNodeIDs := proxyuri.UniqueNonEmpty(slices.DeleteFunc(decodeStringSlice(mapping.NodeIDsJSON), func(v string) bool { return slices.Contains(nodeIDs, v) }))
 		active := mapping.ActiveNodeID
 		if normalizeStrategy(mapping.Strategy) != StrategyManual {
 			active = ""
-		} else if containsString(nodeIDs, active) {
+		} else if slices.Contains(nodeIDs, active) {
 			active = ""
 			if len(nextNodeIDs) > 0 {
 				active = nextNodeIDs[0]
@@ -625,7 +627,7 @@ func cleanupNodeReferences(ctx context.Context, tx model.DBTx, nodeIDs []string)
 		return err
 	}
 	for _, group := range groups {
-		nextNodeIDs := removeStrings(decodeStringSlice(group.NodeIDsJSON), nodeIDs)
+		nextNodeIDs := proxyuri.UniqueNonEmpty(slices.DeleteFunc(decodeStringSlice(group.NodeIDsJSON), func(v string) bool { return slices.Contains(nodeIDs, v) }))
 		if err := tx.Model(group).Updates(map[string]any{
 			"node_ids_json": encodeStringSlice(nextNodeIDs),
 			"updated_at":    time.Now(),
@@ -681,7 +683,7 @@ func subscriptionGroupMembers(parsedGroup parsedSubscriptionGroup, nodeIDByName,
 			groupIDs = append(groupIDs, id)
 		}
 	}
-	return uniqueNonEmpty(nodeIDs), uniqueNonEmpty(groupIDs)
+	return proxyuri.UniqueNonEmpty(nodeIDs), proxyuri.UniqueNonEmpty(groupIDs)
 }
 
 func nodesBySubscriptionSource(ctx context.Context, tx model.DBTx, subscriptionID string) (map[string]*tables.ProxyNodeTable, error) {
@@ -743,8 +745,8 @@ func updateRootGroupReferences(ctx context.Context, tx model.DBTx, groupID strin
 	if groupID == "" {
 		return nil
 	}
-	nodeIDs = uniqueNonEmpty(nodeIDs)
-	groupIDs = removeString(uniqueNonEmpty(groupIDs), groupID)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
+	groupIDs = slices.DeleteFunc(proxyuri.UniqueNonEmpty(groupIDs), func(v string) bool { return v == groupID })
 	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, groupID, nodeIDs, groupIDs); err != nil {
 		return err
 	}
@@ -921,8 +923,8 @@ func parseClashSubscription(raw string) (*parsedClashConfig, error) {
 		if parsedGroup.Name == "" {
 			continue
 		}
-		if len(parsedGroup.NodeNames) == 0 && len(parsedGroup.GroupNames) > 0 && containsString(parsedGroup.BuiltinTags, constantDirect) {
-			parsedGroup.BuiltinTags = removeString(parsedGroup.BuiltinTags, constantDirect)
+		if len(parsedGroup.NodeNames) == 0 && len(parsedGroup.GroupNames) > 0 && slices.Contains(parsedGroup.BuiltinTags, constantDirect) {
+			parsedGroup.BuiltinTags = slices.DeleteFunc(parsedGroup.BuiltinTags, func(v string) bool { return v == constantDirect })
 			result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
 				Type:   ImportPreviewTypeBuiltin,
 				Name:   parsedGroup.Name + " / " + constantDirect,
@@ -1000,9 +1002,9 @@ func parseClashProxyGroup(group map[string]any, nodeNames map[string]struct{}, g
 		Name:        name,
 		SourceKey:   sourceKey("group", name),
 		Strategy:    strategy,
-		NodeNames:   uniqueNonEmpty(nodeMembers),
-		GroupNames:  uniqueNonEmpty(groupMembers),
-		BuiltinTags: uniqueNonEmpty(builtinTags),
+		NodeNames:   proxyuri.UniqueNonEmpty(nodeMembers),
+		GroupNames:  proxyuri.UniqueNonEmpty(groupMembers),
+		BuiltinTags: proxyuri.UniqueNonEmpty(builtinTags),
 		IncludesAll: includesAll,
 		Filter:      filter,
 	}
@@ -1037,9 +1039,9 @@ func stringSliceFromMap(values map[string]any, key string) []string {
 		}
 		return result
 	case []string:
-		return uniqueNonEmpty(typed)
+		return proxyuri.UniqueNonEmpty(typed)
 	default:
-		return uniqueNonEmpty([]string{fmt.Sprint(typed)})
+		return proxyuri.UniqueNonEmpty([]string{fmt.Sprint(typed)})
 	}
 }
 

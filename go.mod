@@ -17,7 +17,6 @@ require (
 	github.com/ncruces/go-sqlite3/gormlite v0.30.2
 	github.com/sagernet/sing v0.8.9
 	github.com/sagernet/sing-box v1.13.11
-	github.com/samber/lo v1.51.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.48.0
 	gopkg.in/yaml.v3 v3.0.1

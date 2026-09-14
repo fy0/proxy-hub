@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"proxy-hub/service/proxyuri"
+
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/urltest"
@@ -716,7 +718,7 @@ func (g *DynamicGroup) outboundTags() []string {
 		}
 		tags = append(tags, nodeTags...)
 	}
-	return uniqueNonEmpty(tags)
+	return proxyuri.UniqueNonEmpty(tags)
 }
 
 func (g *DynamicGroup) ensureSelected() {

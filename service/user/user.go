@@ -67,7 +67,7 @@ func UserCreate(
 	user.UpdatedAt = user.CreatedAt
 
 	if err := tx.Create(user).Error; err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) || isUniqueConstraintError(err) {
+		if model.IsUniqueConstraintError(err) {
 			return nil, ErrUsernameTaken
 		}
 		return nil, err
@@ -316,24 +316,4 @@ func UserListByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.
 	}
 
 	return users, nil
-}
-
-func isUniqueConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	type sqlStateError interface {
-		SQLState() string
-	}
-	var stateErr sqlStateError
-	if errors.As(err, &stateErr) && stateErr.SQLState() == "23505" {
-		return true
-	}
-
-	errMsg := strings.ToLower(err.Error())
-	return strings.Contains(errMsg, "unique constraint") ||
-		strings.Contains(errMsg, "unique violation") ||
-		strings.Contains(errMsg, "duplicate entry") ||
-		strings.Contains(errMsg, "duplicate key value")
 }

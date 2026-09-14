@@ -11,6 +11,7 @@ import (
 
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 	"proxy-hub/utils"
 )
 
@@ -373,7 +374,7 @@ func (b *nodeHealthBatcher) reviveNodes(ctx context.Context, nodeIDs []string) e
 	now := time.Now()
 
 	b.mu.Lock()
-	for _, nodeID := range uniqueNonEmpty(nodeIDs) {
+	for _, nodeID := range proxyuri.UniqueNonEmpty(nodeIDs) {
 		state := ensureNodeHealthMemoryState(b.states, nodeID)
 		snapshot := state.snapshot
 		if snapshot == nil {
@@ -683,7 +684,7 @@ func historyEntriesToRows(nodeID string, history []nodeHealthHistoryWindowEntry)
 
 func existingNodeIDSet(ctx context.Context, nodeIDs []string) (map[string]struct{}, error) {
 	result := map[string]struct{}{}
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return result, nil
 	}

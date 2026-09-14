@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -706,7 +707,7 @@ func TestDynamicRuntimePlanRoutesChainNodeWithGroupMember(t *testing.T) {
 	if !ok {
 		t.Fatalf("chain outbound options type = %T, want selector options", finalOutbound.Options)
 	}
-	if selector.Default != groupTag || !containsString(selector.Outbounds, groupTag) {
+	if selector.Default != groupTag || !slices.Contains(selector.Outbounds, groupTag) {
 		t.Fatalf("chain outbound selector = %+v, want %q", selector, groupTag)
 	}
 	groupPlan := dynamicGroupPlanByTag(plan.groups, groupTag)
@@ -866,7 +867,7 @@ func TestBuildHealthProbeNodePlanUsesDynamicGroupForChainGroupMember(t *testing.
 	if !ok {
 		t.Fatalf("chain outbound options type = %T, want selector options", finalOutbound.Options)
 	}
-	if selector.Default != groupTag || !containsString(selector.Outbounds, groupTag) {
+	if selector.Default != groupTag || !slices.Contains(selector.Outbounds, groupTag) {
 		t.Fatalf("health probe chain final selector = %+v, want %q", selector, groupTag)
 	}
 }
@@ -1609,7 +1610,7 @@ func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testin
 	if selected != nodeB.ID {
 		t.Fatalf("dynamic group selected = %q, want %q", selected, nodeB.ID)
 	}
-	if !containsString(members, nodeA.ID) || !containsString(members, nodeB.ID) {
+	if !slices.Contains(members, nodeA.ID) || !slices.Contains(members, nodeB.ID) {
 		t.Fatalf("dynamic group members = %v, want node-a and node-b", members)
 	}
 }
@@ -1834,10 +1835,10 @@ func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T
 			childGroupMembers = append(childGroupMembers, nodeState.ID)
 		}
 	}
-	if containsString(childGroupMembers, badNode.ID) {
+	if slices.Contains(childGroupMembers, badNode.ID) {
 		t.Fatalf("child dynamic group members = %v, want bad node excluded", childGroupMembers)
 	}
-	if !containsString(childGroupMembers, goodNode.ID) {
+	if !slices.Contains(childGroupMembers, goodNode.ID) {
 		t.Fatalf("child dynamic group members = %v, want good node %q", childGroupMembers, goodNode.ID)
 	}
 }
@@ -2061,10 +2062,10 @@ func TestRuntimeMappingCanRouteToExistingGroup(t *testing.T) {
 			}
 		}
 	}
-	if !containsString(mappingGroupMembers, group.ID) {
+	if !slices.Contains(mappingGroupMembers, group.ID) {
 		t.Fatalf("mapping dynamic group members = %v, want existing group %q", mappingGroupMembers, group.ID)
 	}
-	if !containsString(childGroupMembers, node.ID) {
+	if !slices.Contains(childGroupMembers, node.ID) {
 		t.Fatalf("child dynamic group members = %v, want node %q", childGroupMembers, node.ID)
 	}
 }
@@ -2126,7 +2127,7 @@ func TestRuntimeAffectedMappingIDsByGroupsIncludesChainGroupMembers(t *testing.T
 	if err != nil {
 		t.Fatalf("RuntimeAffectedMappingIDsByGroups() error = %v", err)
 	}
-	if !containsString(affected, mapping.ID) {
+	if !slices.Contains(affected, mapping.ID) {
 		t.Fatalf("affected mappings = %v, want %q", affected, mapping.ID)
 	}
 }
@@ -2188,7 +2189,7 @@ func TestRuntimeAffectedMappingIDsByNodesIncludesChainGroupMembers(t *testing.T)
 	if err != nil {
 		t.Fatalf("RuntimeAffectedMappingIDsByNodes() error = %v", err)
 	}
-	if !containsString(affected, mapping.ID) {
+	if !slices.Contains(affected, mapping.ID) {
 		t.Fatalf("affected mappings = %v, want %q", affected, mapping.ID)
 	}
 }
@@ -2288,10 +2289,10 @@ func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.
 			}
 		}
 	}
-	if !containsString(mappingGroupMembers, group.ID) {
+	if !slices.Contains(mappingGroupMembers, group.ID) {
 		t.Fatalf("mapping dynamic group members after re-add = %v, want group %q", mappingGroupMembers, group.ID)
 	}
-	if !containsString(childGroupMembers, node.ID) {
+	if !slices.Contains(childGroupMembers, node.ID) {
 		t.Fatalf("child dynamic group members after re-add = %v, want node %q", childGroupMembers, node.ID)
 	}
 }

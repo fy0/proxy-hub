@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/sagernet/sing-box/option"
 
@@ -76,13 +75,4 @@ func stringFromMap(values map[string]any, key string) string {
 
 func boolFromMap(values map[string]any, key string) (bool, bool) {
 	return proxyuri.BoolFromMap(values, key)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
 }

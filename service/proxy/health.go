@@ -21,6 +21,7 @@ import (
 	"proxy-hub/core/singboxcore"
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 	"proxy-hub/utils"
 )
 
@@ -117,7 +118,7 @@ func NodeHealthList(ctx context.Context, tx model.DBTx) ([]*tables.ProxyNodeHeal
 }
 
 func NodeHealthMap(ctx context.Context, tx model.DBTx, nodeIDs []string) map[string]*tables.ProxyNodeHealthTable {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return map[string]*tables.ProxyNodeHealthTable{}
 	}
@@ -312,7 +313,7 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 	result.LatencyMs = latencyMs
 	if probeErr != nil {
 		result.Error = probeErr.Error()
-		result.NodeError = firstNonEmpty(result.NodeError, runtimeNodeErrorFromProbe(result.NodeTag, result.Error))
+		result.NodeError = proxyuri.FirstNonEmpty(result.NodeError, runtimeNodeErrorFromProbe(result.NodeTag, result.Error))
 		result.Health = saveMappingTestNodeHealth(ctx, result)
 		return result, nil
 	}
@@ -369,7 +370,7 @@ func saveMappingTestNodeHealth(ctx context.Context, result *ProxyTestResultDTO) 
 		ProbeURL:  result.ProbeURL,
 		Available: result.Available,
 		LatencyMs: result.LatencyMs,
-		Error:     firstNonEmpty(result.NodeError, result.Error),
+		Error:     proxyuri.FirstNonEmpty(result.NodeError, result.Error),
 		CheckedAt: now,
 	})
 	if err != nil {
@@ -414,7 +415,7 @@ func reviveNodeHealthIDs(ctx context.Context, tx model.DBTx, nodeIDs []string) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil
 	}
@@ -524,7 +525,7 @@ func recordRuntimeTrafficFailure(record singboxcore.TrafficFailureRecord) {
 
 func recordRuntimeTrafficFailureSync(record singboxcore.TrafficFailureRecord) (*tables.ProxyNodeHealthTable, error) {
 	cfg := normalizeHealthConfig(currentHealthConfig())
-	errMessage := firstNonEmpty(record.Error, "traffic failed before first response byte")
+	errMessage := proxyuri.FirstNonEmpty(record.Error, "traffic failed before first response byte")
 	health, err := recordNodeHealthResult(context.Background(), nil, record.NodeID, nodeHealthResultRecord{
 		Source:    nodeHealthSourceRuntimeTraffic,
 		TargetID:  record.GroupTag,
@@ -605,14 +606,14 @@ func drainHealthProbeBatch(queue <-chan string, first string) []string {
 		case nodeID := <-queue:
 			nodeIDs = append(nodeIDs, nodeID)
 		default:
-			return uniqueNonEmpty(nodeIDs)
+			return proxyuri.UniqueNonEmpty(nodeIDs)
 		}
 	}
-	return uniqueNonEmpty(nodeIDs)
+	return proxyuri.UniqueNonEmpty(nodeIDs)
 }
 
 func enqueueHealthProbeIDs(nodeIDs []string) int {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return 0
 	}
@@ -640,7 +641,7 @@ func enqueueHealthProbeIDs(nodeIDs []string) int {
 }
 
 func probeNodeIDsWithLog(ctx context.Context, cfg utils.ProxyHealthConfig, nodeIDs []string) {
-	nodeIDs = uniqueNonEmpty(nodeIDs)
+	nodeIDs = proxyuri.UniqueNonEmpty(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return
 	}
@@ -1007,12 +1008,12 @@ func fallbackRuntimeRouteNode(route RuntimeRoute) *RuntimeRouteNode {
 func routeHopFromRuntimeRouteNode(node RuntimeRouteNode) ProxyRouteHopDTO {
 	id := node.NodeID
 	if node.Kind == ChainMemberTypeGroup {
-		id = firstNonEmpty(runtimeRouteGroupID(node.NodeTag), id)
+		id = proxyuri.FirstNonEmpty(runtimeRouteGroupID(node.NodeTag), id)
 	} else if chainID, groupIndex, memberIndex, ok := parseNodeChainGroupTerminalNodeTag(node.NodeTag); ok {
-		id = firstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
+		id = proxyuri.FirstNonEmpty(runtimeChainGroupMemberNodeID(chainID, groupIndex, memberIndex), id)
 	}
 	return ProxyRouteHopDTO{
-		Kind: firstNonEmpty(node.Kind, "node"),
+		Kind: proxyuri.FirstNonEmpty(node.Kind, "node"),
 		ID:   id,
 		Name: node.NodeName,
 		Tag:  node.NodeTag,
@@ -1145,19 +1146,19 @@ func hydrateRouteHopName(ctx context.Context, tx model.DBTx, hop *ProxyRouteHopD
 	case ChainMemberTypeNode:
 		nodes, err := findNodesByIDs(ctx, tx, []string{hop.ID})
 		if err == nil && len(nodes) == 1 {
-			hop.Name = firstNonEmpty(hop.Name, nodes[0].Name)
+			hop.Name = proxyuri.FirstNonEmpty(hop.Name, nodes[0].Name)
 		}
 	case ChainMemberTypeGroup:
-		groupID := firstNonEmpty(runtimeRouteGroupID(hop.Tag), hop.ID)
+		groupID := proxyuri.FirstNonEmpty(runtimeRouteGroupID(hop.Tag), hop.ID)
 		if groupID != "" {
 			hop.ID = groupID
 		}
 		groups, err := findGroupsByIDs(ctx, tx, []string{hop.ID})
 		if err == nil && len(groups) == 1 {
-			hop.Name = firstNonEmpty(hop.Name, groups[0].Name)
+			hop.Name = proxyuri.FirstNonEmpty(hop.Name, groups[0].Name)
 		}
 	case "builtin":
-		hop.Name = firstNonEmpty(hop.Name, hop.Tag, hop.ID)
+		hop.Name = proxyuri.FirstNonEmpty(hop.Name, hop.Tag, hop.ID)
 	}
 }
 
@@ -1176,7 +1177,7 @@ func routeHopFromGroup(group *tables.ProxyGroupTable, tag string) ProxyRouteHopD
 }
 
 func groupNameMapForRouteHop(ctx context.Context, groupIDs []string) map[string]string {
-	groupIDs = uniqueNonEmpty(groupIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(groupIDs) == 0 {
 		return nil
 	}

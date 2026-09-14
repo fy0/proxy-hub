@@ -76,7 +76,7 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedURI, rawURI)
 	}
 
-	protocol := normalizeProtocol(parsed.Scheme)
+	protocol := NormalizeProtocol(parsed.Scheme)
 	if !isSupportedProtocol(protocol) {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProtocol, parsed.Scheme)
 	}
@@ -109,14 +109,14 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 
 	name := strings.TrimSpace(parsed.Fragment)
 	if name == "" {
-		name = defaultNodeName(protocol, server)
+		name = DefaultNodeName(protocol, server)
 	}
 
 	vmessAlterID := 0
 	vmessSecurity := ""
 	vmessPacketEncoding := ""
 	if protocol == ProtocolVMess {
-		vmessSecurity = firstNonEmpty(queryFirst(query, "scy"), "auto")
+		vmessSecurity = FirstNonEmpty(queryFirst(query, "scy"), "auto")
 		if security := strings.ToLower(queryFirst(query, "security")); security != "" {
 			switch security {
 			case "tls", "reality", "none":
@@ -154,7 +154,7 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 
 func parseShadowsocksURI(rawURI string) (*ParsedURI, error) {
 	parsed, err := url.Parse(rawURI)
-	if err != nil || normalizeProtocol(parsed.Scheme) != ProtocolShadowsocks {
+	if err != nil || NormalizeProtocol(parsed.Scheme) != ProtocolShadowsocks {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedURI, rawURI)
 	}
 	name := strings.TrimSpace(parsed.Fragment)
@@ -180,7 +180,7 @@ func parseShadowsocksURI(rawURI string) (*ParsedURI, error) {
 			return nil, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
 		}
 		if name == "" {
-			name = defaultNodeName(ProtocolShadowsocks, server)
+			name = DefaultNodeName(ProtocolShadowsocks, server)
 		}
 		return &ParsedURI{
 			RawURI:   rawURI,
@@ -220,7 +220,7 @@ func parseShadowsocksURI(rawURI string) (*ParsedURI, error) {
 		return nil, fmt.Errorf("%w: missing shadowsocks credentials", ErrUnsupportedURI)
 	}
 	if name == "" {
-		name = defaultNodeName(ProtocolShadowsocks, legacyURL.Hostname())
+		name = DefaultNodeName(ProtocolShadowsocks, legacyURL.Hostname())
 	}
 	return &ParsedURI{
 		RawURI:   rawURI,
@@ -252,7 +252,7 @@ func parseVMessBase64URI(rawURI string) (*ParsedURI, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := firstNonEmpty(stringFromMap(data, "ps"), defaultNodeName(ProtocolVMess, server))
+	name := FirstNonEmpty(stringFromMap(data, "ps"), DefaultNodeName(ProtocolVMess, server))
 	query := url.Values{}
 	for key, dataKey := range map[string]string{
 		"type":           "net",
@@ -290,7 +290,7 @@ func parseVMessBase64URI(rawURI string) (*ParsedURI, error) {
 		Query:               query,
 		Tags:                tagsForParsedNode(ProtocolVMess, query),
 		VMessAlterID:        alterID,
-		VMessSecurity:       firstNonEmpty(stringFromMap(data, "scy"), "auto"),
+		VMessSecurity:       FirstNonEmpty(stringFromMap(data, "scy"), "auto"),
 		VMessPacketEncoding: queryFirst(query, "packetEncoding", "packet_encoding", "packet-encoding"),
 	}, nil
 }
@@ -373,7 +373,7 @@ func stringFromMap(values map[string]any, key string) string {
 	return StringFromMap(values, key)
 }
 
-func firstNonEmpty(values ...string) string {
+func FirstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)
@@ -382,7 +382,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func normalizeProtocol(protocol string) string {
+func NormalizeProtocol(protocol string) string {
 	protocol = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(protocol, ":")))
 	switch protocol {
 	case "socks", "socks5", "socks5h":
@@ -427,7 +427,7 @@ func isSupportedProtocol(protocol string) bool {
 	}
 }
 
-func defaultNodeName(protocol, server string) string {
+func DefaultNodeName(protocol, server string) string {
 	if server == "" {
 		return "未命名节点"
 	}
@@ -437,7 +437,7 @@ func defaultNodeName(protocol, server string) string {
 	return strings.ToUpper(protocol) + " " + server
 }
 
-func uniqueNonEmpty(values []string) []string {
+func UniqueNonEmpty(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
@@ -484,7 +484,7 @@ func tagsForParsedNode(protocol string, query url.Values) []string {
 	case "tls", "reality":
 		tags = append(tags, securityMode(query))
 	}
-	return uniqueNonEmpty(tags)
+	return UniqueNonEmpty(tags)
 }
 
 func securityMode(query url.Values) string {
@@ -507,7 +507,7 @@ func splitCommaList(value string) []string {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || r == '\n' || r == '\r'
 	})
-	return uniqueNonEmpty(parts)
+	return UniqueNonEmpty(parts)
 }
 
 func queryBool(query url.Values, keys ...string) bool {
@@ -540,10 +540,10 @@ func cloneQuery(query url.Values) url.Values {
 func uriScheme(rawURI string) string {
 	rawURI = strings.TrimSpace(rawURI)
 	if scheme, _, ok := strings.Cut(rawURI, "://"); ok {
-		return normalizeProtocol(scheme)
+		return NormalizeProtocol(scheme)
 	}
 	if scheme, _, ok := strings.Cut(rawURI, ":"); ok {
-		return normalizeProtocol(scheme)
+		return NormalizeProtocol(scheme)
 	}
 	return ProtocolUnknown
 }
@@ -608,7 +608,7 @@ func ClashProxyURIs(raw string) []string {
 }
 
 func ClashProxyToURI(proxy map[string]any) string {
-	protocol := normalizeProtocol(stringFromMap(proxy, "type"))
+	protocol := NormalizeProtocol(stringFromMap(proxy, "type"))
 	switch protocol {
 	case ProtocolVLESS:
 		return clashVLESSURI(proxy)
@@ -637,12 +637,12 @@ func ClashProxyToURI(proxy map[string]any) string {
 
 func clashVLESSURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	uuid := firstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
+	uuid := FirstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
 	if server == "" || port == "" || uuid == "" {
 		return ""
 	}
 	query := clashV2RayQuery(proxy)
-	query.Set("encryption", firstNonEmpty(stringFromMap(proxy, "encryption"), "none"))
+	query.Set("encryption", FirstNonEmpty(stringFromMap(proxy, "encryption"), "none"))
 	if flow := stringFromMap(proxy, "flow"); flow != "" {
 		query.Set("flow", flow)
 	}
@@ -678,11 +678,11 @@ func clashTrojanURI(proxy map[string]any) string {
 
 func clashVMessURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	uuid := firstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
+	uuid := FirstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
 	if server == "" || port == "" || uuid == "" {
 		return ""
 	}
-	network := firstNonEmpty(stringFromMap(proxy, "network"), "tcp")
+	network := FirstNonEmpty(stringFromMap(proxy, "network"), "tcp")
 	host, path := clashTransportHostPath(proxy, network)
 	payload := map[string]string{
 		"v":    "2",
@@ -690,14 +690,14 @@ func clashVMessURI(proxy map[string]any) string {
 		"add":  server,
 		"port": port,
 		"id":   uuid,
-		"aid":  firstNonEmpty(stringFromMap(proxy, "alterId"), stringFromMap(proxy, "alter-id"), "0"),
-		"scy":  firstNonEmpty(stringFromMap(proxy, "cipher"), "auto"),
+		"aid":  FirstNonEmpty(stringFromMap(proxy, "alterId"), stringFromMap(proxy, "alter-id"), "0"),
+		"scy":  FirstNonEmpty(stringFromMap(proxy, "cipher"), "auto"),
 		"net":  network,
-		"type": firstNonEmpty(stringFromMap(proxy, "network-type"), "none"),
+		"type": FirstNonEmpty(stringFromMap(proxy, "network-type"), "none"),
 		"host": host,
 		"path": path,
 		"tls":  clashTLSMode(proxy),
-		"sni":  firstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni")),
+		"sni":  FirstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni")),
 		"alpn": stringListFromMap(proxy, "alpn"),
 	}
 	content, err := json.Marshal(payload)
@@ -735,7 +735,7 @@ func clashSimpleURI(proxy map[string]any, protocol string) string {
 
 func clashShadowsocksURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	method := firstNonEmpty(stringFromMap(proxy, "cipher"), stringFromMap(proxy, "method"))
+	method := FirstNonEmpty(stringFromMap(proxy, "cipher"), stringFromMap(proxy, "method"))
 	password := stringFromMap(proxy, "password")
 	if server == "" || port == "" || method == "" || password == "" {
 		return ""
@@ -744,7 +744,7 @@ func clashShadowsocksURI(proxy map[string]any) string {
 	if plugin := stringFromMap(proxy, "plugin"); plugin != "" {
 		query.Set("plugin", plugin)
 	}
-	if pluginOptions := firstNonEmpty(stringFromMap(proxy, "plugin-opts"), stringFromMap(proxy, "plugin_opts")); pluginOptions != "" {
+	if pluginOptions := FirstNonEmpty(stringFromMap(proxy, "plugin-opts"), stringFromMap(proxy, "plugin_opts")); pluginOptions != "" {
 		query.Set("plugin_opts", pluginOptions)
 	}
 	if network := stringFromMap(proxy, "network"); network != "" {
@@ -762,7 +762,7 @@ func clashShadowsocksURI(proxy map[string]any) string {
 
 func clashHysteriaURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	auth := firstNonEmpty(stringFromMap(proxy, "auth-str"), stringFromMap(proxy, "auth_str"), stringFromMap(proxy, "auth"), stringFromMap(proxy, "password"))
+	auth := FirstNonEmpty(stringFromMap(proxy, "auth-str"), stringFromMap(proxy, "auth_str"), stringFromMap(proxy, "auth"), stringFromMap(proxy, "password"))
 	if server == "" || port == "" || auth == "" {
 		return ""
 	}
@@ -787,7 +787,7 @@ func clashHysteriaURI(proxy map[string]any) string {
 
 func clashHysteria2URI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	password := firstNonEmpty(stringFromMap(proxy, "password"), stringFromMap(proxy, "auth"))
+	password := FirstNonEmpty(stringFromMap(proxy, "password"), stringFromMap(proxy, "auth"))
 	if server == "" || port == "" || password == "" {
 		return ""
 	}
@@ -812,7 +812,7 @@ func clashHysteria2URI(proxy map[string]any) string {
 
 func clashTUICURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	uuid := firstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
+	uuid := FirstNonEmpty(stringFromMap(proxy, "uuid"), stringFromMap(proxy, "id"))
 	password := stringFromMap(proxy, "password")
 	if server == "" || port == "" || uuid == "" {
 		return ""
@@ -835,7 +835,7 @@ func clashTUICURI(proxy map[string]any) string {
 
 func clashSSHURI(proxy map[string]any) string {
 	server, port := clashServerPort(proxy)
-	user := firstNonEmpty(stringFromMap(proxy, "user"), stringFromMap(proxy, "username"))
+	user := FirstNonEmpty(stringFromMap(proxy, "user"), stringFromMap(proxy, "username"))
 	if server == "" || port == "" {
 		return ""
 	}
@@ -866,7 +866,7 @@ func clashQUICProxyQuery(proxy map[string]any) url.Values {
 	copyClashString(query, proxy, "network", "network")
 	copyClashString(query, proxy, "server_ports", "server-ports", "server_ports", "ports")
 	copyClashString(query, proxy, "hop_interval", "hop-interval", "hop_interval")
-	if sni := firstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni"), stringFromMap(proxy, "peer")); sni != "" {
+	if sni := FirstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni"), stringFromMap(proxy, "peer")); sni != "" {
 		query.Set("sni", sni)
 	}
 	if alpn := stringListFromMap(proxy, "alpn"); alpn != "" {
@@ -904,10 +904,10 @@ func clashV2RayQuery(proxy map[string]any) url.Values {
 	if security := clashTLSMode(proxy); security != "" {
 		query.Set("security", security)
 	}
-	if sni := firstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni")); sni != "" {
+	if sni := FirstNonEmpty(stringFromMap(proxy, "servername"), stringFromMap(proxy, "sni")); sni != "" {
 		query.Set("sni", sni)
 	}
-	if fingerprint := firstNonEmpty(stringFromMap(proxy, "client-fingerprint"), stringFromMap(proxy, "fingerprint"), stringFromMap(proxy, "fp")); fingerprint != "" {
+	if fingerprint := FirstNonEmpty(stringFromMap(proxy, "client-fingerprint"), stringFromMap(proxy, "fingerprint"), stringFromMap(proxy, "fp")); fingerprint != "" {
 		query.Set("fp", fingerprint)
 	}
 	if alpn := stringListFromMap(proxy, "alpn"); alpn != "" {
@@ -966,12 +966,12 @@ func clashTLSMode(proxy map[string]any) string {
 
 func clashRealityOptions(proxy map[string]any) (string, string) {
 	options := mapFromMap(proxy, "reality-opts", "reality_opts", "reality")
-	return firstNonEmpty(
+	return FirstNonEmpty(
 			stringFromMap(options, "public-key"),
 			stringFromMap(options, "public_key"),
 			stringFromMap(proxy, "pbk"),
 			stringFromMap(proxy, "public-key"),
-		), firstNonEmpty(
+		), FirstNonEmpty(
 			stringFromMap(options, "short-id"),
 			stringFromMap(options, "short_id"),
 			stringFromMap(proxy, "sid"),
@@ -984,7 +984,7 @@ func clashTransportHostPath(proxy map[string]any, network string) (string, strin
 	case "ws":
 		options := mapFromMap(proxy, "ws-opts", "ws_opts")
 		headers := mapFromMap(options, "headers")
-		return firstNonEmpty(
+		return FirstNonEmpty(
 				stringFromMap(headers, "Host"),
 				stringFromMap(headers, "host"),
 				stringFromMap(options, "host"),
@@ -1000,7 +1000,7 @@ func clashTransportHostPath(proxy map[string]any, network string) (string, strin
 
 func clashGRPCServiceName(proxy map[string]any) string {
 	options := mapFromMap(proxy, "grpc-opts", "grpc_opts")
-	return firstNonEmpty(
+	return FirstNonEmpty(
 		stringFromMap(options, "grpc-service-name"),
 		stringFromMap(options, "grpc_service_name"),
 		stringFromMap(options, "serviceName"),

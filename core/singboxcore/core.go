@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"proxy-hub/service/proxyuri"
+
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	adapterInbound "github.com/sagernet/sing-box/adapter/inbound"
@@ -353,7 +355,7 @@ func (c *Core) removeOutboundTagsIfUnused(tags []string) error {
 	if c == nil || c.instance == nil {
 		return nil
 	}
-	tags = uniqueNonEmpty(tags)
+	tags = proxyuri.UniqueNonEmpty(tags)
 	if len(tags) == 0 {
 		return nil
 	}
@@ -391,23 +393,6 @@ func (c *Core) referencedOutboundTags() map[string]struct{} {
 		for tag := range group.referencedTags() {
 			result[tag] = struct{}{}
 		}
-	}
-	return result
-}
-
-func uniqueNonEmpty(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
 	}
 	return result
 }

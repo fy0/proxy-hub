@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,7 +151,7 @@ func TestNodeImportExpandsClashYAML(t *testing.T) {
 	if result.Imported != 2 || result.Failed != 0 {
 		t.Fatalf("NodeImport() result = %+v, want 2 imported and 0 failed", result)
 	}
-	if result.Items[0].Protocol != ProtocolVLESS || !containsString(result.Items[0].Tags, "h2") {
+	if result.Items[0].Protocol != ProtocolVLESS || !slices.Contains(result.Items[0].Tags, "h2") {
 		t.Fatalf("first item = %+v, want vless h2", result.Items[0])
 	}
 
@@ -296,7 +297,7 @@ func TestNodeImportAssignsGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupGet() error = %v", err)
 	}
-	if !containsString(decodeStringSlice(refreshed.NodeIDsJSON), result.Items[0].ID) {
+	if !slices.Contains(decodeStringSlice(refreshed.NodeIDsJSON), result.Items[0].ID) {
 		t.Fatalf("group node IDs = %v, want imported node", decodeStringSlice(refreshed.NodeIDsJSON))
 	}
 }
@@ -705,7 +706,7 @@ func TestNodeUpdateCanAssignMultipleGroups(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GroupGet(%s) error = %v", group.Name, err)
 		}
-		if !containsString(decodeStringSlice(refreshed.NodeIDsJSON), node.ID) {
+		if !slices.Contains(decodeStringSlice(refreshed.NodeIDsJSON), node.ID) {
 			t.Fatalf("%s node IDs = %v, want node %q", group.Name, decodeStringSlice(refreshed.NodeIDsJSON), node.ID)
 		}
 	}
@@ -728,14 +729,14 @@ func TestNodeUpdateCanAssignMultipleGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupGet(first) error = %v", err)
 	}
-	if containsString(decodeStringSlice(refreshedFirst.NodeIDsJSON), node.ID) {
+	if slices.Contains(decodeStringSlice(refreshedFirst.NodeIDsJSON), node.ID) {
 		t.Fatalf("first node IDs = %v, want node removed", decodeStringSlice(refreshedFirst.NodeIDsJSON))
 	}
 	refreshedSecond, err := GroupGet(ctx, nil, second.ID)
 	if err != nil {
 		t.Fatalf("GroupGet(second) error = %v", err)
 	}
-	if !containsString(decodeStringSlice(refreshedSecond.NodeIDsJSON), node.ID) {
+	if !slices.Contains(decodeStringSlice(refreshedSecond.NodeIDsJSON), node.ID) {
 		t.Fatalf("second node IDs = %v, want node %q", decodeStringSlice(refreshedSecond.NodeIDsJSON), node.ID)
 	}
 }
@@ -826,7 +827,7 @@ proxy-groups:
 	if len(decodeStringSlice(allGroup.NodeIDsJSON)) != 2 {
 		t.Fatalf("all group node IDs = %v, want 2", decodeStringSlice(allGroup.NodeIDsJSON))
 	}
-	if !containsString(decodeStringSlice(allGroup.BuiltinTagsJSON), constantDirect) {
+	if !slices.Contains(decodeStringSlice(allGroup.BuiltinTagsJSON), constantDirect) {
 		t.Fatalf("all group builtins = %v, want DIRECT", decodeStringSlice(allGroup.BuiltinTagsJSON))
 	}
 	rootGroup, err := GroupGet(ctx, nil, subscription.GroupID)
@@ -957,10 +958,10 @@ rules:
 	if rulesetGroup != nil {
 		t.Fatalf("ruleset group was imported: %+v", rulesetGroup)
 	}
-	if !containsString(decodeStringSlice(allGroup.BuiltinTagsJSON), constantDirect) {
+	if !slices.Contains(decodeStringSlice(allGroup.BuiltinTagsJSON), constantDirect) {
 		t.Fatalf("all group builtins = %v, want DIRECT retained", decodeStringSlice(allGroup.BuiltinTagsJSON))
 	}
-	if containsString(decodeStringSlice(routeOnlyGroup.BuiltinTagsJSON), constantDirect) {
+	if slices.Contains(decodeStringSlice(routeOnlyGroup.BuiltinTagsJSON), constantDirect) {
 		t.Fatalf("route-only builtins = %v, want DIRECT removed", decodeStringSlice(routeOnlyGroup.BuiltinTagsJSON))
 	}
 }
@@ -1585,8 +1586,8 @@ func TestSettingsImportRoundTripReplacesExistingConfig(t *testing.T) {
 		t.Fatalf("MappingList() error = %v", err)
 	}
 	if len(mappings) != 1 ||
-		!containsString(decodeStringSlice(mappings[0].NodeIDsJSON), node.ID) ||
-		!containsString(decodeStringSlice(mappings[0].GroupIDsJSON), group.ID) {
+		!slices.Contains(decodeStringSlice(mappings[0].NodeIDsJSON), node.ID) ||
+		!slices.Contains(decodeStringSlice(mappings[0].GroupIDsJSON), group.ID) {
 		t.Fatalf("mappings after import = %+v, want restored references", mappings)
 	}
 }

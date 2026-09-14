@@ -77,7 +77,7 @@ func OutboundFromURIWithOptions(rawURI string, tag string, options OutboundOptio
 			Options: &option.VMessOutboundOptions{
 				ServerOptions:  serverOptions,
 				UUID:           parsed.Username,
-				Security:       firstNonEmpty(parsed.VMessSecurity, "auto"),
+				Security:       FirstNonEmpty(parsed.VMessSecurity, "auto"),
 				AlterId:        parsed.VMessAlterID,
 				PacketEncoding: parsed.VMessPacketEncoding,
 				Transport:      transport,
@@ -174,7 +174,7 @@ func buildHysteriaOutbound(parsed *ParsedURI, serverOptions option.ServerOptions
 		ServerPorts:   listableStringFromQuery(parsed.Query, "server_ports", "server-ports", "ports"),
 		HopInterval:   durationFromQuery(parsed.Query, "hop_interval", "hop-interval"),
 		Obfs:          queryFirst(parsed.Query, "obfs"),
-		AuthString:    firstNonEmpty(parsed.Password, queryFirst(parsed.Query, "auth_str", "auth-str", "password")),
+		AuthString:    FirstNonEmpty(parsed.Password, queryFirst(parsed.Query, "auth_str", "auth-str", "password")),
 		Network:       networkListFromQuery(parsed.Query),
 		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
 			TLS: tlsOptions,
@@ -236,7 +236,7 @@ func buildHysteria2Outbound(parsed *ParsedURI, serverOptions option.ServerOption
 	}
 	if obfsPassword := queryFirst(parsed.Query, "obfs-password", "obfs_password", "obfsPassword"); obfsPassword != "" {
 		options.Obfs = &option.Hysteria2Obfs{
-			Type:     firstNonEmpty(queryFirst(parsed.Query, "obfs", "obfs-type", "obfs_type"), "salamander"),
+			Type:     FirstNonEmpty(queryFirst(parsed.Query, "obfs", "obfs-type", "obfs_type"), "salamander"),
 			Password: obfsPassword,
 		}
 	}
@@ -255,7 +255,7 @@ func buildTUICOutbound(parsed *ParsedURI, serverOptions option.ServerOptions, ta
 		ServerOptions:     serverOptions,
 		UUID:              parsed.Username,
 		Password:          parsed.Password,
-		CongestionControl: firstNonEmpty(queryFirst(parsed.Query, "congestion_control", "congestion-control"), "cubic"),
+		CongestionControl: FirstNonEmpty(queryFirst(parsed.Query, "congestion_control", "congestion-control"), "cubic"),
 		UDPRelayMode:      queryFirst(parsed.Query, "udp_relay_mode", "udp-relay-mode"),
 		UDPOverStream:     queryBool(parsed.Query, "udp_over_stream", "udp-over-stream"),
 		ZeroRTTHandshake:  queryBool(parsed.Query, "zero_rtt_handshake", "zero-rtt-handshake"),
@@ -292,7 +292,7 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (
 
 	tlsOptions := &option.OutboundTLSOptions{
 		Enabled:    true,
-		ServerName: firstNonEmpty(queryFirst(query, "sni", "servername", "server_name"), serverName),
+		ServerName: FirstNonEmpty(queryFirst(query, "sni", "servername", "server_name"), serverName),
 		Insecure:   queryBool(query, "allowInsecure", "allow_insecure", "insecure", "skip-cert-verify"),
 	}
 	if alpn := splitCommaList(queryFirst(query, "alpn")); len(alpn) > 0 {
@@ -300,7 +300,7 @@ func buildTLSOptions(query url.Values, serverName string, defaultEnabled bool) (
 	}
 	fingerprint := queryFirst(query, "fp", "fingerprint")
 	if security == "reality" {
-		fingerprint = firstNonEmpty(fingerprint, "chrome")
+		fingerprint = FirstNonEmpty(fingerprint, "chrome")
 	}
 	if fingerprint != "" {
 		tlsOptions.UTLS = &option.OutboundUTLSOptions{
@@ -421,7 +421,7 @@ func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error
 		return nil, nil
 	case constant.V2RayTransportTypeWebsocket:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeWebsocket}
-		transport.WebsocketOptions.Path = firstNonEmpty(queryFirst(query, "path"), "/")
+		transport.WebsocketOptions.Path = FirstNonEmpty(queryFirst(query, "path"), "/")
 		if earlyData := queryFirst(query, "ed", "maxEarlyData", "max_early_data"); earlyData != "" {
 			if parsed, err := strconv.ParseUint(earlyData, 10, 32); err == nil {
 				transport.WebsocketOptions.MaxEarlyData = uint32(parsed)
@@ -448,11 +448,11 @@ func buildV2RayTransport(query url.Values) (*option.V2RayTransportOptions, error
 		return transport, nil
 	case constant.V2RayTransportTypeGRPC:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeGRPC}
-		transport.GRPCOptions.ServiceName = firstNonEmpty(queryFirst(query, "serviceName", "service_name"), queryFirst(query, "path"))
+		transport.GRPCOptions.ServiceName = FirstNonEmpty(queryFirst(query, "serviceName", "service_name"), queryFirst(query, "path"))
 		return transport, nil
 	case constant.V2RayTransportTypeHTTPUpgrade:
 		transport := &option.V2RayTransportOptions{Type: constant.V2RayTransportTypeHTTPUpgrade}
-		transport.HTTPUpgradeOptions.Path = firstNonEmpty(queryFirst(query, "path"), "/")
+		transport.HTTPUpgradeOptions.Path = FirstNonEmpty(queryFirst(query, "path"), "/")
 		transport.HTTPUpgradeOptions.Host = queryFirst(query, "host")
 		return transport, nil
 	case constant.V2RayTransportTypeQUIC:

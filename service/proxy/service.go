@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"slices"
+
 	"proxy-hub/model"
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -204,7 +207,7 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		return err
 	}
 	for _, mapping := range mappings {
-		nodeIDs := removeString(decodeStringSlice(mapping.NodeIDsJSON), id)
+		nodeIDs := slices.DeleteFunc(decodeStringSlice(mapping.NodeIDsJSON), func(v string) bool { return v == id })
 		active := mapping.ActiveNodeID
 		if normalizeStrategy(mapping.Strategy) != StrategyManual {
 			active = ""
@@ -228,7 +231,7 @@ func nodeDeleteInTx(ctx context.Context, tx model.DBTx, id string) error {
 		return err
 	}
 	for _, group := range groups {
-		nodeIDs := removeString(decodeStringSlice(group.NodeIDsJSON), id)
+		nodeIDs := slices.DeleteFunc(decodeStringSlice(group.NodeIDsJSON), func(v string) bool { return v == id })
 		if err := tx.Model(group).Updates(map[string]any{
 			"node_ids_json": encodeStringSlice(nodeIDs),
 			"updated_at":    time.Now(),
@@ -419,7 +422,7 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 		if err := tx.Model(group).Updates(map[string]any{
 			"strategy":          parsedGroup.Strategy,
 			"node_ids_json":     encodeStringSlice(nodeIDs),
-			"group_ids_json":    encodeStringSlice(removeString(groupIDs, group.ID)),
+			"group_ids_json":    encodeStringSlice(slices.DeleteFunc(groupIDs, func(v string) bool { return v == group.ID })),
 			"builtin_tags_json": encodeStringSlice(parsedGroup.BuiltinTags),
 			"includes_all":      parsedGroup.IncludesAll,
 			"filter":            parsedGroup.Filter,
@@ -646,8 +649,8 @@ func appendManualImportToGroup(ctx context.Context, tx model.DBTx, targetGroupID
 		}
 		return err
 	}
-	nextNodeIDs := uniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
-	nextGroupIDs := uniqueNonEmpty(append(decodeStringSlice(group.GroupIDsJSON), removeString(groupIDs, targetGroupID)...))
+	nextNodeIDs := proxyuri.UniqueNonEmpty(append(decodeStringSlice(group.NodeIDsJSON), nodeIDs...))
+	nextGroupIDs := proxyuri.UniqueNonEmpty(append(decodeStringSlice(group.GroupIDsJSON), slices.DeleteFunc(groupIDs, func(v string) bool { return v == targetGroupID })...))
 	if err := ensureGroupMembersKeepChainMemberGroupsValid(ctx, tx, group.ID, nextNodeIDs, nextGroupIDs); err != nil {
 		return err
 	}
@@ -687,7 +690,7 @@ func MappingCreate(ctx context.Context, tx model.DBTx, req MappingUpsertRequest)
 		Remark:                     normalized.Remark,
 	}
 	if err := tx.Create(mapping).Error; err != nil {
-		if isUniqueConstraintError(err) {
+		if model.IsUniqueConstraintError(err) {
 			return nil, ErrListenPortTaken
 		}
 		return nil, err
@@ -727,7 +730,7 @@ func MappingUpdate(ctx context.Context, tx model.DBTx, id string, req MappingUps
 		"remark":                        normalized.Remark,
 		"updated_at":                    time.Now(),
 	}).Error; err != nil {
-		if isUniqueConstraintError(err) {
+		if model.IsUniqueConstraintError(err) {
 			return nil, ErrListenPortTaken
 		}
 		return nil, err
@@ -761,13 +764,13 @@ func MappingSwitch(ctx context.Context, tx model.DBTx, id string, req MappingSwi
 	}
 	switch targetType {
 	case MappingSwitchTargetNode:
-		if !containsString(decodeStringSlice(mapping.NodeIDsJSON), targetID) {
+		if !slices.Contains(decodeStringSlice(mapping.NodeIDsJSON), targetID) {
 			return nil, ErrInvalidMappingSwitch
 		}
 		updates["active_node_id"] = targetID
 		updates["active_group_id"] = ""
 	case MappingSwitchTargetGroup:
-		if !containsString(decodeStringSlice(mapping.GroupIDsJSON), targetID) {
+		if !slices.Contains(decodeStringSlice(mapping.GroupIDsJSON), targetID) {
 			return nil, ErrInvalidMappingSwitch
 		}
 		updates["active_node_id"] = ""
@@ -923,7 +926,7 @@ func mappingOrderDescClause() clause.OrderBy {
 
 func findNodesByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.ProxyNodeTable, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
-	ids = uniqueNonEmpty(ids)
+	ids = proxyuri.UniqueNonEmpty(ids)
 	if len(ids) == 0 {
 		return []*tables.ProxyNodeTable{}, nil
 	}
@@ -949,7 +952,7 @@ func findNodesByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables
 func findNodesByGroupOrIDs(ctx context.Context, tx model.DBTx, groupID string, ids []string) ([]*tables.ProxyNodeTable, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
 	groupID = strings.TrimSpace(groupID)
-	ids = uniqueNonEmpty(ids)
+	ids = proxyuri.UniqueNonEmpty(ids)
 	if groupID == "" {
 		return findNodesByIDs(ctx, tx, ids)
 	}
@@ -1003,7 +1006,7 @@ func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, re
 	query = query.WithContext(ctx)
 	req.Keyword = strings.TrimSpace(req.Keyword)
 	req.GroupID = strings.TrimSpace(req.GroupID)
-	req.IDs = uniqueNonEmpty(req.IDs)
+	req.IDs = proxyuri.UniqueNonEmpty(req.IDs)
 
 	if len(req.IDs) > 0 {
 		query = query.Where("id IN ?", req.IDs)
@@ -1037,7 +1040,7 @@ func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, re
 				grouped = append(grouped, decodeStringSlice(group.NodeIDsJSON)...)
 			}
 			query = query.Where("group_id = ''")
-			if grouped = uniqueNonEmpty(grouped); len(grouped) > 0 {
+			if grouped = proxyuri.UniqueNonEmpty(grouped); len(grouped) > 0 {
 				query = query.Where("id NOT IN ?", grouped)
 			}
 		}
@@ -1055,7 +1058,7 @@ func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, re
 			if !found {
 				return nil, ErrGroupNotFound
 			}
-			memberIDs = uniqueNonEmpty(memberIDs)
+			memberIDs = proxyuri.UniqueNonEmpty(memberIDs)
 			if len(memberIDs) == 0 {
 				query = query.Where("group_id = ?", req.GroupID)
 			} else {
@@ -1069,7 +1072,7 @@ func applyNodeListRequest(ctx context.Context, query *gorm.DB, tx model.DBTx, re
 
 func findGroupsByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*tables.ProxyGroupTable, error) {
 	tx = model.GetTx(tx).WithContext(ctx)
-	ids = uniqueNonEmpty(ids)
+	ids = proxyuri.UniqueNonEmpty(ids)
 	if len(ids) == 0 {
 		return []*tables.ProxyGroupTable{}, nil
 	}
@@ -1098,7 +1101,7 @@ func errMissingReferences(sentinel error, requested []string, found []string) er
 		foundSet[id] = struct{}{}
 	}
 	missing := make([]string, 0)
-	for _, id := range uniqueNonEmpty(requested) {
+	for _, id := range proxyuri.UniqueNonEmpty(requested) {
 		if _, ok := foundSet[id]; !ok {
 			missing = append(missing, id)
 		}
@@ -1107,7 +1110,7 @@ func errMissingReferences(sentinel error, requested []string, found []string) er
 }
 
 func normalizeNodeGroupIDs(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) ([]string, error) {
-	groupIDs := uniqueNonEmpty(req.GroupIDs)
+	groupIDs := proxyuri.UniqueNonEmpty(req.GroupIDs)
 	if len(groupIDs) == 0 {
 		groupIDs = stringSliceOrEmpty(strings.TrimSpace(req.GroupID))
 	}
@@ -1138,7 +1141,7 @@ func nodeGroupIDs(ctx context.Context, tx model.DBTx, nodeID string, legacyGroup
 }
 
 func primaryGroupID(groupIDs []string) string {
-	groupIDs = uniqueNonEmpty(groupIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(groupIDs) == 0 {
 		return ""
 	}
@@ -1215,7 +1218,7 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	normalized.ChainNodeIDs = chainNodeIDsFromMembers(normalized.ChainMembers)
 
 	if normalized.Name == "" {
-		normalized.Name = defaultNodeName(normalized.Protocol, normalized.Server)
+		normalized.Name = proxyuri.DefaultNodeName(normalized.Protocol, normalized.Server)
 	}
 	if !isSupportedNodeProtocol(normalized.Protocol) {
 		return nil, ErrUnsupportedProtocol
@@ -1264,7 +1267,7 @@ func normalizeNodeChainIDs(ctx context.Context, tx model.DBTx, nodeID string, re
 	if len(req.ChainMembers) < 2 {
 		return ErrInvalidChain
 	}
-	if nodeID != "" && containsString(req.ChainNodeIDs, nodeID) {
+	if nodeID != "" && slices.Contains(req.ChainNodeIDs, nodeID) {
 		return ErrInvalidChain
 	}
 	nodes, err := findNodesByIDs(ctx, tx, req.ChainNodeIDs)
@@ -1338,7 +1341,7 @@ func ensurePendingNodeKeepsChainMemberGroupsValid(
 	if err := tx.Find(&groups).Error; err != nil {
 		return err
 	}
-	affectedGroupIDs := uniqueNonEmpty(append(append([]string{}, previousGroupIDs...), nextGroupIDs...))
+	affectedGroupIDs := proxyuri.UniqueNonEmpty(append(append([]string{}, previousGroupIDs...), nextGroupIDs...))
 	if len(affectedGroupIDs) == 0 {
 		affectedGroupIDs = groupIDsForNodeFromGroups(pendingNode.ID, pendingNode.GroupID, groups)
 	}
@@ -1354,12 +1357,12 @@ func ensurePendingNodeKeepsChainMemberGroupsValid(
 		if group == nil {
 			continue
 		}
-		nextNodeIDs := removeString(decodeStringSlice(group.NodeIDsJSON), pendingNode.ID)
+		nextNodeIDs := slices.DeleteFunc(decodeStringSlice(group.NodeIDsJSON), func(v string) bool { return v == pendingNode.ID })
 		if _, shouldContain := nextGroupSet[group.ID]; shouldContain {
 			nextNodeIDs = append(nextNodeIDs, pendingNode.ID)
 		}
 		nextGroup := *group
-		nextGroup.NodeIDsJSON = encodeStringSlice(uniqueNonEmpty(nextNodeIDs))
+		nextGroup.NodeIDsJSON = encodeStringSlice(proxyuri.UniqueNonEmpty(nextNodeIDs))
 		pendingGroups = append(pendingGroups, &nextGroup)
 	}
 	return ensureChainMemberGroupsValid(ctx, tx, pendingGroups, []*tables.ProxyNodeTable{pendingNode})
@@ -1465,7 +1468,7 @@ func chainMemberGroupClosure(groups []*tables.ProxyGroupTable, seedGroupIDs []st
 			visit(childGroupID)
 		}
 	}
-	for _, groupID := range uniqueNonEmpty(seedGroupIDs) {
+	for _, groupID := range proxyuri.UniqueNonEmpty(seedGroupIDs) {
 		visit(groupID)
 	}
 	return visited
@@ -1534,7 +1537,7 @@ func mergePendingNodes(nodes []*tables.ProxyNodeTable, pendingNodes []*tables.Pr
 }
 
 func hasChainGroupCycle(groups []*tables.ProxyGroupTable, seedGroupIDs []string) bool {
-	seedGroupIDs = uniqueNonEmpty(seedGroupIDs)
+	seedGroupIDs = proxyuri.UniqueNonEmpty(seedGroupIDs)
 	if len(seedGroupIDs) == 0 {
 		return false
 	}
@@ -1599,7 +1602,7 @@ func ensureNodeNotReferencedByChains(ctx context.Context, tx model.DBTx, nodeID 
 		if node == nil || node.ID == nodeID {
 			continue
 		}
-		if containsString(chainNodeIDsFromMembers(chainMembersForNode(node)), nodeID) {
+		if slices.Contains(chainNodeIDsFromMembers(chainMembersForNode(node)), nodeID) {
 			return ErrInvalidChain
 		}
 	}
@@ -1607,7 +1610,7 @@ func ensureNodeNotReferencedByChains(ctx context.Context, tx model.DBTx, nodeID 
 }
 
 func ensureGroupNotReferencedByChains(ctx context.Context, tx model.DBTx, groupIDs []string) error {
-	groupIDs = uniqueNonEmpty(groupIDs)
+	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
 	if len(groupIDs) == 0 {
 		return nil
 	}
@@ -1679,7 +1682,7 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	for _, node := range nodes {
 		nodeIDs = append(nodeIDs, node.ID)
 	}
-	if len(nodeIDs) != len(uniqueNonEmpty(normalized.NodeIDs)) {
+	if len(nodeIDs) != len(proxyuri.UniqueNonEmpty(normalized.NodeIDs)) {
 		return nil, errMissingReferences(ErrNodeNotFound, normalized.NodeIDs, nodeIDs)
 	}
 	normalized.NodeIDs = nodeIDs
@@ -1687,7 +1690,7 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	if normalized.ActiveNodeID != nil {
 		activeNode = strings.TrimSpace(*normalized.ActiveNodeID)
 	}
-	if activeNode != "" && !containsString(normalized.NodeIDs, activeNode) {
+	if activeNode != "" && !slices.Contains(normalized.NodeIDs, activeNode) {
 		activeNode = ""
 	}
 
@@ -1699,7 +1702,7 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	for _, group := range groups {
 		groupIDs = append(groupIDs, group.ID)
 	}
-	if len(groupIDs) != len(uniqueNonEmpty(normalized.GroupIDs)) {
+	if len(groupIDs) != len(proxyuri.UniqueNonEmpty(normalized.GroupIDs)) {
 		return nil, errMissingReferences(ErrGroupNotFound, normalized.GroupIDs, groupIDs)
 	}
 	normalized.GroupIDs = groupIDs
@@ -1719,7 +1722,7 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	if normalized.ActiveGroupID != nil {
 		activeGroup = strings.TrimSpace(*normalized.ActiveGroupID)
 	}
-	if activeGroup != "" && !containsString(normalized.GroupIDs, activeGroup) {
+	if activeGroup != "" && !slices.Contains(normalized.GroupIDs, activeGroup) {
 		activeGroup = ""
 	}
 
@@ -1770,10 +1773,10 @@ func normalizeImportURIs(req NodeImportRequest) []string {
 	}
 
 	expanded := make([]string, 0, len(values))
-	for _, value := range uniqueNonEmpty(values) {
+	for _, value := range proxyuri.UniqueNonEmpty(values) {
 		expanded = append(expanded, expandImportValue(value)...)
 	}
-	return uniqueNonEmpty(expanded)
+	return proxyuri.UniqueNonEmpty(expanded)
 }
 
 func normalizeImportURIsWithFetch(ctx context.Context, req NodeImportRequest) ([]string, []NodeImportFailure) {
@@ -1785,7 +1788,7 @@ func normalizeImportURIsWithFetch(ctx context.Context, req NodeImportRequest) ([
 
 	expanded := make([]string, 0, len(values))
 	failures := make([]NodeImportFailure, 0)
-	for _, value := range uniqueNonEmpty(values) {
+	for _, value := range proxyuri.UniqueNonEmpty(values) {
 		if isLikelySubscriptionURL(value) {
 			raw, err := fetchSubscription(ctx, value)
 			if err != nil {
@@ -1797,26 +1800,16 @@ func normalizeImportURIsWithFetch(ctx context.Context, req NodeImportRequest) ([
 		}
 		expanded = append(expanded, expandImportValue(value)...)
 	}
-	return uniqueNonEmpty(expanded), failures
+	return proxyuri.UniqueNonEmpty(expanded), failures
 }
 
+// normalizeProtocol 在 proxyuri 归一化之上保留 ProtocolChain：
+// chain 是本服务自有的组合概念，不是 URI 协议，proxyuri 的归一化表不认识它。
 func normalizeProtocol(protocol string) string {
-	protocol = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(protocol, ":")))
-	switch protocol {
-	case "socks", "socks5":
-		return ProtocolSOCKS5
-	case "ss", "shadowsocks":
-		return ProtocolShadowsocks
-	case "hy2", "hysteria2":
-		return ProtocolHysteria2
-	case "https":
-		return ProtocolHTTP
-	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHTTP,
-		ProtocolHysteria, ProtocolTUIC, ProtocolSSH, ProtocolChain:
-		return protocol
-	default:
-		return ProtocolUnknown
+	if strings.ToLower(strings.TrimSpace(strings.TrimSuffix(protocol, ":"))) == ProtocolChain {
+		return ProtocolChain
 	}
+	return proxyuri.NormalizeProtocol(protocol)
 }
 
 func normalizeOutboundProtocol(protocol string) string {
@@ -1917,66 +1910,15 @@ func isSupportedNodeProtocol(protocol string) bool {
 }
 
 func cleanTags(tags []string, protocol string) []string {
-	values := uniqueNonEmpty(tags)
-	if protocol != "" && protocol != ProtocolUnknown && !containsString(values, protocol) {
+	values := proxyuri.UniqueNonEmpty(tags)
+	if protocol != "" && protocol != ProtocolUnknown && !slices.Contains(values, protocol) {
 		values = append([]string{protocol}, values...)
 	}
 	return values
 }
 
-func uniqueNonEmpty(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
-func removeString(values []string, target string) []string {
-	next := values[:0]
-	for _, value := range values {
-		if value != target {
-			next = append(next, value)
-		}
-	}
-	return next
-}
-
-func removeStrings(values []string, targets []string) []string {
-	targetSet := stringSet(targets)
-	if len(targetSet) == 0 {
-		return uniqueNonEmpty(values)
-	}
-	next := values[:0]
-	for _, value := range values {
-		if _, ok := targetSet[value]; ok {
-			continue
-		}
-		next = append(next, value)
-	}
-	return uniqueNonEmpty(next)
-}
-
 func stringSet(values []string) map[string]struct{} {
-	values = uniqueNonEmpty(values)
+	values = proxyuri.UniqueNonEmpty(values)
 	result := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		result[value] = struct{}{}
@@ -1984,33 +1926,9 @@ func stringSet(values []string) map[string]struct{} {
 	return result
 }
 
-func defaultNodeName(protocol, server string) string {
-	if server == "" {
-		return "未命名节点"
-	}
-	if protocol == "" || protocol == ProtocolUnknown {
-		return server
-	}
-	return strings.ToUpper(protocol) + " " + server
-}
-
 func valueOrEmpty(value *string) string {
 	if value == nil {
 		return ""
 	}
 	return strings.TrimSpace(*value)
-}
-
-func isUniqueConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique constraint") ||
-		strings.Contains(message, "unique violation") ||
-		strings.Contains(message, "duplicate entry") ||
-		strings.Contains(message, "duplicate key")
 }
