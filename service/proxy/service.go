@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"time"
@@ -1071,6 +1072,20 @@ func findGroupsByIDs(ctx context.Context, tx model.DBTx, ids []string) ([]*table
 	return ordered, nil
 }
 
+func errMissingReferences(sentinel error, requested []string, found []string) error {
+	foundSet := make(map[string]struct{}, len(found))
+	for _, id := range found {
+		foundSet[id] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, id := range uniqueNonEmpty(requested) {
+		if _, ok := foundSet[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return fmt.Errorf("%w: %s", sentinel, strings.Join(missing, ", "))
+}
+
 func normalizeNodeGroupIDs(ctx context.Context, tx model.DBTx, req NodeUpsertRequest) ([]string, error) {
 	groupIDs := uniqueNonEmpty(req.GroupIDs)
 	if len(groupIDs) == 0 {
@@ -1640,10 +1655,14 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	if err != nil {
 		return nil, err
 	}
-	normalized.NodeIDs = make([]string, 0, len(nodes))
+	nodeIDs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		normalized.NodeIDs = append(normalized.NodeIDs, node.ID)
+		nodeIDs = append(nodeIDs, node.ID)
 	}
+	if len(nodeIDs) != len(uniqueNonEmpty(normalized.NodeIDs)) {
+		return nil, errMissingReferences(ErrNodeNotFound, normalized.NodeIDs, nodeIDs)
+	}
+	normalized.NodeIDs = nodeIDs
 	activeNode := ""
 	if normalized.ActiveNodeID != nil {
 		activeNode = strings.TrimSpace(*normalized.ActiveNodeID)
@@ -1656,10 +1675,14 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 	if err != nil {
 		return nil, err
 	}
-	normalized.GroupIDs = make([]string, 0, len(groups))
+	groupIDs := make([]string, 0, len(groups))
 	for _, group := range groups {
-		normalized.GroupIDs = append(normalized.GroupIDs, group.ID)
+		groupIDs = append(groupIDs, group.ID)
 	}
+	if len(groupIDs) != len(uniqueNonEmpty(normalized.GroupIDs)) {
+		return nil, errMissingReferences(ErrGroupNotFound, normalized.GroupIDs, groupIDs)
+	}
+	normalized.GroupIDs = groupIDs
 	if inheritedGroupStrategyOverrides {
 		normalized.GroupStrategyOverrides = normalizeGroupStrategyOverrides(normalized.GroupStrategyOverrides, normalized.GroupIDs)
 	} else {

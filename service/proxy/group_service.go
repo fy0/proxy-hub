@@ -161,10 +161,14 @@ func normalizeGroupRequest(ctx context.Context, tx model.DBTx, req GroupUpsertRe
 	if err != nil {
 		return nil, err
 	}
-	normalized.NodeIDs = make([]string, 0, len(nodes))
+	nodeIDs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		normalized.NodeIDs = append(normalized.NodeIDs, node.ID)
+		nodeIDs = append(nodeIDs, node.ID)
 	}
+	if len(nodeIDs) != len(uniqueNonEmpty(normalized.NodeIDs)) {
+		return nil, errMissingReferences(ErrNodeNotFound, normalized.NodeIDs, nodeIDs)
+	}
+	normalized.NodeIDs = nodeIDs
 	return &normalized, nil
 }
 
