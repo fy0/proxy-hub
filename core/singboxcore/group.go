@@ -590,6 +590,40 @@ func sortBlacklistRevivalCandidates(candidates []blacklistRevivalCandidate) {
 	})
 }
 
+// BlacklistRevivalInput 供外部（如基于持久化健康数据的服务层）按 core 的复活排序规则排序候选，
+// 字段语义与 blacklistRevivalCandidate 一致；排序算法只此一份。
+type BlacklistRevivalInput struct {
+	NodeID           string
+	Order            int
+	FailureCount     int
+	HasSuccess       bool
+	LastSuccessAt    time.Time
+	HasLatency       bool
+	LatencyMs        int64
+	LastCheckedAt    time.Time
+	BlacklistedUntil time.Time
+}
+
+// SortBlacklistRevivalInputs 对候选做稳定排序，复活优先级高者在前。
+func SortBlacklistRevivalInputs(inputs []BlacklistRevivalInput) {
+	sort.SliceStable(inputs, func(i, j int) bool {
+		return blacklistRevivalCandidateLess(candidateFromRevivalInput(inputs[i]), candidateFromRevivalInput(inputs[j]))
+	})
+}
+
+func candidateFromRevivalInput(input BlacklistRevivalInput) blacklistRevivalCandidate {
+	return blacklistRevivalCandidate{
+		order:            input.Order,
+		failureCount:     input.FailureCount,
+		hasSuccess:       input.HasSuccess,
+		lastSuccessAt:    input.LastSuccessAt,
+		hasLatency:       input.HasLatency,
+		latencyMs:        input.LatencyMs,
+		lastCheckedAt:    input.LastCheckedAt,
+		blacklistedUntil: input.BlacklistedUntil,
+	}
+}
+
 func blacklistRevivalCandidateLess(left, right blacklistRevivalCandidate) bool {
 	if left.failureCount != right.failureCount {
 		return left.failureCount < right.failureCount

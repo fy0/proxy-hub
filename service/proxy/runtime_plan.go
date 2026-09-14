@@ -512,134 +512,44 @@ func (b *dynamicPlanBuilder) blacklistRevivalNodeIDs(nodeIDs []string, limit int
 		}
 	}
 
-	candidates := make([]healthBlacklistRevivalCandidate, 0, len(nodeIDs))
+	candidates := make([]singboxcore.BlacklistRevivalInput, 0, len(nodeIDs))
 	for order, nodeID := range nodeIDs {
 		health := healthByNodeID[nodeID]
 		if health == nil {
 			continue
 		}
-		candidates = append(candidates, healthBlacklistRevivalCandidate{
-			nodeID: nodeID,
-			health: health,
-			order:  order,
-		})
+		input := singboxcore.BlacklistRevivalInput{
+			NodeID:       nodeID,
+			Order:        order,
+			FailureCount: health.ConsecutiveFailureCount,
+			HasSuccess:   health.LastSuccessAt != nil,
+			HasLatency:   health.LastLatencyMs > 0,
+			LatencyMs:    health.LastLatencyMs,
+		}
+		if health.LastSuccessAt != nil {
+			input.LastSuccessAt = *health.LastSuccessAt
+		}
+		if health.LastCheckedAt != nil {
+			input.LastCheckedAt = *health.LastCheckedAt
+		}
+		if health.BlacklistedUntil != nil {
+			input.BlacklistedUntil = *health.BlacklistedUntil
+		}
+		candidates = append(candidates, input)
 	}
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return healthBlacklistRevivalCandidateLess(candidates[i], candidates[j])
-	})
+	singboxcore.SortBlacklistRevivalInputs(candidates)
 
 	if limit > len(candidates) {
 		limit = len(candidates)
 	}
 	reviveIDs := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
-		reviveIDs = append(reviveIDs, candidates[i].nodeID)
+		reviveIDs = append(reviveIDs, candidates[i].NodeID)
 	}
 	return reviveIDs, nil
-}
-
-type healthBlacklistRevivalCandidate struct {
-	nodeID string
-	health *tables.ProxyNodeHealthTable
-	order  int
-}
-
-func healthBlacklistRevivalCandidateLess(left, right healthBlacklistRevivalCandidate) bool {
-	leftHealth := left.health
-	rightHealth := right.health
-	if leftHealth == nil || rightHealth == nil {
-		return rightHealth == nil && leftHealth != nil
-	}
-	if leftHealth.ConsecutiveFailureCount != rightHealth.ConsecutiveFailureCount {
-		return leftHealth.ConsecutiveFailureCount < rightHealth.ConsecutiveFailureCount
-	}
-	if cmp := compareHealthSuccessRatio(leftHealth, rightHealth); cmp != 0 {
-		return cmp > 0
-	}
-	if !nullableTimeEqual(leftHealth.LastSuccessAt, rightHealth.LastSuccessAt) {
-		return nullableTimeAfter(leftHealth.LastSuccessAt, rightHealth.LastSuccessAt)
-	}
-	if cmp := compareLatencyMs(leftHealth.LastLatencyMs, rightHealth.LastLatencyMs); cmp != 0 {
-		return cmp < 0
-	}
-	if !nullableTimeEqual(leftHealth.LastCheckedAt, rightHealth.LastCheckedAt) {
-		return nullableTimeBefore(leftHealth.LastCheckedAt, rightHealth.LastCheckedAt)
-	}
-	if !nullableTimeEqual(leftHealth.LastFailureAt, rightHealth.LastFailureAt) {
-		return nullableTimeBefore(leftHealth.LastFailureAt, rightHealth.LastFailureAt)
-	}
-	if !nullableTimeEqual(leftHealth.BlacklistedUntil, rightHealth.BlacklistedUntil) {
-		return nullableTimeBefore(leftHealth.BlacklistedUntil, rightHealth.BlacklistedUntil)
-	}
-	return left.order < right.order
-}
-
-func compareHealthSuccessRatio(left, right *tables.ProxyNodeHealthTable) int {
-	leftTotal := int64(left.FailureCount) + left.SuccessCount
-	rightTotal := int64(right.FailureCount) + right.SuccessCount
-	if leftTotal == 0 || rightTotal == 0 {
-		switch {
-		case leftTotal > 0 && rightTotal == 0:
-			return 1
-		case leftTotal == 0 && rightTotal > 0:
-			return -1
-		default:
-			return 0
-		}
-	}
-	leftScore := left.SuccessCount * rightTotal
-	rightScore := right.SuccessCount * leftTotal
-	switch {
-	case leftScore > rightScore:
-		return 1
-	case leftScore < rightScore:
-		return -1
-	default:
-		return 0
-	}
-}
-
-func compareLatencyMs(left, right int64) int {
-	leftHasLatency := left > 0
-	rightHasLatency := right > 0
-	if leftHasLatency != rightHasLatency {
-		if leftHasLatency {
-			return -1
-		}
-		return 1
-	}
-	switch {
-	case left < right:
-		return -1
-	case left > right:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func nullableTimeEqual(left, right *time.Time) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return left.Equal(*right)
-}
-
-func nullableTimeAfter(left, right *time.Time) bool {
-	if left == nil || right == nil {
-		return left != nil
-	}
-	return left.After(*right)
-}
-
-func nullableTimeBefore(left, right *time.Time) bool {
-	if left == nil || right == nil {
-		return left != nil && right == nil
-	}
-	return left.Before(*right)
 }
 
 func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamicMemberPlan, error) {
