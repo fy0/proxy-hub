@@ -101,7 +101,3 @@ func AccessTokenRefreshWithTTL(ctx context.Context, tx model.DBTx, tokenID strin
 
 	return TokenSign(tokenID, expiredAt), nil
 }
-
-func AcessTokenDeleteAllByUserID(ctx context.Context, tx model.DBTx, userID string) error {
-	return AccessTokenDeleteAllByUserID(ctx, tx, userID)
-}
