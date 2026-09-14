@@ -102,6 +102,61 @@ func TestRecordNodeHealthResultKeepsLatestThirty(t *testing.T) {
 	}
 }
 
+func TestNodeHealthBatcherLoadsOnlyRecentHistoryWindow(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	ctx := context.Background()
+	port := uint16(1080)
+	node, err := NodeCreate(ctx, nil, NodeUpsertRequest{
+		Name:     "batcher-history-window",
+		Protocol: ProtocolHTTP,
+		Server:   "127.0.0.1",
+		Port:     &port,
+	})
+	if err != nil {
+		t.Fatalf("NodeCreate() error = %v", err)
+	}
+
+	base := time.Now().Add(-2 * time.Hour)
+	total := nodeHealthHistoryLimit + 10
+	for i := 0; i < total; i++ {
+		row := &tables.ProxyNodeHealthHistoryTable{
+			NodeID:    node.ID,
+			Source:    nodeHealthSourceNodeTest,
+			Available: true,
+			LatencyMs: int64(i + 1),
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		}
+		if err := model.GetTx(nil).Create(row).Error; err != nil {
+			t.Fatalf("create history row %d error = %v", i, err)
+		}
+	}
+
+	globalNodeHealthBatcher.loadMu.Lock()
+	globalNodeHealthBatcher.loaded = false
+	globalNodeHealthBatcher.loadMu.Unlock()
+
+	if _, err := globalNodeHealthBatcher.get(ctx, node.ID); err != nil {
+		t.Fatalf("batcher get() error = %v", err)
+	}
+
+	globalNodeHealthBatcher.mu.Lock()
+	state := globalNodeHealthBatcher.states[node.ID]
+	globalNodeHealthBatcher.mu.Unlock()
+	if state == nil {
+		t.Fatalf("batcher state missing for node %s", node.ID)
+	}
+	if len(state.history) != nodeHealthHistoryLimit {
+		t.Fatalf("history length = %d, want %d", len(state.history), nodeHealthHistoryLimit)
+	}
+	if state.history[0].LatencyMs != int64(total-nodeHealthHistoryLimit+1) {
+		t.Fatalf("oldest kept latency = %d, want %d", state.history[0].LatencyMs, total-nodeHealthHistoryLimit+1)
+	}
+	if state.history[len(state.history)-1].LatencyMs != int64(total) {
+		t.Fatalf("newest kept latency = %d, want %d", state.history[len(state.history)-1].LatencyMs, total)
+	}
+}
+
 func TestSingBoxLogPathDefaultsToRuntimeDataDir(t *testing.T) {
 	t.Setenv("PROXYHUB_SING_BOX_LOG", "")
 

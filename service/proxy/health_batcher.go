@@ -89,10 +89,20 @@ func (b *nodeHealthBatcher) ensureLoaded(ctx context.Context) error {
 		return err
 	}
 
+	// 每个节点只保留最近 nodeHealthHistoryLimit 条，与加载后按窗口裁剪的结果一致，
+	// 避免历史表增长后全表载入。
 	var historyRows []*tables.ProxyNodeHealthHistoryTable
-	if err := db.WithContext(ctx).
-		Order("node_id ASC, checked_at ASC, created_at ASC, id ASC").
-		Find(&historyRows).Error; err != nil {
+	if err := db.WithContext(ctx).Raw(`
+SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY node_id
+        ORDER BY checked_at DESC, created_at DESC, id DESC
+    ) AS rn
+    FROM proxy_node_health_history
+    WHERE deleted_at IS NULL
+) WHERE rn <= ?
+ORDER BY node_id ASC, checked_at ASC, created_at ASC, id ASC
+`, nodeHealthHistoryLimit).Scan(&historyRows).Error; err != nil {
 		return err
 	}
 
