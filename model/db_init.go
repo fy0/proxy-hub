@@ -26,8 +26,7 @@ func InitWithDSN(dsn string, logLevel int, autoMigrate bool) error {
 		return err
 	}
 
-	DBMigrate(autoMigrate)
-	return nil
+	return DBMigrate(autoMigrate)
 }
 
 func DBClose() {

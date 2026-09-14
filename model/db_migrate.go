@@ -17,10 +17,10 @@ func GetAllModels() []any {
 	}
 }
 
-func DBMigrate(autoMigrate bool) {
+func DBMigrate(autoMigrate bool) error {
 	if !autoMigrate {
-		return
+		return nil
 	}
 
-	db.AutoMigrate(GetAllModels()...)
+	return db.AutoMigrate(GetAllModels()...)
 }
