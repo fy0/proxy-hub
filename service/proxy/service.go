@@ -1143,6 +1143,25 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 		if len(req.Tags) > 0 {
 			parsed.Tags = req.Tags
 		}
+		// ParseNodeURI 只产出协议连接字段，调用方上下文不能被清零。
+		if len(req.GroupIDs) > 0 {
+			parsed.GroupIDs = req.GroupIDs
+		}
+		if req.GroupID != "" {
+			parsed.GroupID = req.GroupID
+		}
+		if req.SubscriptionID != "" {
+			parsed.SubscriptionID = req.SubscriptionID
+		}
+		if req.SourceKey != "" {
+			parsed.SourceKey = req.SourceKey
+		}
+		if len(req.ChainMembers) > 0 {
+			parsed.ChainMembers = req.ChainMembers
+		}
+		if len(req.ChainNodeIDs) > 0 {
+			parsed.ChainNodeIDs = req.ChainNodeIDs
+		}
 		req = *parsed
 	}
 
