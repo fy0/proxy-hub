@@ -846,13 +846,14 @@ func StateSnapshot(ctx context.Context, tx model.DBTx, options ...StateSnapshotO
 		nodeDTOs = ToNodeDTOsWithHealthAndGroups(nodes, healthByNodeID, groups)
 	}
 
+	runtimeStatus := RuntimeStatusGet()
 	snapshot := &StateSnapshotDTO{
 		Nodes:         nodeDTOs,
 		Groups:        groupDTOs,
 		Subscriptions: ToSubscriptionDTOs(subscriptions),
 		Mappings:      ToMappingDTOs(mappings),
-		Runtime:       RuntimeStatusGet(),
-		LastSavedAt:   time.Now(),
+		Runtime:       runtimeStatus,
+		LastSavedAt:   runtimeStatus.UpdatedAt,
 		NodeTotal:     nodeTotal,
 		DefaultTotal:  defaultTotal,
 	}

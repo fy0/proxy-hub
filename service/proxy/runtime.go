@@ -216,7 +216,6 @@ func RuntimeStatusGet() RuntimeStatus {
 	status.Failures = append([]RuntimeInboundFailure{}, singBoxRuntime.status.Failures...)
 	status.ExcludedNodes = append([]RuntimeExcludedNode{}, singBoxRuntime.status.ExcludedNodes...)
 	status.Routes = runtimeRoutesLocked()
-	status.UpdatedAt = time.Now()
 	singBoxRuntime.mu.Unlock()
 
 	status.Routes = hydrateRuntimeRouteNames(context.Background(), status.Routes)
