@@ -10,12 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danielgtaylor/huma/v2"
-	"github.com/gofiber/fiber/v2"
 	"proxy-hub/api/h"
 	"proxy-hub/model"
 	proxyService "proxy-hub/service/proxy"
 	"proxy-hub/utils"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/gofiber/fiber/v2"
 
 	"gorm.io/gorm/logger"
 )
