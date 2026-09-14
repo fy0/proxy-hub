@@ -261,6 +261,7 @@ func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*Nod
 
 	uris, fetchFailures := normalizeImportURIsWithFetch(ctx, req)
 	result := &NodeImportResult{Total: len(uris) + len(fetchFailures), Failures: fetchFailures, Skipped: len(fetchFailures)}
+	importedNodes := make([]*tables.ProxyNodeTable, 0, len(uris))
 	for _, failure := range fetchFailures {
 		result.PreviewItems = append(result.PreviewItems, NodeImportPreviewItem{
 			Type:   ImportPreviewTypeFailure,
@@ -286,8 +287,15 @@ func NodeImport(ctx context.Context, tx model.DBTx, req NodeImportRequest) (*Nod
 			result.Skipped++
 			continue
 		}
-		result.Items = append(result.Items, ToNodeDTO(node))
+		importedNodes = append(importedNodes, node)
 		result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, node.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
+	}
+	groups, err := GroupList(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for _, node := range importedNodes {
+		result.Items = append(result.Items, ToNodeDTOWithGroups(node, groups))
 	}
 	result.Imported = len(result.Items)
 	result.Failed = len(result.Failures)
@@ -348,6 +356,7 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 	}
 
 	nodeIDByName := map[string]string{}
+	importedNodes := make([]*tables.ProxyNodeTable, 0, len(parsed.Nodes))
 	for _, parsedNode := range parsed.Nodes {
 		nodeReq, err := ParseNodeURI(parsedNode.RawURI)
 		if err != nil {
@@ -374,6 +383,7 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 			result.PreviewItems = append(result.PreviewItems, previewImportItem(ImportPreviewTypeNode, parsedNode.Name, ImportPreviewActionImport, ImportPreviewReasonImport, "节点将导入"))
 		}
 		result.Items = append(result.Items, ToNodeDTO(node))
+		importedNodes = append(importedNodes, node)
 		nodeIDByName[node.Name] = node.ID
 		nodeIDByName[parsedNode.Name] = node.ID
 	}
@@ -440,6 +450,15 @@ func importManualClashRaw(ctx context.Context, tx model.DBTx, req NodeImportRequ
 		if err := appendManualImportToGroup(ctx, tx, req.GroupID, nodeIDs, groupIDs); err != nil {
 			return result, err
 		}
+	}
+
+	// 组成员关系到这里才全部落定，统一按完整集合重算 groupIds，与列表/快照路径一致。
+	groups, err := GroupList(ctx, tx)
+	if err != nil {
+		return result, err
+	}
+	for i, node := range importedNodes {
+		result.Items[i] = ToNodeDTOWithGroups(node, groups)
 	}
 
 	result.Failed = len(result.Failures)

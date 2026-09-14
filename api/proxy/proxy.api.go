@@ -515,7 +515,10 @@ func nodeCreateHandler(ctx context.Context, input *nodeInput) (*nodeOutput, erro
 		return nil, err
 	}
 	output := &nodeOutput{}
-	output.Body.Item = nodeDTOWithGroups(ctx, node)
+	output.Body.Item, err = nodeDTOWithGroups(ctx, node)
+	if err != nil {
+		return nil, err
+	}
 	return output, nil
 }
 
@@ -545,7 +548,10 @@ func nodeUpdateHandler(ctx context.Context, input *nodeUpdateInput) (*nodeOutput
 		return nil, err
 	}
 	output := &nodeOutput{}
-	output.Body.Item = nodeDTOWithGroups(ctx, node)
+	output.Body.Item, err = nodeDTOWithGroups(ctx, node)
+	if err != nil {
+		return nil, err
+	}
 	return output, nil
 }
 
@@ -1115,12 +1121,12 @@ func nodeIDsFromNodes(nodes []*tables.ProxyNodeTable) []string {
 	return ids
 }
 
-func nodeDTOWithGroups(ctx context.Context, node *tables.ProxyNodeTable) *proxyService.ProxyNodeDTO {
+func nodeDTOWithGroups(ctx context.Context, node *tables.ProxyNodeTable) (*proxyService.ProxyNodeDTO, error) {
 	groups, err := proxyService.GroupList(ctx, nil)
 	if err != nil {
-		return proxyService.ToNodeDTO(node)
+		return nil, err
 	}
-	return proxyService.ToNodeDTOWithGroups(node, groups)
+	return proxyService.ToNodeDTOWithGroups(node, groups), nil
 }
 
 func humanaError(code int, message string) error {
