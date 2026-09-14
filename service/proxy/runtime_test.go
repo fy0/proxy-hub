@@ -341,7 +341,7 @@ func TestMappingGroupStrategyOverrideUsesPortScopedPolicy(t *testing.T) {
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	inheritedInstance := runtimeInstanceForMapping(inherited.ID)
+	inheritedInstance := singBoxRuntime.runtimeInstanceForMapping(inherited.ID)
 	if inheritedInstance == nil {
 		t.Fatalf("inherited runtime instance was not created")
 	}
@@ -349,7 +349,7 @@ func TestMappingGroupStrategyOverrideUsesPortScopedPolicy(t *testing.T) {
 	if inheritedGroup == nil || inheritedGroup.Policy.Strategy != singboxcore.BalanceLeastLatency {
 		t.Fatalf("inherited group policy = %+v, want least latency", inheritedGroup)
 	}
-	overriddenInstance := runtimeInstanceForMapping(overridden.ID)
+	overriddenInstance := singBoxRuntime.runtimeInstanceForMapping(overridden.ID)
 	if overriddenInstance == nil {
 		t.Fatalf("overridden runtime instance was not created")
 	}
@@ -378,7 +378,7 @@ func TestMappingGroupStrategyOverrideUsesPortScopedPolicy(t *testing.T) {
 	if _, err := RuntimeSyncMapping(ctx, overridden.ID); err != nil {
 		t.Fatalf("RuntimeSyncMapping(remove override) error = %v", err)
 	}
-	syncedInstance := runtimeInstanceForMapping(overridden.ID)
+	syncedInstance := singBoxRuntime.runtimeInstanceForMapping(overridden.ID)
 	if syncedInstance != overriddenInstance {
 		t.Fatalf("runtime instance was replaced while removing override")
 	}
@@ -1568,7 +1568,7 @@ func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testin
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	before := runtimeInstanceForMapping(mapping.ID)
+	before := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if before == nil {
 		t.Fatalf("runtime instance was not created")
 	}
@@ -1588,7 +1588,7 @@ func TestRuntimeSyncMappingUpdatesDynamicGroupWithoutReplacingInstance(t *testin
 	if err != nil {
 		t.Fatalf("RuntimeSyncMapping() error = %v", err)
 	}
-	after := runtimeInstanceForMapping(mapping.ID)
+	after := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if before != after {
 		t.Fatalf("runtime instance was replaced during node-only update")
 	}
@@ -1657,16 +1657,16 @@ func TestNodeBlacklistSyncRemovesNodeFromRuntimeGroup(t *testing.T) {
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	instance := runtimeInstanceForMapping(mapping.ID)
+	instance := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if instance == nil || instance.core == nil {
 		t.Fatalf("runtime instance was not created")
 	}
 
-	before := runtimeInstanceForMapping(mapping.ID)
+	before := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if _, err := NodeBlacklist(ctx, nodeA.ID, time.Minute); err != nil {
 		t.Fatalf("NodeBlacklist() error = %v", err)
 	}
-	after := runtimeInstanceForMapping(mapping.ID)
+	after := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if before != after {
 		t.Fatalf("runtime instance was replaced during blacklist sync")
 	}
@@ -1733,7 +1733,7 @@ func TestRuntimeLeastLatencyMappingIgnoresStoredActiveRoute(t *testing.T) {
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	instance := runtimeInstanceForMapping(mapping.ID)
+	instance := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if instance == nil {
 		t.Fatalf("runtime instance was not created")
 	}
@@ -1794,7 +1794,7 @@ func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	before := runtimeInstanceForMapping(mapping.ID)
+	before := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if before == nil {
 		t.Fatalf("runtime instance was not created")
 	}
@@ -1814,7 +1814,7 @@ func TestRuntimeSyncMappingExcludesInvalidGroupNodeAndKeepsInstance(t *testing.T
 	if err != nil {
 		t.Fatalf("RuntimeSyncMapping() error = %v", err)
 	}
-	after := runtimeInstanceForMapping(mapping.ID)
+	after := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if after != before {
 		t.Fatalf("runtime instance was replaced while adding group")
 	}
@@ -2043,7 +2043,7 @@ func TestRuntimeMappingCanRouteToExistingGroup(t *testing.T) {
 	if !status.Running {
 		t.Fatalf("Runtime status = %+v, want running", status)
 	}
-	instance := runtimeInstanceForMapping(mapping.ID)
+	instance := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if instance == nil {
 		t.Fatalf("runtime instance was not created")
 	}
@@ -2234,7 +2234,7 @@ func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.
 	if _, err := RuntimeReload(ctx); err != nil {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
-	before := runtimeInstanceForMapping(mapping.ID)
+	before := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if before == nil {
 		t.Fatalf("runtime instance was not created")
 	}
@@ -2251,7 +2251,7 @@ func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.
 	if _, err := RuntimeSyncMapping(ctx, mapping.ID); err != nil {
 		t.Fatalf("RuntimeSyncMapping(remove group) error = %v", err)
 	}
-	if runtimeInstanceForMapping(mapping.ID) != before {
+	if singBoxRuntime.runtimeInstanceForMapping(mapping.ID) != before {
 		t.Fatalf("runtime instance was replaced while removing group member")
 	}
 
@@ -2269,7 +2269,7 @@ func TestRuntimeMappingCanReaddExistingGroupWithoutReplacingInstance(t *testing.
 	if _, err := RuntimeSyncMapping(ctx, mapping.ID); err != nil {
 		t.Fatalf("RuntimeSyncMapping(re-add group) error = %v", err)
 	}
-	after := runtimeInstanceForMapping(mapping.ID)
+	after := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if after != before {
 		t.Fatalf("runtime instance was replaced while re-adding existing group")
 	}
@@ -2630,7 +2630,7 @@ func TestMappingRoutePathReflectsRotatedChainGroupMember(t *testing.T) {
 		t.Fatalf("RuntimeReload() error = %v", err)
 	}
 	groupTag := nodeChainMemberGroupOutboundTag(chain.ID, 1, group.ID)
-	instance := runtimeInstanceForMapping(mapping.ID)
+	instance := singBoxRuntime.runtimeInstanceForMapping(mapping.ID)
 	if instance == nil || instance.core == nil {
 		t.Fatalf("runtime instance missing for mapping %q", mapping.ID)
 	}
