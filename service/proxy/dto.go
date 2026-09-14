@@ -6,21 +6,23 @@ import (
 	"time"
 
 	"proxy-hub/model/tables"
+	"proxy-hub/service/proxyuri"
 )
 
+// 协议常量以 proxyuri 为唯一来源；ProtocolChain 是本服务自有的组合概念，不在 URI 协议全集内。
 const (
-	ProtocolVLESS       = "vless"
-	ProtocolVMess       = "vmess"
-	ProtocolTrojan      = "trojan"
-	ProtocolSOCKS5      = "socks5"
-	ProtocolHTTP        = "http"
-	ProtocolShadowsocks = "shadowsocks"
-	ProtocolHysteria    = "hysteria"
-	ProtocolHysteria2   = "hysteria2"
-	ProtocolTUIC        = "tuic"
-	ProtocolSSH         = "ssh"
+	ProtocolVLESS       = proxyuri.ProtocolVLESS
+	ProtocolVMess       = proxyuri.ProtocolVMess
+	ProtocolTrojan      = proxyuri.ProtocolTrojan
+	ProtocolSOCKS5      = proxyuri.ProtocolSOCKS5
+	ProtocolHTTP        = proxyuri.ProtocolHTTP
+	ProtocolShadowsocks = proxyuri.ProtocolShadowsocks
+	ProtocolHysteria    = proxyuri.ProtocolHysteria
+	ProtocolHysteria2   = proxyuri.ProtocolHysteria2
+	ProtocolTUIC        = proxyuri.ProtocolTUIC
+	ProtocolSSH         = proxyuri.ProtocolSSH
+	ProtocolUnknown     = proxyuri.ProtocolUnknown
 	ProtocolChain       = "chain"
-	ProtocolUnknown     = "unknown"
 
 	OutboundProtocolMixed = "mixed"
 	OutboundProtocolSOCKS = "socks5"

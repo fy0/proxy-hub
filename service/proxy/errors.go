@@ -1,18 +1,23 @@
 package proxy
 
-import "errors"
+import (
+	"errors"
+
+	"proxy-hub/service/proxyuri"
+)
 
 var (
+	// URI/协议解析错误以 proxyuri 为唯一来源，跨包 errors.Is 直接可用。
+	ErrUnsupportedURI        = proxyuri.ErrUnsupportedURI
+	ErrUnsupportedProtocol   = proxyuri.ErrUnsupportedProtocol
+	ErrInvalidPort           = proxyuri.ErrInvalidPort
+	ErrUTLSRequired          = proxyuri.ErrUTLSRequired
 	ErrNodeNotFound          = errors.New("proxy node not found")
 	ErrMappingNotFound       = errors.New("port mapping not found")
-	ErrUnsupportedURI        = errors.New("unsupported proxy uri")
-	ErrUnsupportedProtocol   = errors.New("unsupported proxy protocol")
-	ErrInvalidPort           = errors.New("invalid port")
 	ErrInvalidAddress        = errors.New("invalid listen address")
 	ErrNoAvailableNode       = errors.New("no available node")
 	ErrInvalidMapping        = errors.New("invalid port mapping")
 	ErrListenPortTaken       = errors.New("listen port already exists")
-	ErrUTLSRequired          = errors.New("reality requires a binary built with -tags with_utls")
 	ErrSubscriptionNotFound  = errors.New("proxy subscription not found")
 	ErrGroupNotFound         = errors.New("proxy group not found")
 	ErrInvalidSubscription   = errors.New("invalid proxy subscription")

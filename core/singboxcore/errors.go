@@ -6,19 +6,23 @@ import (
 	"net"
 	"os"
 	"strings"
+
+	"proxy-hub/service/proxyuri"
 )
 
 var (
-	ErrCoreNotStarted      = errors.New("sing-box core is not started")
-	ErrGroupNotFound       = errors.New("dynamic group not found")
-	ErrGroupExists         = errors.New("dynamic group already exists")
-	ErrNodeNotFound        = errors.New("dynamic node not found")
-	ErrNodeExists          = errors.New("dynamic node already exists")
-	ErrNoAvailableNode     = errors.New("no available node")
-	ErrUnsupportedURI      = errors.New("unsupported proxy uri")
-	ErrUnsupportedProtocol = errors.New("unsupported proxy protocol")
-	ErrInvalidPort         = errors.New("invalid port")
-	ErrOutboundPanic       = errors.New("sing-box outbound creation panicked")
+	ErrCoreNotStarted  = errors.New("sing-box core is not started")
+	ErrGroupNotFound   = errors.New("dynamic group not found")
+	ErrGroupExists     = errors.New("dynamic group already exists")
+	ErrNodeNotFound    = errors.New("dynamic node not found")
+	ErrNodeExists      = errors.New("dynamic node already exists")
+	ErrNoAvailableNode = errors.New("no available node")
+	ErrOutboundPanic   = errors.New("sing-box outbound creation panicked")
+
+	// URI 解析错误以 proxyuri 为唯一来源。
+	ErrUnsupportedURI      = proxyuri.ErrUnsupportedURI
+	ErrUnsupportedProtocol = proxyuri.ErrUnsupportedProtocol
+	ErrInvalidPort         = proxyuri.ErrInvalidPort
 )
 
 type PortInUseError struct {

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -21,11 +20,7 @@ func ParseNodeURI(rawURI string) (*NodeUpsertRequest, error) {
 }
 
 func parseNodeURI(rawURI string) (*parsedNodeURI, error) {
-	parsed, err := proxyuri.ParseURI(rawURI)
-	if err != nil {
-		return nil, mapProxyURIError(err)
-	}
-	return parsed, nil
+	return proxyuri.ParseURI(rawURI)
 }
 
 func parseVMessURI(rawURI string) (*NodeUpsertRequest, error) {
@@ -57,14 +52,10 @@ func parsedNodeToUpsertRequest(parsed *parsedNodeURI) *NodeUpsertRequest {
 }
 
 func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error) {
-	outbound, err := proxyuri.OutboundFromURIWithOptions(rawURI, tag, proxyuri.OutboundOptions{
+	return proxyuri.OutboundFromURIWithOptions(rawURI, tag, proxyuri.OutboundOptions{
 		RequireUTLSSupport: true,
 		UTLSAvailable:      withUTLS,
 	})
-	if err != nil {
-		return option.Outbound{}, mapProxyURIError(err)
-	}
-	return outbound, nil
 }
 
 func expandImportValue(value string) []string {
@@ -94,38 +85,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func mapProxyURIError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, proxyuri.ErrUTLSRequired) {
-		return ErrUTLSRequired
-	}
-	if errors.Is(err, proxyuri.ErrUnsupportedProtocol) {
-		return replaceWrappedError(err, proxyuri.ErrUnsupportedProtocol, ErrUnsupportedProtocol)
-	}
-	if errors.Is(err, proxyuri.ErrInvalidPort) {
-		return replaceWrappedError(err, proxyuri.ErrInvalidPort, ErrInvalidPort)
-	}
-	if errors.Is(err, proxyuri.ErrUnsupportedURI) {
-		return replaceWrappedError(err, proxyuri.ErrUnsupportedURI, ErrUnsupportedURI)
-	}
-	return err
-}
-
-func replaceWrappedError(err error, from error, to error) error {
-	if err == from {
-		return to
-	}
-	message := err.Error()
-	fromMessage := from.Error()
-	if message == fromMessage {
-		return to
-	}
-	if len(message) > len(fromMessage) && message[:len(fromMessage)] == fromMessage {
-		return fmt.Errorf("%w%s", to, message[len(fromMessage):])
-	}
-	return fmt.Errorf("%w: %v", to, err)
 }
