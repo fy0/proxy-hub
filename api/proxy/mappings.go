@@ -83,6 +83,18 @@ func mappingTestHandler(ctx context.Context, input *mappingTestInput) (*proxyTes
 	return &proxyTestOutput{Body: *result}, nil
 }
 
+type ipLookupOutput struct {
+	Body proxyService.IPLookupResultDTO `json:"body"`
+}
+
+func mappingIPLookupHandler(ctx context.Context, input *idInput) (*ipLookupOutput, error) {
+	result, err := proxyService.MappingIPLookup(ctx, input.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &ipLookupOutput{Body: *result}, nil
+}
+
 type mappingSwitchInput struct {
 	ID   string `path:"id"`
 	Body proxyService.MappingSwitchRequest

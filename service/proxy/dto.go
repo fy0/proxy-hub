@@ -304,6 +304,16 @@ type ProxyRouteHopDTO struct {
 	Tag  string `json:"tag,omitempty"`
 }
 
+type IPLookupResultDTO struct {
+	IP        string    `json:"ip,omitempty"`
+	Country   string    `json:"country,omitempty"`
+	Region    string    `json:"region,omitempty"`
+	City      string    `json:"city,omitempty"`
+	ISP       string    `json:"isp,omitempty"`
+	CheckedAt time.Time `json:"checkedAt"`
+	Error     string    `json:"error,omitempty"`
+}
+
 type SubscriptionUpsertRequest struct {
 	Name    string `json:"name,omitempty" validate:"omitempty,max=100"`
 	URL     string `json:"url" validate:"required,max=2000"`

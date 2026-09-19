@@ -286,6 +286,14 @@ func Register(api huma.API) {
 
 	h.HumaRegister(group, huma.Operation{
 		Method:      http.MethodPost,
+		Path:        "/mappings/{id}/ip-lookup",
+		Summary:     "查询端口出口 IP",
+		OperationID: "proxy-mapping-ip-lookup",
+		Tags:        []string{proxyTag},
+	}, mappingIPLookupHandler)
+
+	h.HumaRegister(group, huma.Operation{
+		Method:      http.MethodPost,
 		Path:        "/mappings/{id}/switch",
 		Summary:     "切换端口当前线路",
 		OperationID: "proxy-mapping-switch",

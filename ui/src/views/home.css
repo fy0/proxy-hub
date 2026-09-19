@@ -2688,6 +2688,51 @@ textarea:focus {
   min-height: 42px;
 }
 
+.ip-lookup-section {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding-block: 12px;
+  border-block: 1px solid rgb(148 163 184 / 0.22);
+}
+
+.ip-lookup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.ip-lookup-status,
+.ip-lookup-results {
+  margin: 0;
+  font-size: 13px;
+}
+
+.ip-lookup-results {
+  display: grid;
+  gap: 8px;
+}
+
+.ip-lookup-results > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.ip-lookup-results dt,
+.ip-lookup-status {
+  color: rgb(100 116 139);
+}
+
+.ip-lookup-results dd {
+  margin: 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
 .test-result-panel {
   display: grid;
   gap: 14px;

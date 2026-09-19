@@ -7,6 +7,7 @@ import {
   Download,
   Gauge,
   Github,
+  Globe,
   Languages,
   Link2,
   Plus,
@@ -49,6 +50,7 @@ import proxyHubMarkUrl from '@/assets/mark-large.png';
 import type {
   ChainMember,
   ImportPreviewResult,
+  IPLookupResult,
   MappingSwitchTargetType,
   GroupStrategyOverride,
   OutboundProtocol,
@@ -213,6 +215,7 @@ const {
   switchMapping,
   removeMapping,
   testMapping,
+  lookupMappingIP,
   loadNodes,
   loadMoreNodes,
   fetchNodeOptions,
@@ -268,9 +271,19 @@ const duplicateRouteNodeDialog = ref<DuplicateRouteNodeDialog | null>(null);
 const testDialog = ref<TestDialogState | null>(null);
 const testUrl = ref('https://www.gstatic.com/generate_204');
 const isTesting = ref(false);
+const ipLookupResult = ref<IPLookupResult | null>(null);
+const ipLookupError = ref('');
+const isLookingUpIP = ref(false);
+const ipLookupLocation = computed(() => {
+  const result = ipLookupResult.value;
+  return result
+    ? [...new Set([result.country, result.region, result.city].filter(Boolean))].join(' / ')
+    : '';
+});
 const healthClock = ref(Date.now());
 let currentTestController: AbortController | null = null;
 let currentTestRunId = 0;
+let currentIPLookupController: AbortController | null = null;
 
 const emptyMappingForm = () => ({
   listenAddress: '0.0.0.0',
@@ -946,6 +959,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   cancelCurrentTest();
+  cancelCurrentIPLookup();
   if (healthClockTimer !== null) {
     window.clearInterval(healthClockTimer);
     healthClockTimer = null;
@@ -2112,6 +2126,7 @@ function requestRemoveGroup(groupId: string): void {
 }
 
 function openMappingTestDialog(mapping: PortMapping): void {
+  resetIPLookup();
   testDialog.value = {
     targetType: 'mapping',
     targetId: mapping.id,
@@ -2124,6 +2139,7 @@ function openMappingTestDialog(mapping: PortMapping): void {
 }
 
 function openNodeTestDialog(node: ProxyNode): void {
+  resetIPLookup();
   testDialog.value = {
     targetType: 'node',
     targetId: node.id,
@@ -2137,7 +2153,49 @@ function openNodeTestDialog(node: ProxyNode): void {
 
 function closeTestDialog(): void {
   cancelCurrentTest();
+  cancelCurrentIPLookup();
   testDialog.value = null;
+}
+
+function cancelCurrentIPLookup(): void {
+  currentIPLookupController?.abort();
+  currentIPLookupController = null;
+  isLookingUpIP.value = false;
+}
+
+function resetIPLookup(): void {
+  cancelCurrentIPLookup();
+  ipLookupResult.value = null;
+  ipLookupError.value = '';
+}
+
+async function runCurrentIPLookup(): Promise<void> {
+  const dialog = testDialog.value;
+  if (!dialog || dialog.targetType !== 'mapping') return;
+
+  resetIPLookup();
+  const controller = new AbortController();
+  currentIPLookupController = controller;
+  isLookingUpIP.value = true;
+  try {
+    const result = await lookupMappingIP(dialog.targetId, controller.signal);
+    if (controller.signal.aborted || currentIPLookupController !== controller) return;
+    ipLookupResult.value = result;
+    ipLookupError.value = result.error;
+  } catch (error) {
+    if (
+      controller.signal.aborted ||
+      isAbortError(error) ||
+      currentIPLookupController !== controller
+    )
+      return;
+    ipLookupError.value = error instanceof Error ? error.message : t('home.messages.requestFailed');
+  } finally {
+    if (currentIPLookupController === controller) {
+      currentIPLookupController = null;
+      isLookingUpIP.value = false;
+    }
+  }
 }
 
 function cancelCurrentTest(): void {
@@ -2660,8 +2718,10 @@ function testLatencyLabel(result: ProxyTestResult | null): string {
   return `${Math.max(0, result.latencyMs)}ms`;
 }
 
-function testCheckedAtLabel(result: ProxyTestResult | null): string {
-  return result?.checkedAt ? formatDateTime(result.checkedAt) : '-';
+function testCheckedAtLabel(result: { checkedAt: string } | null): string {
+  return result?.checkedAt
+    ? formatDateTime(result.checkedAt, { dateStyle: 'short', timeStyle: 'medium' })
+    : '-';
 }
 
 function testNodeLabel(result: ProxyTestResult | null): string {
@@ -4246,6 +4306,48 @@ const homeContext = {
             {{ t('home.test.retest') }}
           </Button>
         </form>
+
+        <section
+          v-if="testDialog.targetType === 'mapping'"
+          class="ip-lookup-section"
+          :aria-label="t('home.test.exitIP')"
+        >
+          <div class="ip-lookup-heading">
+            <strong>{{ t('home.test.exitIP') }}</strong>
+            <Button
+              type="button"
+              variant="outline"
+              :disabled="isLookingUpIP"
+              @click="runCurrentIPLookup"
+            >
+              <Globe class="size-4" :class="{ 'spin-icon': isLookingUpIP }" aria-hidden="true" />
+              {{ t('home.test.lookupIP') }}
+            </Button>
+          </div>
+          <p v-if="isLookingUpIP" class="ip-lookup-status" role="status">
+            {{ t('home.test.lookingUpIP') }}
+          </p>
+          <p v-else-if="ipLookupError" class="test-error" role="alert">{{ ipLookupError }}</p>
+          <dl v-else-if="ipLookupResult?.ip" class="ip-lookup-results" aria-live="polite">
+            <div>
+              <dt>IP</dt>
+              <dd>{{ ipLookupResult.ip }}</dd>
+            </div>
+            <div v-if="ipLookupLocation">
+              <dt>{{ t('home.test.location') }}</dt>
+              <dd>{{ ipLookupLocation }}</dd>
+            </div>
+            <div v-if="ipLookupResult.isp">
+              <dt>{{ t('home.test.isp') }}</dt>
+              <dd>{{ ipLookupResult.isp }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('home.test.ipCheckedAt') }}</dt>
+              <dd>{{ testCheckedAtLabel(ipLookupResult) }}</dd>
+            </div>
+          </dl>
+          <p v-else class="ip-lookup-status">{{ t('home.test.ipWaiting') }}</p>
+        </section>
 
         <div
           class="test-result-panel"

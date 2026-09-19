@@ -11,6 +11,7 @@ import {
   getProxyState,
   postProxyGroups,
   postProxyMappings,
+  postProxyMappingsByIdIpLookup,
   postProxyMappingsByIdSwitch,
   postProxyMappingsByIdTest,
   postProxyNodes,
@@ -50,6 +51,7 @@ import type {
   ImportPreviewItem,
   ImportPreviewResult,
   ImportPreviewType,
+  IPLookupResult,
   MappingSwitchTargetType,
   GroupStrategyOverride,
   PortMapping,
@@ -1485,6 +1487,23 @@ async function testMapping(
   );
 }
 
+async function lookupMappingIP(id: string, signal?: AbortSignal): Promise<IPLookupResult> {
+  const { data } = await postProxyMappingsByIdIpLookup({
+    path: { id },
+    throwOnError: true,
+    signal,
+  });
+  return {
+    ip: data.ip || '',
+    country: data.country || '',
+    region: data.region || '',
+    city: data.city || '',
+    isp: data.isp || '',
+    checkedAt: data.checkedAt,
+    error: data.error || '',
+  };
+}
+
 async function resetDemoData(): Promise<void> {
   await refreshProxyHubState();
 }
@@ -1564,6 +1583,7 @@ export function useProxyHubState() {
     switchMapping,
     removeMapping,
     testMapping,
+    lookupMappingIP,
     resetDemoData,
     snapshot,
   };

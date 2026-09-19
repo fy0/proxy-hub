@@ -207,6 +207,16 @@ export interface RuntimeRoute {
   nodes: RuntimeRouteNode[];
 }
 
+export interface IPLookupResult {
+  ip: string;
+  country: string;
+  region: string;
+  city: string;
+  isp: string;
+  checkedAt: string;
+  error: string;
+}
+
 export interface ProxyTestResult {
   targetType: string;
   targetId: string;
