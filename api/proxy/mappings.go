@@ -38,9 +38,7 @@ func mappingCreateHandler(ctx context.Context, input *mappingInput) (*mappingOut
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
-		return nil, err
-	}
+	syncRuntimeMapping(ctx, mapping.ID)
 	output := &mappingOutput{}
 	output.Body.Item = proxyService.ToMappingDTO(mapping)
 	return output, nil
@@ -56,9 +54,7 @@ func mappingUpdateHandler(ctx context.Context, input *mappingUpdateInput) (*mapp
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
-		return nil, err
-	}
+	syncRuntimeMapping(ctx, mapping.ID)
 	output := &mappingOutput{}
 	output.Body.Item = proxyService.ToMappingDTO(mapping)
 	return output, nil
@@ -97,9 +93,7 @@ func mappingSwitchHandler(ctx context.Context, input *mappingSwitchInput) (*mapp
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMapping(ctx, mapping.ID); err != nil {
-		return nil, err
-	}
+	syncRuntimeMapping(ctx, mapping.ID)
 	output := &mappingOutput{}
 	output.Body.Item = proxyService.ToMappingDTO(mapping)
 	return output, nil

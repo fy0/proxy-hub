@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 
 	proxyService "proxy-hub/service/proxy"
+	"proxy-hub/service/proxyuri"
 	"proxy-hub/utils"
 )
 
@@ -45,29 +46,20 @@ func runtimeReloadHandler(context.Context, *struct{}) (*runtimeStatusOutput, err
 	return &runtimeStatusOutput{Body: status}, nil
 }
 
-func reloadRuntimeAfterMutation() error {
-	if _, err := proxyService.RuntimeReload(context.Background()); err != nil {
-		utils.Logger.Warn("配置已保存，但代理重载失败", zap.Error(err))
-	}
-	return nil
-}
-
-func syncRuntimeMapping(ctx context.Context, mappingID string) error {
+func syncRuntimeMapping(ctx context.Context, mappingID string) {
 	if _, err := proxyService.RuntimeSyncMapping(ctx, mappingID); err != nil {
 		utils.Logger.Warn("配置已保存，但代理映射同步失败", zap.String("mappingId", mappingID), zap.Error(err))
 	}
-	return nil
 }
 
-func syncRuntimeMappings(mappingIDs []string) error {
-	mappingIDs = uniqueStrings(mappingIDs)
+func syncRuntimeMappings(mappingIDs []string) {
+	mappingIDs = proxyuri.UniqueNonEmpty(mappingIDs)
 	if len(mappingIDs) == 0 {
-		return nil
+		return
 	}
 	if _, err := proxyService.RuntimeSyncMappings(context.Background(), mappingIDs); err != nil {
 		utils.Logger.Warn("配置已保存，但代理映射同步失败", zap.Strings("mappingIds", mappingIDs), zap.Error(err))
 	}
-	return nil
 }
 
 func syncRuntimeMappingsForNodes(ctx context.Context, nodeIDs []string) error {
@@ -75,7 +67,8 @@ func syncRuntimeMappingsForNodes(ctx context.Context, nodeIDs []string) error {
 	if err != nil {
 		return mapError(err)
 	}
-	return syncRuntimeMappings(mappingIDs)
+	syncRuntimeMappings(mappingIDs)
+	return nil
 }
 
 func syncRuntimeMappingsForNodeDTOs(ctx context.Context, nodes []*proxyService.ProxyNodeDTO) error {
@@ -93,5 +86,6 @@ func syncRuntimeMappingsForGroups(ctx context.Context, groupIDs []string) error 
 	if err != nil {
 		return mapError(err)
 	}
-	return syncRuntimeMappings(mappingIDs)
+	syncRuntimeMappings(mappingIDs)
+	return nil
 }

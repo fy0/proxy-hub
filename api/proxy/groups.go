@@ -64,9 +64,7 @@ func groupUpdateHandler(ctx context.Context, input *groupUpdateInput) (*groupOut
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(append(affectedBefore, affectedAfter...))
 	output := &groupOutput{}
 	output.Body.Item = proxyService.ToGroupDTO(group)
 	return output, nil
@@ -80,8 +78,6 @@ func groupDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse
 	if err := proxyService.GroupDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(affected); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(affected)
 	return h.NewMessageResponse("节点组已删除"), nil
 }

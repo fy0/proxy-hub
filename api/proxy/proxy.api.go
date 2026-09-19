@@ -3,7 +3,6 @@ package proxy
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -308,23 +307,6 @@ func Register(api huma.API) {
 		OperationID: "proxy-runtime-reload",
 		Tags:        []string{proxyTag},
 	}, runtimeReloadHandler)
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
 }
 
 func mapError(err error) error {

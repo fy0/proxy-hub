@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"fmt"
-
 	"github.com/sagernet/sing-box/option"
 
 	"proxy-hub/service/proxyuri"
@@ -20,17 +18,6 @@ func ParseNodeURI(rawURI string) (*NodeUpsertRequest, error) {
 
 func parseNodeURI(rawURI string) (*parsedNodeURI, error) {
 	return proxyuri.ParseURI(rawURI)
-}
-
-func parseVMessURI(rawURI string) (*NodeUpsertRequest, error) {
-	parsed, err := parseNodeURI(rawURI)
-	if err != nil {
-		return nil, err
-	}
-	if parsed.Protocol != ProtocolVMess {
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProtocol, parsed.Protocol)
-	}
-	return parsedNodeToUpsertRequest(parsed), nil
 }
 
 func parsedNodeToUpsertRequest(parsed *parsedNodeURI) *NodeUpsertRequest {
@@ -59,10 +46,6 @@ func buildNodeOutboundFromURI(rawURI string, tag string) (option.Outbound, error
 
 func expandImportValue(value string) []string {
 	return proxyuri.ExpandImportValue(value)
-}
-
-func clashProxyURIs(raw string) []string {
-	return proxyuri.ClashProxyURIs(raw)
 }
 
 func clashProxyToURI(proxy map[string]any) string {

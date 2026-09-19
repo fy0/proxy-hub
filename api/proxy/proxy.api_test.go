@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func TestReloadRuntimeAfterMutationIgnoresBindFailure(t *testing.T) {
+func TestRuntimeReloadHandlerReportsBindFailure(t *testing.T) {
 	if err := model.InitWithDSN(":memory:", int(logger.Silent), true); err != nil {
 		t.Fatalf("InitWithDSN(:memory:) failed: %v", err)
 	}
@@ -54,8 +54,12 @@ func TestReloadRuntimeAfterMutationIgnoresBindFailure(t *testing.T) {
 		t.Fatalf("MappingCreate() error = %v", err)
 	}
 
-	if err := reloadRuntimeAfterMutation(); err != nil {
-		t.Fatalf("reloadRuntimeAfterMutation() error = %v, want nil", err)
+	output, err := runtimeReloadHandler(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("runtimeReloadHandler() error = %v, want nil", err)
+	}
+	if output.Body.Running || len(output.Body.Failures) != 1 {
+		t.Fatalf("runtime status = %+v, want bind failure", output.Body)
 	}
 }
 

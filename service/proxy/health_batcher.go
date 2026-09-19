@@ -560,15 +560,7 @@ func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, rec
 		return
 	}
 
-	state.history = append(state.history, nodeHealthHistoryWindowEntry{
-		Source:    record.Source,
-		TargetID:  record.TargetID,
-		ProbeURL:  record.ProbeURL,
-		Available: record.Available,
-		LatencyMs: record.LatencyMs,
-		Error:     record.Error,
-		CheckedAt: record.CheckedAt,
-	})
+	state.history = append(state.history, nodeHealthHistoryWindowEntry(record))
 	if len(state.history) > nodeHealthHistoryLimit {
 		state.history = append([]nodeHealthHistoryWindowEntry(nil), state.history[len(state.history)-nodeHealthHistoryLimit:]...)
 	}

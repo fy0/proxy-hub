@@ -82,9 +82,7 @@ func subscriptionDeleteHandler(ctx context.Context, input *idInput) (*h.MessageR
 	if err := proxyService.SubscriptionDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(affected); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(affected)
 	return h.NewMessageResponse("订阅已删除"), nil
 }
 
@@ -111,9 +109,7 @@ func subscriptionSyncHandler(ctx context.Context, input *subscriptionSyncInput) 
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(append(affectedBefore, affectedAfter...))
 	if !input.IncludeItems {
 		result.Items = nil
 		result.Groups = nil

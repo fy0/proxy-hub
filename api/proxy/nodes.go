@@ -150,9 +150,7 @@ func nodeUpdateHandler(ctx context.Context, input *nodeUpdateInput) (*nodeOutput
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(uniqueStrings(append(affectedBefore, affectedAfter...))); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(append(affectedBefore, affectedAfter...))
 	output := &nodeOutput{}
 	output.Body.Item, err = nodeDTOWithGroups(ctx, node)
 	if err != nil {
@@ -169,9 +167,7 @@ func nodeDeleteHandler(ctx context.Context, input *idInput) (*h.MessageResponse,
 	if err := proxyService.NodeDelete(ctx, nil, input.ID); err != nil {
 		return nil, mapError(err)
 	}
-	if err := syncRuntimeMappings(affected); err != nil {
-		return nil, err
-	}
+	syncRuntimeMappings(affected)
 	return h.NewMessageResponse("节点已删除"), nil
 }
 
