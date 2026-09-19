@@ -5,9 +5,14 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to publish (for example, v1.1.0)"
+        required: false
+        type: string
 
 concurrency:
-  group: npm-publish-${{ github.ref }}
+  group: npm-publish-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -23,6 +28,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -39,13 +45,22 @@ jobs:
       - name: Extract npm release version
         id: version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
-            echo "npm publish workflow must run from a v* tag, got ${GITHUB_REF}" >&2
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            TAG_NAME="${RELEASE_TAG}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          else
+            echo "Run from a v* tag or provide release_tag, got ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          if [[ ! "${TAG_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Expected a stable release tag, got ${TAG_NAME}" >&2
             exit 1
           fi
 
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
           VERSION_MAIN="${TAG_NAME#v}"
           BUILD_DATE="$(date +%Y%m%d)"
 
@@ -62,7 +77,8 @@ jobs:
       - name: Generate OpenAPI client
         run: |
           go run -tags with_utls . --gen-openapi=./ui/openapi.json
-          pnpm --dir ui run generate-client
+          cd ui
+          pnpm run generate-client
 
       - name: Test build version resolution
         run: python3 -B -m unittest -v test_build_npm_multipackage.py
