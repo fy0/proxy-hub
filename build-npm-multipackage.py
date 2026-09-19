@@ -6,6 +6,7 @@ optional dependency packages.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,52 @@ PLATFORMS = [
     ("darwin", "arm64", "darwin", "arm64"),
     ("windows", "amd64", "win32", "x64"),
 ]
+
+
+def split_version(version: str) -> tuple[str, str, str]:
+    match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    )
+    if not match:
+        raise ValueError(f"Invalid semantic version: {version!r}")
+    major, minor, patch, prerelease, metadata = match.groups()
+    for identifier in (prerelease or "")[1:].split("."):
+        if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
+            raise ValueError(f"Invalid semantic version: {version!r}")
+    return f"{major}.{minor}.{patch}", prerelease or "", metadata or ""
+
+
+def parse_build_args(root_dir: Path, argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build ProxyHub npm packages")
+    parser.add_argument("--version", help="npm package version (default: package.json version)")
+    parser.add_argument("--package-name", default=PACKAGE_NAME, help="main npm package name")
+    parser.add_argument("--version-main", help="override VERSION_MAIN (default: npm version core)")
+    parser.add_argument("--version-prerelease", help="override VERSION_PRERELEASE (default: npm prerelease)")
+    parser.add_argument("--version-build-metadata", help="override VERSION_BUILD_METADATA (default: npm build metadata)")
+    parser.add_argument("--app-channel", default="stable", help="APP_CHANNEL injected into the Go binary")
+    parser.add_argument("--print-build-vars", action="store_true", help="print resolved build variables and exit")
+    args = parser.parse_args(argv)
+
+    try:
+        if args.version is None:
+            with (root_dir / "package.json").open(encoding="utf-8") as f:
+                args.version = json.load(f)["version"]
+        components = split_version(args.version)
+        if args.version_main is not None:
+            main, prerelease, metadata = split_version(args.version_main)
+            args.version_main = main
+            components = main, prerelease or components[1], metadata or components[2]
+        for field, value in zip(("version_main", "version_prerelease", "version_build_metadata"), components):
+            if getattr(args, field) is None:
+                setattr(args, field, value)
+        resolved = split_version(args.version_main + args.version_prerelease + args.version_build_metadata)
+        args.version_main, args.version_prerelease, args.version_build_metadata = resolved
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        parser.error(str(error))
+    return args
 
 
 def run_command(cmd: list[str], cwd: Path | None = None, shell: bool = False, env: dict[str, str] | None = None) -> int:
@@ -76,13 +123,10 @@ def platform_package_name(base_name: str, platform_key: str) -> str:
 
 def make_ldflags(version_main: str, version_prerelease: str, version_build_metadata: str, app_channel: str) -> str:
     parts = ["-s", "-w"]
-    if version_main:
-        parts.append(f"-X 'main.VERSION_MAIN={version_main}'")
+    parts.append(f"-X 'main.VERSION_MAIN={version_main}'")
     parts.append(f"-X 'main.VERSION_PRERELEASE={version_prerelease}'")
-    if version_build_metadata:
-        parts.append(f"-X 'main.VERSION_BUILD_METADATA={version_build_metadata}'")
-    if app_channel:
-        parts.append(f"-X 'main.APP_CHANNEL={app_channel}'")
+    parts.append(f"-X 'main.VERSION_BUILD_METADATA={version_build_metadata}'")
+    parts.append(f"-X 'main.APP_CHANNEL={app_channel}'")
     return " ".join(parts)
 
 
@@ -284,16 +328,13 @@ def create_main_package(root_dir: Path, version: str, base_name: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build ProxyHub npm packages")
-    parser.add_argument("--version", default="1.0.1", help="npm package version")
-    parser.add_argument("--package-name", default=PACKAGE_NAME, help="main npm package name")
-    parser.add_argument("--version-main", default="1.0.1", help="VERSION_MAIN injected into the Go binary")
-    parser.add_argument("--version-prerelease", default="", help="VERSION_PRERELEASE injected into the Go binary")
-    parser.add_argument("--version-build-metadata", default="", help="VERSION_BUILD_METADATA injected into the Go binary")
-    parser.add_argument("--app-channel", default="stable", help="APP_CHANNEL injected into the Go binary")
-    args = parser.parse_args()
-
     root_dir = Path(__file__).parent.absolute()
+    args = parse_build_args(root_dir)
+    if args.print_build_vars:
+        for field in ("version_main", "version_prerelease", "version_build_metadata", "app_channel"):
+            print(f"{field.upper()}={getattr(args, field)}")
+        return 0
+
     ui_dir = root_dir / "ui"
     dist_dir = ui_dir / "dist"
     static_dir = root_dir / "static"

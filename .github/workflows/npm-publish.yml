@@ -64,11 +64,13 @@ jobs:
           go run -tags with_utls . --gen-openapi=./ui/openapi.json
           pnpm --dir ui run generate-client
 
+      - name: Test build version resolution
+        run: python3 -B -m unittest -v test_build_npm_multipackage.py
+
       - name: Build npm packages
         run: |
           python3 build-npm-multipackage.py \
             --version "${{ steps.version.outputs.VERSION_MAIN }}" \
-            --version-main "${{ steps.version.outputs.VERSION_MAIN }}" \
             --version-build-metadata "${{ steps.version.outputs.VERSION_BUILD_METADATA }}" \
             --app-channel stable
 

@@ -26,6 +26,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Resolve binary version
+        id: version
+        shell: bash
+        run: |
+          version_args=()
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version_args+=(--version "${GITHUB_REF#refs/tags/v}")
+          else
+            version_args+=(--version-prerelease=-dev --app-channel dev)
+          fi
+          python3 build-npm-multipackage.py "${version_args[@]}" \
+            --version-build-metadata="+$(date -u +%Y%m%d)" \
+            --print-build-vars >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -57,6 +71,11 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION_MAIN=${{ steps.version.outputs.VERSION_MAIN }}
+            VERSION_PRERELEASE=${{ steps.version.outputs.VERSION_PRERELEASE }}
+            VERSION_BUILD_METADATA=${{ steps.version.outputs.VERSION_BUILD_METADATA }}
+            APP_CHANNEL=${{ steps.version.outputs.APP_CHANNEL }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
