@@ -305,7 +305,7 @@ func (c *Core) RemoveNode(groupID, nodeID string) error {
 	if err != nil {
 		return err
 	}
-	return group.RemoveNode(nodeID, group.policy.RemoveTTL)
+	return group.RemoveNode(nodeID, group.policySnapshot().RemoveTTL)
 }
 
 func (c *Core) SelectNode(groupID, nodeID string) error {
@@ -479,13 +479,5 @@ func BaseOutbounds() []option.Outbound {
 			Tag:     C.TypeBlock,
 			Options: &option.StubOptions{},
 		},
-	}
-}
-
-func optionOutboundBlock() option.Outbound {
-	return option.Outbound{
-		Type:    C.TypeBlock,
-		Tag:     C.TypeBlock,
-		Options: &option.StubOptions{},
 	}
 }

@@ -190,7 +190,6 @@ func buildChainRuntimeOutbounds(
 			}
 			if handled {
 				outbounds = append(outbounds, memberOutbounds...)
-				detourTag = result.tag
 				last = result
 				break
 			}
@@ -648,7 +647,14 @@ func defaultOutboundTLSOptions(serverName string) *option.OutboundTLSOptions {
 }
 
 func parseListenAddr(value string) (*badoption.Addr, error) {
-	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "localhost") {
+		value = "127.0.0.1"
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = value[1 : len(value)-1]
+	}
+	addr, err := netip.ParseAddr(value)
 	if err != nil {
 		return nil, ErrInvalidAddress
 	}

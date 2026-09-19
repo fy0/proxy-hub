@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -103,9 +104,6 @@ func buildDynamicRuntimePlanForMapping(
 	}
 
 	members := make([]dynamicMemberPlan, 0)
-	for _, builtin := range []string{} {
-		_ = builtin
-	}
 
 	nodes, err := findNodesByIDs(ctx, tx, decodeStringSlice(mapping.NodeIDsJSON))
 	if err != nil {
@@ -165,9 +163,7 @@ func buildDynamicRuntimePlanForMapping(
 
 	rules := []option.Rule{buildInboundRouteRule(inbound.Tag, mappingGroup.tag)}
 	outbounds := singboxcore.BaseOutbounds()
-	for _, outbound := range sortedOutbounds(builder.outbounds) {
-		outbounds = append(outbounds, outbound)
-	}
+	outbounds = append(outbounds, sortedOutbounds(builder.outbounds)...)
 
 	return &dynamicRuntimePlan{
 		options: option.Options{
@@ -197,8 +193,11 @@ func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (
 		failure := RuntimeInboundFailure{Error: "runtime plan was not created"}
 		return nil, nil, &failure, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	core, err := singboxcore.NewCore(singboxcore.Config{
-		Context: ctx,
+		Context: context.WithoutCancel(ctx),
 		Options: plan.options,
 	})
 	if err != nil {
@@ -212,7 +211,7 @@ func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (
 			return nil, nil, &failure, nil
 		}
 	}
-	instance := &runtimeInstance{core: core, inbound: plan.inbound, inboundKey: plan.inboundKey}
+	instance := &runtimeInstance{core: core, inboundKey: plan.inboundKey}
 	excluded, err := applyDynamicRuntimePlan(ctx, plan, instance)
 	if err != nil {
 		_ = core.Close()
@@ -232,7 +231,7 @@ func newRuntimeInstanceFromPlan(ctx context.Context, plan *dynamicRuntimePlan) (
 	return instance, nil, nil, nil
 }
 
-func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMappingTable, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure) {
+func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMappingTable, instance *runtimeInstance) ([]RuntimeExcludedNode, *RuntimeInboundFailure, bool) {
 	excludedNodeIDs := map[string]struct{}{}
 	excludedNodes := make([]RuntimeExcludedNode, 0)
 
@@ -246,16 +245,22 @@ func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMapp
 				if retry {
 					continue
 				}
-				return excludedNodes, nil
+				return excludedNodes, nil, false
 			}
 			failure := runtimeFailureFromMapping(mapping, err)
-			return excludedNodes, &failure
+			return excludedNodes, &failure, false
 		}
 
+		// Existing sing-box outbounds are immutable; changed options require a new instance.
+		for tag, outbound := range plan.outbounds {
+			if previous, exists := instance.outbounds[tag]; exists && !reflect.DeepEqual(previous, outbound) {
+				return excludedNodes, nil, true
+			}
+		}
 		nextExcludedNodes, failure, retryNode := applyDynamicRuntimePlanForMapping(ctx, plan, instance)
 		excludedNodes = append(excludedNodes, nextExcludedNodes...)
 		if retryNode == nil {
-			return excludedNodes, failure
+			return excludedNodes, failure, false
 		}
 		var retry bool
 		excludedNodes, retry = excludeRuntimeNode(ctx, mapping, excludedNodeIDs, excludedNodes, plan.outboundNodes, retryNode)
@@ -264,7 +269,7 @@ func syncRuntimeInstanceMembership(ctx context.Context, mapping *tables.PortMapp
 				nextFailure := runtimeFailureFromMapping(mapping, retryNode.err)
 				failure = &nextFailure
 			}
-			return excludedNodes, failure
+			return excludedNodes, failure, false
 		}
 	}
 }
@@ -286,8 +291,8 @@ func applyDynamicRuntimePlan(ctx context.Context, plan *dynamicRuntimePlan, inst
 			return excludedNodes, err
 		}
 	}
-	instance.inbound = plan.inbound
 	instance.inboundKey = plan.inboundKey
+	instance.outbounds = plan.outbounds
 	return excludedNodes, nil
 }
 
@@ -414,7 +419,7 @@ func addBuiltinMember(core *singboxcore.Core, groupTag string, member dynamicMem
 	if member.id == "" {
 		member.id = member.tag
 	}
-	outbound := option.Outbound{}
+	var outbound option.Outbound
 	switch member.tag {
 	case constant.TypeDirect:
 		outbound = option.Outbound{
@@ -901,37 +906,27 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 	case StrategyLeastLatency:
 		strategy = singboxcore.BalanceLeastLatency
 	}
-	healthConfig := normalizeHealthConfig(currentHealthConfig())
-	return singboxcore.Policy{
-		Strategy:                 strategy,
-		ForceSelected:            normalizeStrategy(mapping.Strategy) == StrategyManual,
-		FailureBlacklistTTL:      healthConfig.BlacklistDuration,
-		RemoveTTL:                2 * time.Minute,
-		ProbeURL:                 healthConfig.ProbeURL,
-		ProbeInterval:            healthConfig.Interval,
-		ProbeTimeout:             healthConfig.Timeout,
-		ProbeTestTimeout:         minDuration(healthConfig.Timeout, singboxcore.DefaultLeastLatencyMaxLatency),
-		ProbeConcurrency:         minPositive(healthConfig.MaxConcurrency, singboxcore.DefaultLeastLatencyProbeConcurrency),
-		MaxLatency:               healthConfig.Timeout,
-		SlowThreshold:            healthConfig.FailureThreshold,
-		BlacklistRevivalLimit:    singboxcore.DefaultBlacklistRevivalLimit,
-		FallbackStrategy:         singboxcore.BalanceRoundRobin,
-		ProbeResultCallback:      recordRuntimeProbeResult,
-		BlacklistRevivalCallback: reviveRuntimeBlacklistedNodes,
-		TrafficFailureCallback:   recordRuntimeTrafficFailure,
-	}
+	policy := runtimePolicy(strategy)
+	policy.ForceSelected = normalizeStrategy(mapping.Strategy) == StrategyManual
+	return policy
 }
 
 func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 	strategy := singboxcore.BalanceManual
-	switch {
-	case groupUsesLeastLatencyPolicy(group):
-		strategy = singboxcore.BalanceLeastLatency
-	case groupUsesRoundRobinPolicy(group):
-		strategy = singboxcore.BalanceRoundRobin
-	case groupUsesRandomPolicy(group):
-		strategy = singboxcore.BalanceRandom
+	if group != nil {
+		switch normalizeGroupStrategy(group.Strategy) {
+		case GroupStrategyLeastLatency:
+			strategy = singboxcore.BalanceLeastLatency
+		case GroupStrategyLoadBalance:
+			strategy = singboxcore.BalanceRoundRobin
+		case GroupStrategyRandom:
+			strategy = singboxcore.BalanceRandom
+		}
 	}
+	return runtimePolicy(strategy)
+}
+
+func runtimePolicy(strategy singboxcore.BalanceStrategy) singboxcore.Policy {
 	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
 		Strategy:                 strategy,
@@ -963,27 +958,6 @@ func policyForGroupStrategyOverride(group *tables.ProxyGroupTable, override stri
 		policy.Strategy = singboxcore.BalanceRandom
 	}
 	return policy
-}
-
-func groupUsesLeastLatencyPolicy(group *tables.ProxyGroupTable) bool {
-	if group == nil {
-		return false
-	}
-	return normalizeGroupStrategy(group.Strategy) == GroupStrategyLeastLatency
-}
-
-func groupUsesRoundRobinPolicy(group *tables.ProxyGroupTable) bool {
-	if group == nil {
-		return false
-	}
-	return normalizeGroupStrategy(group.Strategy) == GroupStrategyLoadBalance
-}
-
-func groupUsesRandomPolicy(group *tables.ProxyGroupTable) bool {
-	if group == nil {
-		return false
-	}
-	return normalizeGroupStrategy(group.Strategy) == GroupStrategyRandom
 }
 
 func minPositive(value int, max int) int {

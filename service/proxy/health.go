@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -182,12 +183,17 @@ func NodeRelease(ctx context.Context, nodeID string) (*tables.ProxyNodeHealthTab
 		return nil, err
 	}
 
-	return globalNodeHealthBatcher.updateSnapshot(ctx, nodeID, func(snapshot *tables.ProxyNodeHealthTable, now time.Time) {
+	health, err := globalNodeHealthBatcher.updateSnapshot(ctx, nodeID, func(snapshot *tables.ProxyNodeHealthTable, now time.Time) {
 		snapshot.Blacklisted = false
 		snapshot.BlacklistedUntil = nil
 		snapshot.ConsecutiveFailureCount = 0
 		snapshot.LastError = ""
 	})
+	if err != nil {
+		return nil, err
+	}
+	syncRuntimeMappingsForNodeHealth(ctx, nodeID, "manual release")
+	return health, nil
 }
 
 func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (*tables.ProxyNodeHealthTable, error) {
@@ -215,13 +221,16 @@ func NodeBlacklist(ctx context.Context, nodeID string, duration time.Duration) (
 	if err != nil {
 		return nil, err
 	}
-	syncRuntimeMappingsForBlacklistedNode(ctx, nodeID, "manual blacklist")
+	syncRuntimeMappingsForNodeHealth(ctx, nodeID, "manual blacklist")
 	return health, nil
 }
 
 func recordNodeHealthResult(ctx context.Context, tx model.DBTx, nodeID string, record nodeHealthResultRecord) (*tables.ProxyNodeHealthTable, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(nodeID) == "" {
 		return nil, ErrNodeNotFound
@@ -231,7 +240,7 @@ func recordNodeHealthResult(ctx context.Context, tx model.DBTx, nodeID string, r
 		return nil, err
 	}
 	if shouldSyncRuntimeForHealthBlacklist(health, record) {
-		syncRuntimeMappingsForBlacklistedNode(ctx, nodeID, record.Source)
+		syncRuntimeMappingsForNodeHealth(ctx, nodeID, record.Source)
 	}
 	return health, nil
 }
@@ -307,7 +316,7 @@ func MappingTest(ctx context.Context, mappingID string, req ProxyTestRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	probeErr, latencyMs := executeHTTPProbe(ctx, probeURL, cfg.Timeout, proxyURL)
+	latencyMs, probeErr := executeHTTPProbe(ctx, probeURL, cfg.Timeout, proxyURL)
 	status = RuntimeStatusGet()
 	applyMappingTestRuntimeSelection(ctx, result, mapping, status)
 	result.LatencyMs = latencyMs
@@ -438,7 +447,7 @@ func shouldSyncRuntimeForHealthBlacklist(health *tables.ProxyNodeHealthTable, re
 	}
 }
 
-func syncRuntimeMappingsForBlacklistedNode(ctx context.Context, nodeID string, source string) {
+func syncRuntimeMappingsForNodeHealth(ctx context.Context, nodeID string, source string) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
 		return
@@ -448,7 +457,7 @@ func syncRuntimeMappingsForBlacklistedNode(ctx context.Context, nodeID string, s
 	}
 	mappingIDs, err := RuntimeAffectedMappingIDsByNodes(ctx, []string{nodeID})
 	if err != nil {
-		utils.Logger.Warn("节点进入黑名单后查询受影响本地端口失败",
+		utils.Logger.Warn("节点健康状态变化后查询受影响本地端口失败",
 			zap.String("nodeId", nodeID),
 			zap.String("source", strings.TrimSpace(source)),
 			zap.Error(err),
@@ -459,7 +468,7 @@ func syncRuntimeMappingsForBlacklistedNode(ctx context.Context, nodeID string, s
 		return
 	}
 	if _, err := RuntimeSyncMappings(ctx, mappingIDs); err != nil {
-		utils.Logger.Warn("节点进入黑名单后同步运行时失败",
+		utils.Logger.Warn("节点健康状态变化后同步运行时失败",
 			zap.String("nodeId", nodeID),
 			zap.String("source", strings.TrimSpace(source)),
 			zap.Strings("mappingIds", mappingIDs),
@@ -467,7 +476,7 @@ func syncRuntimeMappingsForBlacklistedNode(ctx context.Context, nodeID string, s
 		)
 		return
 	}
-	utils.Logger.Warn("节点进入黑名单，已同步运行时并切换后续连接",
+	utils.Logger.Info("节点健康状态变化，已同步运行时",
 		zap.String("nodeId", nodeID),
 		zap.String("source", strings.TrimSpace(source)),
 		zap.Strings("mappingIds", mappingIDs),
@@ -478,11 +487,18 @@ func recordRuntimeProbeResult(record singboxcore.ProbeRecord) {
 	if strings.TrimSpace(record.NodeID) == "" {
 		return
 	}
+	ctx := record.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	latencyMs := record.Latency.Milliseconds()
 	if latencyMs < 0 {
 		latencyMs = 0
 	}
-	_, err := recordNodeHealthResult(context.Background(), nil, record.NodeID, nodeHealthResultRecord{
+	_, err := recordNodeHealthResult(ctx, nil, record.NodeID, nodeHealthResultRecord{
 		Source:    nodeHealthSourceRuntimeProbe,
 		TargetID:  record.GroupTag,
 		ProbeURL:  normalizeHealthConfig(currentHealthConfig()).ProbeURL,
@@ -491,7 +507,7 @@ func recordRuntimeProbeResult(record singboxcore.ProbeRecord) {
 		Error:     record.Error,
 		CheckedAt: record.CheckedAt,
 	})
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		utils.Logger.Warn("运行时周期测速写入节点健康状态失败",
 			zap.String("groupTag", record.GroupTag),
 			zap.String("nodeId", record.NodeID),
@@ -524,9 +540,13 @@ func recordRuntimeTrafficFailure(record singboxcore.TrafficFailureRecord) {
 }
 
 func recordRuntimeTrafficFailureSync(record singboxcore.TrafficFailureRecord) (*tables.ProxyNodeHealthTable, error) {
+	ctx := record.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cfg := normalizeHealthConfig(currentHealthConfig())
 	errMessage := proxyuri.FirstNonEmpty(record.Error, "traffic failed before first response byte")
-	health, err := recordNodeHealthResult(context.Background(), nil, record.NodeID, nodeHealthResultRecord{
+	health, err := recordNodeHealthResult(ctx, nil, record.NodeID, nodeHealthResultRecord{
 		Source:    nodeHealthSourceRuntimeTraffic,
 		TargetID:  record.GroupTag,
 		Available: false,
@@ -550,7 +570,11 @@ func recordRuntimeTrafficFailureSync(record singboxcore.TrafficFailureRecord) (*
 }
 
 func syncRuntimeMappingsForTrafficFailure(record singboxcore.TrafficFailureRecord) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx := record.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	mappingIDs, err := RuntimeAffectedMappingIDsByNodes(ctx, []string{record.NodeID})
@@ -776,10 +800,6 @@ func probeAndSaveNodeForcedWithRoutePath(ctx context.Context, tx model.DBTx, nod
 	return health, probeResult.routePath, nil
 }
 
-func probeNode(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig) error {
-	return probeNodeWithRoutePath(ctx, node, cfg).err
-}
-
 func probeNodeWithRoutePath(ctx context.Context, node *tables.ProxyNodeTable, cfg utils.ProxyHealthConfig) nodeProbeResult {
 	if node == nil {
 		return nodeProbeResult{err: ErrNodeNotFound}
@@ -805,7 +825,7 @@ func probeNodeWithRoutePath(ctx context.Context, node *tables.ProxyNodeTable, cf
 		}
 	}()
 
-	probeErr, _ := executeHTTPProbe(probeCtx, probeURL, timeout, proxyURL)
+	_, probeErr := executeHTTPProbe(probeCtx, probeURL, timeout, proxyURL)
 	return nodeProbeResult{
 		err:       probeErr,
 		routePath: testRoutePathForNodeState(ctx, nil, node, instance.Snapshot()),
@@ -832,13 +852,13 @@ func normalizeProbeURL(value string, fallback string) (string, error) {
 	}
 }
 
-func executeHTTPProbe(ctx context.Context, probeURL string, timeout time.Duration, proxyURL *url.URL) (error, int64) {
+func executeHTTPProbe(ctx context.Context, probeURL string, timeout time.Duration, proxyURL *url.URL) (int64, error) {
 	if timeout <= 0 {
 		timeout = utils.DefaultProxyHealthConfig().Timeout
 	}
 	probeURL, err := normalizeProbeURL(probeURL, "")
 	if err != nil {
-		return err, 0
+		return 0, err
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -846,9 +866,10 @@ func executeHTTPProbe(ctx context.Context, probeURL string, timeout time.Duratio
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		return err, 0
+		return 0, err
 	}
 	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
@@ -864,14 +885,14 @@ func executeHTTPProbe(ctx context.Context, probeURL string, timeout time.Duratio
 		latencyMs = 0
 	}
 	if err != nil {
-		return err, latencyMs
+		return latencyMs, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("probe status %d", resp.StatusCode), latencyMs
+		return latencyMs, fmt.Errorf("probe status %d", resp.StatusCode)
 	}
-	return nil, latencyMs
+	return latencyMs, nil
 }
 
 func testResultFromHealth(targetType, targetID, targetName, probeURL string, checkedAt time.Time, health *tables.ProxyNodeHealthTable) *ProxyTestResultDTO {
@@ -1176,24 +1197,6 @@ func routeHopFromGroup(group *tables.ProxyGroupTable, tag string) ProxyRouteHopD
 	return ProxyRouteHopDTO{Kind: ChainMemberTypeGroup, ID: group.ID, Name: group.Name, Tag: tag}
 }
 
-func groupNameMapForRouteHop(ctx context.Context, groupIDs []string) map[string]string {
-	groupIDs = proxyuri.UniqueNonEmpty(groupIDs)
-	if len(groupIDs) == 0 {
-		return nil
-	}
-	groups, err := findGroupsByIDs(ctx, nil, groupIDs)
-	if err != nil {
-		return nil
-	}
-	names := make(map[string]string, len(groups))
-	for _, group := range groups {
-		if group != nil {
-			names[group.ID] = group.Name
-		}
-	}
-	return names
-}
-
 func runtimeNodeErrorFromProbe(nodeTag string, fallback string) string {
 	nodeTag = strings.TrimSpace(nodeTag)
 	if nodeTag == "" {
@@ -1269,19 +1272,17 @@ func mappingProbeProxyURL(mapping *tables.PortMappingTable) (*url.URL, error) {
 	if mapping == nil {
 		return nil, ErrMappingNotFound
 	}
-	host := strings.TrimSpace(mapping.ListenAddress)
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "127.0.0.1"
+	listen, err := parseListenAddr(mapping.ListenAddress)
+	if err != nil {
+		return nil, err
 	}
-	if parsedIP, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && parsedIP.IsUnspecified() {
-		if parsedIP.Is6() {
-			host = "::1"
+	addr := netip.Addr(*listen)
+	if addr.IsUnspecified() {
+		if addr.Is6() {
+			addr = netip.IPv6Loopback()
 		} else {
-			host = "127.0.0.1"
+			addr = netip.MustParseAddr("127.0.0.1")
 		}
-	}
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
 	}
 
 	scheme := "http"
@@ -1290,7 +1291,7 @@ func mappingProbeProxyURL(mapping *tables.PortMappingTable) (*url.URL, error) {
 	}
 	proxyURL := &url.URL{
 		Scheme: scheme,
-		Host:   fmt.Sprintf("%s:%d", host, mapping.ListenPort),
+		Host:   net.JoinHostPort(addr.String(), strconv.Itoa(int(mapping.ListenPort))),
 	}
 	username := strings.TrimSpace(mapping.Username)
 	password := strings.TrimSpace(mapping.Password)

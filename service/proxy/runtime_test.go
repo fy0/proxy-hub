@@ -1700,6 +1700,13 @@ func TestNodeBlacklistSyncRemovesNodeFromRuntimeGroup(t *testing.T) {
 	if group.Selected != nodeB.ID {
 		t.Fatalf("selected = %q, want %q", group.Selected, nodeB.ID)
 	}
+	if _, err := NodeRelease(ctx, nodeA.ID); err != nil {
+		t.Fatalf("NodeRelease() error = %v", err)
+	}
+	group = snapshotGroupByTag(after.core.Snapshot().Groups, mappingOutboundTag(mapping.ID))
+	if group == nil || !containsRuntimeNode(group.Nodes, nodeA.ID) {
+		t.Fatalf("released node was not restored to runtime: %+v", group)
+	}
 }
 
 func TestRuntimeLeastLatencyMappingIgnoresStoredActiveRoute(t *testing.T) {

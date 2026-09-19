@@ -428,12 +428,11 @@ func mappingDTOToTable(dto *PortMappingDTO, nodeIDs, groupIDs map[string]struct{
 	row.ID = strings.TrimSpace(dto.ID)
 	row.CreatedAt = dto.CreatedAt
 	row.UpdatedAt = dto.UpdatedAt
-	if row.ListenAddress == "" {
-		row.ListenAddress = "127.0.0.1"
-	}
-	if _, err := netip.ParseAddr(row.ListenAddress); err != nil {
+	listen, err := parseListenAddr(row.ListenAddress)
+	if err != nil {
 		return nil, invalidSettingsBackup("mapping listen address is invalid")
 	}
+	row.ListenAddress = netip.Addr(*listen).String()
 	if row.Order == 0 {
 		row.Order = 1
 	}

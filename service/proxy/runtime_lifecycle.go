@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing-box/option"
 	"go.uber.org/zap"
 
 	"proxy-hub/core/singboxcore"
@@ -88,14 +89,15 @@ type RuntimeStatus struct {
 
 type runtimeInstance struct {
 	core       *singboxcore.Core
-	inbound    RuntimeInbound
 	inboundKey string
+	outbounds  map[string]option.Outbound
 }
 
 type runtimeManager struct {
-	mu        sync.Mutex
-	instances map[string]*runtimeInstance
-	status    RuntimeStatus
+	operationMu sync.Mutex
+	mu          sync.Mutex
+	instances   map[string]*runtimeInstance
+	status      RuntimeStatus
 }
 
 var singBoxRuntime = &runtimeManager{
@@ -122,6 +124,8 @@ func RuntimeStatusGet() RuntimeStatus {
 }
 
 func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
+	singBoxRuntime.operationMu.Lock()
+	defer singBoxRuntime.operationMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -169,6 +173,12 @@ func RuntimeReload(ctx context.Context) (RuntimeStatus, error) {
 }
 
 func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, error) {
+	singBoxRuntime.operationMu.Lock()
+	defer singBoxRuntime.operationMu.Unlock()
+	return runtimeSyncMapping(ctx, mappingID)
+}
+
+func runtimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, error) {
 	mappingID = strings.TrimSpace(mappingID)
 	if mappingID == "" {
 		return RuntimeStatusGet(), nil
@@ -176,17 +186,20 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return RuntimeStatusGet(), err
+	}
 
 	mapping, err := MappingGet(ctx, nil, mappingID)
 	if errors.Is(err, ErrMappingNotFound) {
-		status, removeErr := RuntimeRemoveMapping(mappingID)
+		status, removeErr := runtimeRemoveMapping(mappingID)
 		return status, removeErr
 	}
 	if err != nil {
 		return RuntimeStatusGet(), err
 	}
 	if !mapping.Enabled {
-		return RuntimeRemoveMapping(mapping.ID)
+		return runtimeRemoveMapping(mapping.ID)
 	}
 
 	if updated, status, err := syncRuntimeMappingDynamic(ctx, mapping); updated {
@@ -211,6 +224,8 @@ func RuntimeSyncMapping(ctx context.Context, mappingID string) (RuntimeStatus, e
 }
 
 func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatus, error) {
+	singBoxRuntime.operationMu.Lock()
+	defer singBoxRuntime.operationMu.Unlock()
 	mappingIDs = proxyuri.UniqueNonEmpty(mappingIDs)
 	if len(mappingIDs) == 0 {
 		return RuntimeStatusGet(), nil
@@ -219,7 +234,7 @@ func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatu
 	var joined error
 	status := RuntimeStatusGet()
 	for _, mappingID := range mappingIDs {
-		nextStatus, err := RuntimeSyncMapping(ctx, mappingID)
+		nextStatus, err := runtimeSyncMapping(ctx, mappingID)
 		status = nextStatus
 		if err != nil {
 			joined = errors.Join(joined, err)
@@ -229,6 +244,12 @@ func RuntimeSyncMappings(ctx context.Context, mappingIDs []string) (RuntimeStatu
 }
 
 func RuntimeRemoveMapping(mappingID string) (RuntimeStatus, error) {
+	singBoxRuntime.operationMu.Lock()
+	defer singBoxRuntime.operationMu.Unlock()
+	return runtimeRemoveMapping(mappingID)
+}
+
+func runtimeRemoveMapping(mappingID string) (RuntimeStatus, error) {
 	mappingID = strings.TrimSpace(mappingID)
 	if mappingID == "" {
 		return RuntimeStatusGet(), nil
@@ -274,6 +295,8 @@ func RuntimeAffectedMappingIDsBySubscription(ctx context.Context, subscriptionID
 }
 
 func RuntimeStop() error {
+	singBoxRuntime.operationMu.Lock()
+	defer singBoxRuntime.operationMu.Unlock()
 	instances := singBoxRuntime.replaceRuntimeInstances(RuntimeStatus{
 		Running:   false,
 		State:     "stopped",
@@ -307,8 +330,14 @@ func syncRuntimeMappingDynamic(ctx context.Context, mapping *tables.PortMappingT
 		return false, RuntimeStatusGet(), nil
 	}
 
-	excludedNodes, failure := syncRuntimeInstanceMembership(ctx, mapping, existing)
+	excludedNodes, failure, restart := syncRuntimeInstanceMembership(ctx, mapping, existing)
+	if restart {
+		return false, RuntimeStatusGet(), nil
+	}
 	if failure != nil {
+		if err := closeRuntimeInstance(mapping.ID, existing); err != nil {
+			utils.Logger.Warn("关闭失败的 sing-box 映射实例失败", zap.String("mappingId", mapping.ID), zap.Error(err))
+		}
 		return true, singBoxRuntime.setRuntimeMappingFailure(mapping.ID, *failure, excludedNodes), nil
 	}
 	return true, singBoxRuntime.setRuntimeMappingInstance(mapping.ID, existing, nextInboundStatus, excludedNodes), nil

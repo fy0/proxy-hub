@@ -2,7 +2,8 @@ package proxy
 
 import (
 	"context"
-	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"proxy-hub/model"
@@ -17,6 +18,9 @@ func runtimeAffectedMappingIDsByNodes(ctx context.Context, tx model.DBTx, nodeID
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	tx = model.GetTx(tx).WithContext(ctx)
 
@@ -224,7 +228,7 @@ func mappingRuntimeListen(mapping *tables.PortMappingTable) string {
 	if mapping == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%d", mapping.ListenAddress, mapping.ListenPort)
+	return net.JoinHostPort(mapping.ListenAddress, strconv.Itoa(int(mapping.ListenPort)))
 }
 
 func runtimeInboundKey(inbound RuntimeInbound, mapping *tables.PortMappingTable) string {

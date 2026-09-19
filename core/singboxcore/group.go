@@ -35,6 +35,7 @@ const (
 )
 
 type ProbeRecord struct {
+	Context   context.Context `json:"-"`
 	GroupTag  string
 	NodeID    string
 	NodeTag   string
@@ -51,6 +52,7 @@ type BlacklistRevivalEvent struct {
 }
 
 type TrafficFailureRecord struct {
+	Context   context.Context `json:"-"`
 	GroupTag  string
 	NodeID    string
 	NodeTag   string
@@ -145,6 +147,7 @@ type DynamicGroup struct {
 
 	removeTags func([]string) error
 
+	probeRoundMu      sync.Mutex
 	probeMu           sync.Mutex
 	probeWake         chan struct{}
 	probeRunning      bool
@@ -204,9 +207,13 @@ func (g *DynamicGroup) UpdatePolicy(policy Policy) {
 	}
 	policy = policy.normalized()
 	g.mu.Lock()
+	if g.policy.Strategy != policy.Strategy {
+		g.balancer = NewBalancer(policy.Strategy)
+	}
+	if g.policy.FallbackStrategy != policy.FallbackStrategy {
+		g.fallback = NewBalancer(policy.FallbackStrategy)
+	}
 	g.policy = policy
-	g.balancer = NewBalancer(policy.Strategy)
-	g.fallback = NewBalancer(policy.FallbackStrategy)
 	g.mu.Unlock()
 	g.ensureLeastLatencyProbeLoop()
 	g.wakeLeastLatencyProbe()
@@ -489,7 +496,7 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return nil
 	}
 	now := time.Now()
-	policy, selected, nodes := g.candidateState(now)
+	policy, selected, nodes, balancer, fallback := g.candidateState(now)
 	if policy.ForceSelected {
 		if selected != nil && selected.eligible(now, true) {
 			return []*NodeState{selected}
@@ -497,7 +504,7 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return nil
 	}
 	if len(nodes) == 0 && g.reviveBlacklistedNodes(now) {
-		policy, selected, nodes = g.candidateState(now)
+		policy, selected, nodes, balancer, fallback = g.candidateState(now)
 	}
 
 	if len(nodes) == 0 {
@@ -517,19 +524,19 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return ordered
 	}
 	if policy.Strategy == BalanceLeastLatency {
-		return g.orderLeastLatencyCandidates(nodes, policy.FallbackStrategy)
+		return g.orderLeastLatencyCandidates(nodes, policy.FallbackStrategy, fallback)
 	}
-	return g.balancer.Order(nodes)
+	return balancer.Order(nodes)
 }
 
-func (g *DynamicGroup) candidateState(now time.Time) (Policy, *NodeState, []*NodeState) {
+func (g *DynamicGroup) candidateState(now time.Time) (Policy, *NodeState, []*NodeState, Balancer, Balancer) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	policy := g.policy
 	selected := g.nodes[g.selected]
 	if policy.ForceSelected {
-		return policy, selected, nil
+		return policy, selected, nil, g.balancer, g.fallback
 	}
 	nodes := make([]*NodeState, 0, len(g.order))
 	for _, id := range g.order {
@@ -538,7 +545,7 @@ func (g *DynamicGroup) candidateState(now time.Time) (Policy, *NodeState, []*Nod
 			nodes = append(nodes, node)
 		}
 	}
-	return policy, selected, nodes
+	return policy, selected, nodes, g.balancer, g.fallback
 }
 
 func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
@@ -684,7 +691,7 @@ func blacklistRevivalCandidateLess(left, right blacklistRevivalCandidate) bool {
 	return left.order < right.order
 }
 
-func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, fallbackStrategy BalanceStrategy) []*NodeState {
+func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, fallbackStrategy BalanceStrategy, fallback Balancer) []*NodeState {
 	candidates := make([]*NodeState, 0, len(nodes))
 	for _, node := range nodes {
 		if node.LeastLatencyCandidate() {
@@ -702,10 +709,7 @@ func (g *DynamicGroup) orderLeastLatencyCandidates(nodes []*NodeState, fallbackS
 		if fallbackStrategy == BalanceManual {
 			return append([]*NodeState(nil), nodes...)
 		}
-		if g.fallback != nil {
-			return g.fallback.Order(nodes)
-		}
-		return NewBalancer(fallbackStrategy).Order(nodes)
+		return fallback.Order(nodes)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return latencySortValue(candidates[i]) < latencySortValue(candidates[j])
@@ -832,7 +836,7 @@ func (g *DynamicGroup) SelectBestLeastLatencyCandidate() {
 }
 
 func (g *DynamicGroup) ensureLeastLatencyProbeLoop() {
-	if g == nil {
+	if g == nil || g.ctx.Err() != nil {
 		return
 	}
 	policy := g.policySnapshot()
@@ -860,6 +864,7 @@ func (g *DynamicGroup) leastLatencyProbeLoop() {
 		g.probeMu.Lock()
 		g.probeRunning = false
 		g.probeMu.Unlock()
+		g.ensureLeastLatencyProbeLoop()
 	}()
 	for {
 		policy := g.policySnapshot()
@@ -904,6 +909,11 @@ func (g *DynamicGroup) probeLoopActive(policy Policy) bool {
 }
 
 func (g *DynamicGroup) runLeastLatencyProbeRound(policy Policy) {
+	g.probeRoundMu.Lock()
+	defer g.probeRoundMu.Unlock()
+	if g.ctx.Err() != nil {
+		return
+	}
 	g.probeMu.Lock()
 	g.lastProbeAt = time.Now()
 	g.probeRoundRunning = true
@@ -968,7 +978,7 @@ func (g *DynamicGroup) eligibleNodes(now time.Time) []*NodeState {
 }
 
 func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
-	if g == nil || node == nil || g.manager == nil {
+	if g == nil || node == nil || g.manager == nil || g.ctx.Err() != nil {
 		return
 	}
 	node.markLeastLatencyProbeRunning(time.Now())
@@ -987,6 +997,9 @@ func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
 	ctx, cancel := context.WithTimeout(g.ctx, timeout)
 	defer cancel()
 	latency, err := urltest.URLTest(ctx, policy.ProbeURL, outbound)
+	if g.ctx.Err() != nil {
+		return
+	}
 	now := time.Now()
 	if err != nil {
 		wasBlacklisted := node.blacklisted(now)
@@ -1002,10 +1015,11 @@ func (g *DynamicGroup) probeLeastLatencyNode(policy Policy, node *NodeState) {
 }
 
 func (g *DynamicGroup) emitProbeResult(policy Policy, node *NodeState, available bool, latency time.Duration, errMessage string, checkedAt time.Time) {
-	if policy.ProbeResultCallback == nil || node == nil {
+	if policy.ProbeResultCallback == nil || node == nil || g.ctx.Err() != nil {
 		return
 	}
 	policy.ProbeResultCallback(ProbeRecord{
+		Context:   g.ctx,
 		GroupTag:  g.Tag(),
 		NodeID:    node.ID,
 		NodeTag:   node.Tag,
@@ -1017,7 +1031,7 @@ func (g *DynamicGroup) emitProbeResult(policy Policy, node *NodeState, available
 }
 
 func (g *DynamicGroup) emitTrafficFailure(node *NodeState, err error, checkedAt time.Time) {
-	if g == nil || node == nil || err == nil {
+	if g == nil || node == nil || err == nil || g.ctx.Err() != nil {
 		return
 	}
 	reason := strings.TrimSpace(err.Error())
@@ -1041,6 +1055,7 @@ func (g *DynamicGroup) emitTrafficFailure(node *NodeState, err error, checkedAt 
 		return
 	}
 	policy.TrafficFailureCallback(TrafficFailureRecord{
+		Context:   g.ctx,
 		GroupTag:  g.Tag(),
 		NodeID:    node.ID,
 		NodeTag:   node.Tag,

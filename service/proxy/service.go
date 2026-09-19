@@ -1657,13 +1657,11 @@ func normalizeMappingRequest(ctx context.Context, tx model.DBTx, mappingID strin
 			return nil, err
 		}
 	}
-	normalized.ListenAddress = strings.TrimSpace(normalized.ListenAddress)
-	if normalized.ListenAddress == "" {
-		normalized.ListenAddress = "127.0.0.1"
-	}
-	if _, err := netip.ParseAddr(normalized.ListenAddress); err != nil {
+	listen, err := parseListenAddr(normalized.ListenAddress)
+	if err != nil {
 		return nil, ErrInvalidAddress
 	}
+	normalized.ListenAddress = netip.Addr(*listen).String()
 	if normalized.ListenPort == 0 {
 		return nil, ErrInvalidPort
 	}
