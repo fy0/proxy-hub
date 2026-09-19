@@ -31,6 +31,64 @@ func TestRoundRobinSelection(t *testing.T) {
 	}
 }
 
+func TestRandomSelectionShufflesEligibleNodes(t *testing.T) {
+	group := NewDynamicGroup("group-random", nil, Policy{Strategy: BalanceRandom})
+	for _, id := range []string{"a", "b", "c"} {
+		if err := group.AddNode(NewNodeState(id, "node-"+id, option.Outbound{})); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", id, err)
+		}
+	}
+
+	firstPicks := map[string]int{}
+	for i := 0; i < 100; i++ {
+		got := candidateIDs(group)
+		if len(got) != 3 {
+			t.Fatalf("random candidates = %v, want all three nodes", got)
+		}
+		seen := map[string]bool{}
+		for _, id := range got {
+			if seen[id] {
+				t.Fatalf("random candidates contain duplicate %q: %v", id, got)
+			}
+			seen[id] = true
+		}
+		firstPicks[got[0]]++
+	}
+	if len(firstPicks) != 3 {
+		t.Fatalf("random first picks = %v, want every node to lead at least once", firstPicks)
+	}
+}
+
+func TestRandomSelectionDialPicksDifferentNodes(t *testing.T) {
+	manager := &fakeOutboundManager{
+		outbounds: map[string]adapter.Outbound{
+			"node-a": fakeOutbound{tag: "node-a", conn: &scriptedConn{}},
+			"node-b": fakeOutbound{tag: "node-b", conn: &scriptedConn{}},
+			"node-c": fakeOutbound{tag: "node-c", conn: &scriptedConn{}},
+		},
+		removed: map[string]bool{},
+	}
+	group := NewDynamicGroup("group-random", manager, Policy{Strategy: BalanceRandom})
+	for _, id := range []string{"a", "b", "c"} {
+		if err := group.AddNode(NewNodeState(id, "node-"+id, option.Outbound{})); err != nil {
+			t.Fatalf("AddNode(%s) error = %v", id, err)
+		}
+	}
+
+	dialed := map[string]int{}
+	for i := 0; i < 100; i++ {
+		conn, err := group.DialContext(context.Background(), "tcp", M.Socksaddr{})
+		if err != nil {
+			t.Fatalf("DialContext(%d) error = %v", i, err)
+		}
+		_ = conn.Close()
+		dialed[group.Snapshot().Selected]++
+	}
+	if len(dialed) != 3 {
+		t.Fatalf("random dial distribution = %v, want every node dialed at least once", dialed)
+	}
+}
+
 func TestSuccessfulDialUpdatesSelectedNode(t *testing.T) {
 	manager := &fakeOutboundManager{
 		outbounds: map[string]adapter.Outbound{

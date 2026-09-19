@@ -277,6 +277,21 @@ func TestLoadBalanceGroupUsesRoundRobinPolicy(t *testing.T) {
 	}
 }
 
+func TestRandomGroupUsesRandomPolicy(t *testing.T) {
+	group := &tables.ProxyGroupTable{
+		Type:     GroupTypeManual,
+		Strategy: GroupStrategyRandom,
+	}
+	policy := policyForGroup(group)
+	if policy.Strategy != singboxcore.BalanceRandom {
+		t.Fatalf("random policy strategy = %q, want %q", policy.Strategy, singboxcore.BalanceRandom)
+	}
+	override := policyForGroupStrategyOverride(group, GroupStrategyOverrideRandom)
+	if override.Strategy != singboxcore.BalanceRandom {
+		t.Fatalf("random override policy strategy = %q, want %q", override.Strategy, singboxcore.BalanceRandom)
+	}
+}
+
 func TestMappingGroupStrategyOverrideUsesPortScopedPolicy(t *testing.T) {
 	initProxyInMemoryDB(t)
 	t.Cleanup(func() {

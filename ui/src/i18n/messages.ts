@@ -178,6 +178,7 @@ export const messages = {
         selector: '手动选择',
         'load-balance': '负载均衡',
         'least-latency': '最低延迟',
+        random: '随机轮换',
       },
       groupStrategyOverride: {
         inherit: '继承分组策略',
@@ -705,6 +706,7 @@ export const messages = {
         selector: 'Manual select',
         'load-balance': 'Load balance',
         'least-latency': 'Least latency',
+        random: 'Random',
       },
       groupStrategyOverride: {
         inherit: 'Inherit group strategy',

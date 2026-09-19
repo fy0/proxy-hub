@@ -343,6 +343,21 @@ func TestGroupCreatePreservesLoadBalanceStrategy(t *testing.T) {
 	}
 }
 
+func TestGroupCreatePreservesRandomStrategy(t *testing.T) {
+	initProxyInMemoryDB(t)
+
+	group, err := GroupCreate(context.Background(), nil, GroupUpsertRequest{
+		Name:     "random",
+		Strategy: GroupStrategyRandom,
+	})
+	if err != nil {
+		t.Fatalf("GroupCreate() error = %v", err)
+	}
+	if group.Strategy != GroupStrategyRandom {
+		t.Fatalf("group strategy = %q, want %q", group.Strategy, GroupStrategyRandom)
+	}
+}
+
 func TestNodeCreateAcceptsChainMembersWithGroup(t *testing.T) {
 	initProxyInMemoryDB(t)
 

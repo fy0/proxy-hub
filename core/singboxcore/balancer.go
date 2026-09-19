@@ -1,6 +1,9 @@
 package singboxcore
 
-import "sync/atomic"
+import (
+	"math/rand/v2"
+	"sync/atomic"
+)
 
 type BalanceStrategy string
 
@@ -8,6 +11,7 @@ const (
 	BalanceManual       BalanceStrategy = "manual"
 	BalanceRoundRobin   BalanceStrategy = "round-robin"
 	BalanceLeastLatency BalanceStrategy = "least-latency"
+	BalanceRandom       BalanceStrategy = "random"
 )
 
 type Balancer interface {
@@ -29,6 +33,19 @@ func (b *RoundRobinBalancer) Order(nodes []*NodeState) []*NodeState {
 	return ordered
 }
 
-func NewBalancer(_ BalanceStrategy) Balancer {
+type RandomBalancer struct{}
+
+func (b *RandomBalancer) Order(nodes []*NodeState) []*NodeState {
+	ordered := append([]*NodeState(nil), nodes...)
+	rand.Shuffle(len(ordered), func(i, j int) {
+		ordered[i], ordered[j] = ordered[j], ordered[i]
+	})
+	return ordered
+}
+
+func NewBalancer(strategy BalanceStrategy) Balancer {
+	if strategy == BalanceRandom {
+		return &RandomBalancer{}
+	}
 	return &RoundRobinBalancer{}
 }

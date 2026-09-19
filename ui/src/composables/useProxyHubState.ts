@@ -227,13 +227,16 @@ function normalizeGroupStrategy(value: string | null | undefined): ProxyGroupStr
   const strategy = value?.toLowerCase();
   if (strategy === 'url-test' || strategy === 'least-latency') return 'least-latency';
   if (strategy === 'load-balance') return 'load-balance';
+  if (strategy === 'random') return 'random';
   return 'selector';
 }
 
 function normalizeGroupStrategyOverride(
   value: string | null | undefined
 ): GroupStrategyOverride {
-  if (value === 'load-balance' || value === 'least-latency') return value;
+  if (value === 'load-balance' || value === 'least-latency' || value === 'random') {
+    return value;
+  }
   return 'inherit';
 }
 

@@ -919,6 +919,8 @@ func policyForGroup(group *tables.ProxyGroupTable) singboxcore.Policy {
 		strategy = singboxcore.BalanceLeastLatency
 	case groupUsesRoundRobinPolicy(group):
 		strategy = singboxcore.BalanceRoundRobin
+	case groupUsesRandomPolicy(group):
+		strategy = singboxcore.BalanceRandom
 	}
 	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
@@ -947,6 +949,8 @@ func policyForGroupStrategyOverride(group *tables.ProxyGroupTable, override stri
 		policy.Strategy = singboxcore.BalanceRoundRobin
 	case GroupStrategyOverrideLeastLatency:
 		policy.Strategy = singboxcore.BalanceLeastLatency
+	case GroupStrategyOverrideRandom:
+		policy.Strategy = singboxcore.BalanceRandom
 	}
 	return policy
 }
@@ -963,6 +967,13 @@ func groupUsesRoundRobinPolicy(group *tables.ProxyGroupTable) bool {
 		return false
 	}
 	return normalizeGroupStrategy(group.Strategy) == GroupStrategyLoadBalance
+}
+
+func groupUsesRandomPolicy(group *tables.ProxyGroupTable) bool {
+	if group == nil {
+		return false
+	}
+	return normalizeGroupStrategy(group.Strategy) == GroupStrategyRandom
 }
 
 func minPositive(value int, max int) int {

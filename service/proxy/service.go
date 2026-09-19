@@ -1845,6 +1845,8 @@ func normalizeGroupStrategy(strategy string) string {
 		return GroupStrategyLeastLatency
 	case GroupStrategyLoadBalance:
 		return GroupStrategyLoadBalance
+	case GroupStrategyRandom:
+		return GroupStrategyRandom
 	default:
 		return GroupStrategySelector
 	}
@@ -1858,6 +1860,8 @@ func normalizeGroupStrategyOverride(strategy string) string {
 		return GroupStrategyOverrideLoadBalance
 	case GroupStrategyOverrideLeastLatency:
 		return GroupStrategyOverrideLeastLatency
+	case GroupStrategyOverrideRandom:
+		return GroupStrategyOverrideRandom
 	default:
 		return ""
 	}

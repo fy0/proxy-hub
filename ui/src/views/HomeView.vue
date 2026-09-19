@@ -158,6 +158,7 @@ const groupStrategyOverrideLabels = computed<Record<GroupStrategyOverride, strin
   inherit: t('home.groupStrategyOverride.inherit'),
   'load-balance': t('home.groupStrategy.load-balance'),
   'least-latency': t('home.groupStrategy.least-latency'),
+  random: t('home.groupStrategy.random'),
 }));
 
 const groupStrategyOverrideOptions = computed<
@@ -166,6 +167,7 @@ const groupStrategyOverrideOptions = computed<
   { label: groupStrategyOverrideLabels.value.inherit, value: 'inherit' },
   { label: groupStrategyOverrideLabels.value['load-balance'], value: 'load-balance' },
   { label: groupStrategyOverrideLabels.value['least-latency'], value: 'least-latency' },
+  { label: groupStrategyOverrideLabels.value.random, value: 'random' },
 ]);
 
 const {
@@ -3474,6 +3476,7 @@ const homeContext = {
               <option value="selector">{{ t('home.groupStrategy.selector') }}</option>
               <option value="load-balance">{{ t('home.groupStrategy.load-balance') }}</option>
               <option value="least-latency">{{ t('home.groupStrategy.least-latency') }}</option>
+              <option value="random">{{ t('home.groupStrategy.random') }}</option>
             </select>
           </label>
         </div>

@@ -41,10 +41,12 @@ const (
 	GroupStrategyURLTest      = "url-test"
 	GroupStrategyLoadBalance  = "load-balance"
 	GroupStrategyLeastLatency = "least-latency"
+	GroupStrategyRandom       = "random"
 
 	GroupStrategyOverrideInherit      = "inherit"
 	GroupStrategyOverrideLoadBalance  = "load-balance"
 	GroupStrategyOverrideLeastLatency = "least-latency"
+	GroupStrategyOverrideRandom       = "random"
 
 	ChainMemberTypeNode  = "node"
 	ChainMemberTypeGroup = "group"
