@@ -114,14 +114,14 @@ func (n *NodeState) decActive() {
 	n.activeCount.Add(-1)
 }
 
-func (n *NodeState) registerConnection(conn nodeConnection) bool {
+func (n *NodeState) registerConnection(conn nodeConnection, ignoreHealth bool) bool {
 	if n == nil || conn == nil {
 		return false
 	}
 	now := time.Now()
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if !n.eligibleLocked(now) {
+	if !n.eligibleLocked(now, ignoreHealth) {
 		return false
 	}
 	if n.activeConnections == nil {
@@ -164,17 +164,24 @@ func (n *NodeState) closeActiveConnections(reason string) int {
 }
 
 func (n *NodeState) Eligible(now time.Time) bool {
+	return n.eligible(now, false)
+}
+
+func (n *NodeState) eligible(now time.Time, ignoreHealth bool) bool {
 	if n == nil {
 		return false
 	}
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.eligibleLocked(now)
+	return n.eligibleLocked(now, ignoreHealth)
 }
 
-func (n *NodeState) eligibleLocked(now time.Time) bool {
+func (n *NodeState) eligibleLocked(now time.Time, ignoreHealth bool) bool {
 	if !n.enabled || n.tombstoned {
 		return false
+	}
+	if ignoreHealth {
+		return true
 	}
 	if n.health == HealthDead {
 		return false

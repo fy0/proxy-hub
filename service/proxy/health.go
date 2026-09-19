@@ -335,7 +335,7 @@ func applyMappingTestRuntimeSelection(ctx context.Context, result *ProxyTestResu
 		}
 	}
 	result.RoutePath = testRoutePathForMapping(ctx, mapping, status)
-	if result.NodeID == "" && result.NodeTag == "" {
+	if result.NodeID == "" {
 		applyTestResultNodeFromRoutePath(result)
 	}
 }
@@ -1387,7 +1387,7 @@ func buildHealthProbeNodePlan(ctx context.Context, node *tables.ProxyNodeTable) 
 		blacklistedNodeIDs: map[string]struct{}{},
 		excludedNodeIDs:    map[string]struct{}{},
 	}
-	member, err := builder.memberForNode(node)
+	member, err := builder.memberForNode(node, false)
 	if err != nil {
 		return nil, err
 	}

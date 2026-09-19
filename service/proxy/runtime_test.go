@@ -1662,7 +1662,7 @@ func TestNodeBlacklistSyncRemovesNodeFromRuntimeGroup(t *testing.T) {
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
 		OutboundProtocol: OutboundProtocolMixed,
-		Strategy:         StrategyManual,
+		Strategy:         StrategyFailover,
 		NodeIDs:          []string{nodeA.ID, nodeB.ID},
 		ActiveNodeID:     &nodeA.ID,
 	})
@@ -1880,7 +1880,7 @@ func TestRuntimeTrafficFailureRevivesSingleBlacklistedMappingNode(t *testing.T) 
 		ListenAddress:    "127.0.0.1",
 		ListenPort:       freeTCPPort(t),
 		OutboundProtocol: OutboundProtocolMixed,
-		Strategy:         StrategyManual,
+		Strategy:         StrategyFailover,
 		NodeIDs:          []string{node.ID},
 		ActiveNodeID:     &node.ID,
 	})

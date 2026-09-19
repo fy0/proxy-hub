@@ -66,7 +66,9 @@ type BlacklistRevivalCallback func(BlacklistRevivalEvent)
 type TrafficFailureCallback func(TrafficFailureRecord)
 
 type Policy struct {
-	Strategy                 BalanceStrategy
+	Strategy BalanceStrategy
+	// ForceSelected pins routing to the selected member regardless of its health.
+	ForceSelected            bool
 	FailureBlacklistTTL      time.Duration
 	RemoveTTL                time.Duration
 	ProbeURL                 string
@@ -239,7 +241,7 @@ func (g *DynamicGroup) SelectNode(nodeID string) error {
 	if node == nil {
 		return ErrNodeNotFound
 	}
-	if !node.Eligible(time.Now()) {
+	if !node.eligible(time.Now(), g.policy.ForceSelected) {
 		return fmt.Errorf("%w: %s", ErrNoAvailableNode, nodeID)
 	}
 	g.selected = node.ID
@@ -260,8 +262,12 @@ func (g *DynamicGroup) MarkNodeFailed(nodeID string, ttl time.Duration, reason s
 	if err != nil {
 		return err
 	}
+	policy := g.policySnapshot()
+	if policy.ForceSelected {
+		ttl = 0
+	}
 	node.markFailed(ttl, reason, time.Now())
-	if !node.Eligible(time.Now()) {
+	if !node.eligible(time.Now(), policy.ForceSelected) {
 		node.closeActiveConnections("node failed")
 	}
 	g.ensureSelected()
@@ -374,7 +380,7 @@ func (g *DynamicGroup) DialContext(ctx context.Context, network string, destinat
 			g.setSelected(node.ID)
 		}
 		tracked := &trackedConn{Conn: conn, group: g, node: node}
-		if !node.registerConnection(tracked) {
+		if !node.registerConnection(tracked, policy.ForceSelected) {
 			_ = conn.Close()
 			joined = errors.Join(joined, ErrNoAvailableNode)
 			continue
@@ -413,7 +419,7 @@ func (g *DynamicGroup) ListenPacket(ctx context.Context, destination M.Socksaddr
 			g.setSelected(node.ID)
 		}
 		tracked := &trackedPacketConn{PacketConn: packetConn, node: node}
-		if !node.registerConnection(tracked) {
+		if !node.registerConnection(tracked, policy.ForceSelected) {
 			_ = packetConn.Close()
 			joined = errors.Join(joined, ErrNoAvailableNode)
 			continue
@@ -483,15 +489,21 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		return nil
 	}
 	now := time.Now()
-	strategy, selected, nodes := g.candidateState(now)
+	policy, selected, nodes := g.candidateState(now)
+	if policy.ForceSelected {
+		if selected != nil && selected.eligible(now, true) {
+			return []*NodeState{selected}
+		}
+		return nil
+	}
 	if len(nodes) == 0 && g.reviveBlacklistedNodes(now) {
-		strategy, selected, nodes = g.candidateState(now)
+		policy, selected, nodes = g.candidateState(now)
 	}
 
 	if len(nodes) == 0 {
 		return nil
 	}
-	if strategy == BalanceManual {
+	if policy.Strategy == BalanceManual {
 		ordered := make([]*NodeState, 0, len(nodes))
 		if selected != nil && selected.Eligible(now) {
 			ordered = append(ordered, selected)
@@ -504,19 +516,21 @@ func (g *DynamicGroup) candidates() []*NodeState {
 		}
 		return ordered
 	}
-	if strategy == BalanceLeastLatency {
-		policy := g.policySnapshot()
+	if policy.Strategy == BalanceLeastLatency {
 		return g.orderLeastLatencyCandidates(nodes, policy.FallbackStrategy)
 	}
 	return g.balancer.Order(nodes)
 }
 
-func (g *DynamicGroup) candidateState(now time.Time) (BalanceStrategy, *NodeState, []*NodeState) {
+func (g *DynamicGroup) candidateState(now time.Time) (Policy, *NodeState, []*NodeState) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	strategy := g.policy.Strategy
+	policy := g.policy
 	selected := g.nodes[g.selected]
+	if policy.ForceSelected {
+		return policy, selected, nil
+	}
 	nodes := make([]*NodeState, 0, len(g.order))
 	for _, id := range g.order {
 		node := g.nodes[id]
@@ -524,7 +538,7 @@ func (g *DynamicGroup) candidateState(now time.Time) (BalanceStrategy, *NodeStat
 			nodes = append(nodes, node)
 		}
 	}
-	return strategy, selected, nodes
+	return policy, selected, nodes
 }
 
 func (g *DynamicGroup) reviveBlacklistedNodes(now time.Time) bool {
@@ -762,6 +776,9 @@ func (g *DynamicGroup) ensureSelected() {
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.policy.ForceSelected {
+		return
+	}
 	if node := g.nodes[g.selected]; node != nil && node.Eligible(now) {
 		return
 	}
@@ -1008,10 +1025,14 @@ func (g *DynamicGroup) emitTrafficFailure(node *NodeState, err error, checkedAt 
 		reason = "traffic failed before first response byte"
 	}
 	policy := g.policySnapshot()
-	blacklisted := node.recordRuntimeTrafficFailure(reason, checkedAt, probeFailurePolicy{
+	failurePolicy := probeFailurePolicy{
 		threshold: policy.SlowThreshold,
 		ttl:       policy.FailureBlacklistTTL,
-	})
+	}
+	if policy.ForceSelected {
+		failurePolicy.threshold = 0
+	}
+	blacklisted := node.recordRuntimeTrafficFailure(reason, checkedAt, failurePolicy)
 	g.ensureSelected()
 	if blacklisted {
 		node.closeActiveConnections("node blacklisted after traffic failures")

@@ -111,17 +111,18 @@ func buildDynamicRuntimePlanForMapping(
 	if err != nil {
 		return nil, err
 	}
-	nodeMembers, err := builder.membersForNodes(nodes)
+	forceSelected := normalizeStrategy(mapping.Strategy) == StrategyManual
+	nodeMembers, err := builder.membersForNodes(nodes, forceSelected)
 	if err != nil {
 		return nil, err
 	}
-	if len(nodeMembers) == 0 {
+	if len(nodeMembers) == 0 && !forceSelected {
 		revived, err := builder.reviveIfAllCandidatesBlacklisted(nodeIDsFromNodes(nodes), mappingOutboundTag(mapping.ID))
 		if err != nil {
 			return nil, err
 		}
 		if revived {
-			nodeMembers, err = builder.membersForNodes(nodes)
+			nodeMembers, err = builder.membersForNodes(nodes, false)
 			if err != nil {
 				return nil, err
 			}
@@ -152,8 +153,13 @@ func buildDynamicRuntimePlanForMapping(
 		policy:  policyForMapping(mapping),
 		members: members,
 	}
-	if normalizeStrategy(mapping.Strategy) == StrategyManual {
+	if forceSelected {
 		mappingGroup.selected = selectedMappingMember(mapping, members)
+		// An explicitly selected but unbuildable member must not fall back to another route.
+		if mappingGroup.selected == "" {
+			mappingGroup.members = []dynamicMemberPlan{builtinMember(constant.TypeBlock)}
+			mappingGroup.selected = constant.TypeBlock
+		}
 	}
 	builder.groupPlans[mappingGroup.tag] = &mappingGroup
 
@@ -444,10 +450,10 @@ type dynamicPlanBuilder struct {
 	groupStrategyOverrides map[string]string
 }
 
-func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable) ([]dynamicMemberPlan, error) {
+func (b *dynamicPlanBuilder) membersForNodes(nodes []*tables.ProxyNodeTable, ignoreBlacklist bool) ([]dynamicMemberPlan, error) {
 	members := make([]dynamicMemberPlan, 0, len(nodes))
 	for _, node := range nodes {
-		member, err := b.memberForNode(node)
+		member, err := b.memberForNode(node, ignoreBlacklist)
 		if err != nil {
 			return nil, nodeBuildError{node: node, err: err}
 		}
@@ -552,11 +558,14 @@ func (b *dynamicPlanBuilder) blacklistRevivalNodeIDs(nodeIDs []string, limit int
 	return reviveIDs, nil
 }
 
-func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable) (dynamicMemberPlan, error) {
+func (b *dynamicPlanBuilder) memberForNode(node *tables.ProxyNodeTable, ignoreBlacklist bool) (dynamicMemberPlan, error) {
 	if node == nil {
 		return dynamicMemberPlan{}, nil
 	}
-	if _, blacklisted := b.blacklistedNodeIDs[node.ID]; blacklisted {
+	if _, excluded := b.excludedNodeIDs[node.ID]; excluded {
+		return dynamicMemberPlan{}, nil
+	}
+	if _, blacklisted := b.blacklistedNodeIDs[node.ID]; blacklisted && !ignoreBlacklist {
 		return dynamicMemberPlan{}, nil
 	}
 	outboundTags := map[string]struct{}{
@@ -831,7 +840,7 @@ func (b *dynamicPlanBuilder) memberForGroupWithPolicy(
 	if err != nil {
 		return dynamicMemberPlan{}, err
 	}
-	nodeMembers, err := b.membersForNodes(nodes)
+	nodeMembers, err := b.membersForNodes(nodes, false)
 	if err != nil {
 		return dynamicMemberPlan{}, err
 	}
@@ -841,7 +850,7 @@ func (b *dynamicPlanBuilder) memberForGroupWithPolicy(
 			return dynamicMemberPlan{}, err
 		}
 		if revived {
-			nodeMembers, err = b.membersForNodes(nodes)
+			nodeMembers, err = b.membersForNodes(nodes, false)
 			if err != nil {
 				return dynamicMemberPlan{}, err
 			}
@@ -895,6 +904,7 @@ func policyForMapping(mapping *tables.PortMappingTable) singboxcore.Policy {
 	healthConfig := normalizeHealthConfig(currentHealthConfig())
 	return singboxcore.Policy{
 		Strategy:                 strategy,
+		ForceSelected:            normalizeStrategy(mapping.Strategy) == StrategyManual,
 		FailureBlacklistTTL:      healthConfig.BlacklistDuration,
 		RemoveTTL:                2 * time.Minute,
 		ProbeURL:                 healthConfig.ProbeURL,
@@ -1012,6 +1022,9 @@ func selectedMappingMember(mapping *tables.PortMappingTable, members []dynamicMe
 				return member.id
 			}
 		}
+	}
+	if len(candidates) > 0 {
+		return ""
 	}
 	if len(members) == 0 {
 		return ""

@@ -663,7 +663,7 @@ func blacklistedSnapshotIDs(group *DynamicGroup) []string {
 
 func registerTestConn[T nodeConnection](t *testing.T, node *NodeState, conn T) T {
 	t.Helper()
-	if !node.registerConnection(conn) {
+	if !node.registerConnection(conn, false) {
 		t.Fatalf("registerConnection() = false")
 	}
 	return conn
