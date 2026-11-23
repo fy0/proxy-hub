@@ -186,6 +186,7 @@ func (b *nodeHealthBatcher) run(ctx context.Context, done chan struct{}) {
 			return
 		case <-ticker.C:
 			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			b.expireBlacklisted(flushCtx, time.Now())
 			_ = b.flush(flushCtx)
 			cancel()
 		}
@@ -305,9 +306,9 @@ func (b *nodeHealthBatcher) get(ctx context.Context, nodeID string) (*tables.Pro
 	return snapshot, nil
 }
 
-func (b *nodeHealthBatcher) recordProbeResult(ctx context.Context, nodeID string, record nodeHealthResultRecord) (*tables.ProxyNodeHealthTable, error) {
+func (b *nodeHealthBatcher) recordProbeResult(ctx context.Context, nodeID string, record nodeHealthResultRecord) (*tables.ProxyNodeHealthTable, bool, error) {
 	if err := b.ensureLoaded(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	b.ensureStarted()
 
@@ -329,10 +330,10 @@ func (b *nodeHealthBatcher) recordProbeResult(ctx context.Context, nodeID string
 
 	b.mu.Lock()
 	state := ensureNodeHealthMemoryState(b.states, nodeID)
-	applyNodeHealthProbeRecord(state, nodeID, record, normalizeHealthConfig(currentHealthConfig()))
+	transitioned := applyNodeHealthProbeRecord(state, nodeID, record, normalizeHealthConfig(currentHealthConfig()))
 	result := cloneNodeHealthSnapshotForRead(state.snapshot)
 	b.mu.Unlock()
-	return result, nil
+	return result, transitioned, nil
 }
 
 func (b *nodeHealthBatcher) updateSnapshot(ctx context.Context, nodeID string, updateFn func(snapshot *tables.ProxyNodeHealthTable, now time.Time)) (*tables.ProxyNodeHealthTable, error) {
@@ -417,6 +418,42 @@ func (b *nodeHealthBatcher) blacklistedIDs(ctx context.Context) (map[string]stru
 	}
 	b.mu.RUnlock()
 	return result, nil
+}
+
+// expireBlacklisted clears Blacklisted flags whose BlacklistedUntil already
+// passed and resyncs runtime mappings for each affected node. It must only be
+// called from contexts that may block on operationMu (e.g. the flush ticker);
+// RuntimeSyncMappings is never invoked while b.mu is held.
+func (b *nodeHealthBatcher) expireBlacklisted(ctx context.Context, now time.Time) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	b.mu.Lock()
+	nodeIDs := make([]string, 0)
+	for nodeID, state := range b.states {
+		if state == nil || state.snapshot == nil || strings.TrimSpace(nodeID) == "" {
+			continue
+		}
+		snapshot := state.snapshot
+		if !snapshot.Blacklisted || snapshot.BlacklistedUntil == nil || snapshot.BlacklistedUntil.After(now) {
+			continue
+		}
+		snapshot.Blacklisted = false
+		snapshot.BlacklistedUntil = nil
+		snapshot.UpdatedAt = now
+		state.dirty = true
+		state.revision++
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	b.mu.Unlock()
+
+	for _, nodeID := range nodeIDs {
+		syncRuntimeMappingsForNodeHealth(ctx, nodeID, "blacklist expired")
+	}
 }
 
 func (b *nodeHealthBatcher) flush(ctx context.Context) error {
@@ -538,7 +575,7 @@ func ensureNodeHealthMemoryState(states map[string]*nodeHealthMemoryState, nodeI
 	return state
 }
 
-func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, record nodeHealthResultRecord, cfg utils.ProxyHealthConfig) {
+func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, record nodeHealthResultRecord, cfg utils.ProxyHealthConfig) bool {
 	now := time.Now()
 	snapshot := state.snapshot
 	if snapshot == nil {
@@ -557,7 +594,7 @@ func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, rec
 	prevConsecutiveFailures := snapshot.ConsecutiveFailureCount
 
 	if isDuplicateRuntimeTrafficMappingFailure(state.history, record) {
-		return
+		return false
 	}
 
 	state.history = append(state.history, nodeHealthHistoryWindowEntry(record))
@@ -605,6 +642,7 @@ func applyNodeHealthProbeRecord(state *nodeHealthMemoryState, nodeID string, rec
 
 	state.dirty = true
 	state.revision++
+	return prevBlacklisted && !snapshot.Blacklisted
 }
 
 func isDuplicateRuntimeTrafficMappingFailure(history []nodeHealthHistoryWindowEntry, record nodeHealthResultRecord) bool {

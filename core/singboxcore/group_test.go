@@ -629,6 +629,46 @@ func TestUpdatePolicyToLeastLatencyDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestReaddClearsTombstone(t *testing.T) {
+	manager := &fakeOutboundManager{
+		outbounds: map[string]adapter.Outbound{},
+		removed:   map[string]bool{},
+	}
+	group := NewDynamicGroup("group-auto", manager, Policy{Strategy: BalanceManual, RemoveTTL: time.Hour})
+	node := NewNodeState("node-a", "node-a", option.Outbound{})
+	if err := group.AddNode(node); err != nil {
+		t.Fatalf("AddNode() error = %v", err)
+	}
+	registerTestConn(t, node, lingeringConn{})
+	if err := group.RemoveNode("node-a", time.Hour); err != nil {
+		t.Fatalf("RemoveNode() error = %v", err)
+	}
+	snapshot := group.Snapshot()
+	if len(snapshot.Nodes) != 1 || !snapshot.Nodes[0].Tombstoned {
+		t.Fatalf("nodes after remove = %+v, want tombstoned member kept", snapshot.Nodes)
+	}
+	if node.Eligible(time.Now()) {
+		t.Fatalf("tombstoned node is still eligible")
+	}
+
+	if err := group.AddNode(NewNodeState("node-a", "node-a", option.Outbound{})); err != nil {
+		t.Fatalf("AddNode(rejoin) error = %v", err)
+	}
+	if !node.Eligible(time.Now()) {
+		t.Fatalf("rejoined node is not eligible")
+	}
+	snapshot = group.Snapshot()
+	if len(snapshot.Nodes) != 1 || snapshot.Nodes[0].Tombstoned || !snapshot.Nodes[0].Enabled {
+		t.Fatalf("nodes after rejoin = %+v, want enabled member", snapshot.Nodes)
+	}
+}
+
+type lingeringConn struct{}
+
+func (lingeringConn) closeForNode(string) error {
+	return nil
+}
+
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

@@ -365,9 +365,6 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 		if member.builtin {
 			continue
 		}
-		if _, ok := existing[member.id]; ok {
-			continue
-		}
 		for _, outbound := range member.outbounds {
 			if outbound.Tag == member.tag {
 				continue
@@ -399,9 +396,6 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 	}
 	for _, member := range group.members {
 		if member.builtin {
-			if _, ok := existing[member.id]; ok {
-				continue
-			}
 			if err := addBuiltinMember(core, group.tag, member); err != nil {
 				return dynamicMemberError{member: member, err: err}
 			}
@@ -409,6 +403,11 @@ func syncDynamicGroupMembers(core *singboxcore.Core, group dynamicGroupPlan) err
 	}
 	if group.selected != "" {
 		if err := core.SelectNode(group.tag, group.selected); err != nil && !errors.Is(err, singboxcore.ErrNoAvailableNode) {
+			utils.Logger.Warn("设置运行时组选中成员失败",
+				zap.String("groupTag", group.tag),
+				zap.String("memberId", group.selected),
+				zap.Error(err),
+			)
 			return err
 		}
 	}

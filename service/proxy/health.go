@@ -235,12 +235,15 @@ func recordNodeHealthResult(ctx context.Context, tx model.DBTx, nodeID string, r
 	if strings.TrimSpace(nodeID) == "" {
 		return nil, ErrNodeNotFound
 	}
-	health, err := globalNodeHealthBatcher.recordProbeResult(ctx, nodeID, record)
+	health, transitioned, err := globalNodeHealthBatcher.recordProbeResult(ctx, nodeID, record)
 	if err != nil {
 		return nil, err
 	}
 	if shouldSyncRuntimeForHealthBlacklist(health, record) {
 		syncRuntimeMappingsForNodeHealth(ctx, nodeID, record.Source)
+	}
+	if transitioned && health != nil && !health.Blacklisted {
+		syncRuntimeMappingsForNodeHealth(ctx, nodeID, record.Source+" recovery")
 	}
 	return health, nil
 }

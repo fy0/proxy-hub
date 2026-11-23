@@ -235,6 +235,9 @@ func (n *NodeState) enable() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.enabled = true
+	n.tombstoned = false
+	n.tombstonedAt = time.Time{}
+	n.removeAfter = time.Time{}
 	if n.health == "" {
 		n.health = HealthAlive
 	}
