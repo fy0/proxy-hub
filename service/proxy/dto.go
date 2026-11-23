@@ -20,6 +20,7 @@ const (
 	ProtocolShadowsocks = proxyuri.ProtocolShadowsocks
 	ProtocolHysteria    = proxyuri.ProtocolHysteria
 	ProtocolHysteria2   = proxyuri.ProtocolHysteria2
+	ProtocolAnyTLS      = proxyuri.ProtocolAnyTLS
 	ProtocolTUIC        = proxyuri.ProtocolTUIC
 	ProtocolSSH         = proxyuri.ProtocolSSH
 	ProtocolUnknown     = proxyuri.ProtocolUnknown

@@ -24,7 +24,7 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 格式转换 | VLESS、VMess、Trojan、Shadowsocks、Hysteria/Hysteria2、TUIC、SSH、SOCKS5、HTTP → 本地 HTTP/SOCKS5 代理。 |
+| 格式转换 | VLESS、VMess、Trojan、Shadowsocks、Hysteria/Hysteria2、AnyTLS、TUIC、SSH、SOCKS5、HTTP → 本地 HTTP/SOCKS5 代理。 |
 | 负载均衡 / 随机 | 负载均衡按顺序轮流分配新连接；随机模式为每个新连接随机选择节点。 |
 | 节点选择 | 自动优选低延迟节点，也可手动指定；通过健康检查和故障转移应对不可用节点。 |
 | 节点串联 | 让流量按顺序经过多个节点。 |
@@ -64,6 +64,14 @@ docker run -d --name proxyhub -p 3020:3020 -v proxyhub-data:/app/data ghcr.io/fy
 
 ```text
 ssh://alice:your-password@ssh.example.com:22#My-SSH
+```
+
+**带账密的 SOCKS5**：例如 `socks5://alice:your-password@proxy.example.com:1080`。也可以直接粘贴不带协议前缀的 `主机:端口:用户名:密码` 列表，ProxyHub 会按 SOCKS5 导入。IPv6 地址须加方括号。
+
+**AnyTLS**：密码写在 `@` 前；省略端口时使用 `443`，默认验证服务器证书：
+
+```text
+anytls://your-password@anytls.example.com/?sni=anytls.example.com#My-AnyTLS
 ```
 
 **Hysteria2（HY2）**：填入节点密码和 TLS 服务器名称：

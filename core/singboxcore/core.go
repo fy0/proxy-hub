@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/anytls"
 	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
 	protocolGroup "github.com/sagernet/sing-box/protocol/group"
@@ -453,6 +454,7 @@ func BoxContext(ctx context.Context) context.Context {
 	tuic.RegisterOutbound(outboundRegistry)
 	ssh.RegisterOutbound(outboundRegistry)
 	vless.RegisterOutbound(outboundRegistry)
+	anytls.RegisterOutbound(outboundRegistry)
 
 	dnsRegistry := dns.NewTransportRegistry()
 	local.RegisterTransport(dnsRegistry)

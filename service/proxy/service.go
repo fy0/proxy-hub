@@ -1208,7 +1208,9 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	normalized.Protocol = normalizeProtocol(normalized.Protocol)
 	normalized.Server = strings.TrimSpace(normalized.Server)
 	normalized.Username = strings.TrimSpace(normalized.Username)
-	normalized.Password = strings.TrimSpace(normalized.Password)
+	if normalized.Protocol != ProtocolAnyTLS {
+		normalized.Password = strings.TrimSpace(normalized.Password)
+	}
 	normalized.Remark = strings.TrimSpace(normalized.Remark)
 	normalized.Tags = cleanTags(normalized.Tags, normalized.Protocol)
 	normalized.ChainMembers = normalizeChainMembers(normalized.ChainMembers)
@@ -1239,6 +1241,9 @@ func normalizeNodeRequest(req NodeUpsertRequest) (*NodeUpsertRequest, error) {
 	}
 	if normalized.Port == nil || *normalized.Port == 0 {
 		return nil, ErrInvalidPort
+	}
+	if normalized.Protocol == ProtocolAnyTLS && normalized.Password == "" {
+		return nil, fmt.Errorf("%w: missing AnyTLS password", ErrUnsupportedURI)
 	}
 	return &normalized, nil
 }
@@ -1903,7 +1908,7 @@ func normalizeGroupType(value string) string {
 func isSupportedNodeProtocol(protocol string) bool {
 	switch protocol {
 	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolSOCKS5, ProtocolHTTP,
-		ProtocolShadowsocks, ProtocolHysteria, ProtocolHysteria2, ProtocolTUIC, ProtocolSSH,
+		ProtocolShadowsocks, ProtocolHysteria, ProtocolHysteria2, ProtocolAnyTLS, ProtocolTUIC, ProtocolSSH,
 		ProtocolChain:
 		return true
 	default:

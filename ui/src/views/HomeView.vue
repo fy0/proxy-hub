@@ -130,6 +130,7 @@ const protocolLabels = computed<Record<ProxyProtocol, string>>(() => ({
   shadowsocks: t('home.protocol.shadowsocks'),
   hysteria: t('home.protocol.hysteria'),
   hysteria2: t('home.protocol.hysteria2'),
+  anytls: t('home.protocol.anytls'),
   tuic: t('home.protocol.tuic'),
   ssh: t('home.protocol.ssh'),
   chain: t('home.protocol.chain'),
@@ -1574,10 +1575,11 @@ function nodeExportUri(node: ProxyNode): string {
     return `trojan://${encodeURIComponent(node.password.trim())}@${host}:${node.port}${fragment}`;
   }
 
-  if (node.protocol === 'hysteria' || node.protocol === 'hysteria2') {
-    if (!node.password.trim()) return '';
+  if (node.protocol === 'hysteria' || node.protocol === 'hysteria2' || node.protocol === 'anytls') {
+    const password = node.protocol === 'anytls' ? node.password : node.password.trim();
+    if (!password) return '';
     const scheme = node.protocol === 'hysteria2' ? 'hy2' : 'hysteria';
-    return `${scheme}://${encodeURIComponent(node.password.trim())}@${host}:${node.port}${fragment}`;
+    return `${scheme}://${encodeURIComponent(password)}@${host}:${node.port}${fragment}`;
   }
 
   if (node.protocol === 'vless') {

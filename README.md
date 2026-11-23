@@ -24,7 +24,7 @@ Run multiple local proxy ports at the same time, each connected to one or more p
 
 | Feature | What it does |
 | --- | --- |
-| Proxy conversion | VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, SSH, SOCKS5, HTTP → local HTTP/SOCKS5 proxies. |
+| Proxy conversion | VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, AnyTLS, TUIC, SSH, SOCKS5, HTTP → local HTTP/SOCKS5 proxies. |
 | Load balancing / Random | Distribute new connections across nodes in turn, or pick a node at random for each new connection. |
 | Node selection | Prefer the lowest latency or select a node manually. Health checks and failover help handle unavailable nodes. |
 | Chain nodes | Forward traffic through several nodes in order. |
@@ -64,6 +64,14 @@ In the web UI, add a node or paste links into batch import. Replace the example 
 
 ```text
 ssh://alice:your-password@ssh.example.com:22#My-SSH
+```
+
+**SOCKS5 with credentials** — for example, `socks5://alice:your-password@proxy.example.com:1080`. To import a list in `host:port:username:password` format, paste it without a scheme; ProxyHub treats it as SOCKS5. Enclose IPv6 addresses in brackets.
+
+**AnyTLS** — put the password before `@`. The port defaults to `443`, and the server certificate is verified by default:
+
+```text
+anytls://your-password@anytls.example.com/?sni=anytls.example.com#My-AnyTLS
 ```
 
 **Hysteria2 (HY2)** — with your node's password and TLS server name:

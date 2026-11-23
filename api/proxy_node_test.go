@@ -350,7 +350,7 @@ func TestProxyNodeCreateReturnsMappedBusinessError(t *testing.T) {
 	req, err := http.NewRequest(
 		http.MethodPost,
 		"/api/v1/proxy/nodes",
-		strings.NewReader(`{"rawUri":"nope"}`),
+		strings.NewReader(`{"rawUri":"socks5://user:example-password@proxy.example.com:bad-port"}`),
 	)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -375,8 +375,8 @@ func TestProxyNodeCreateReturnsMappedBusinessError(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Detail != "unsupported proxy uri: nope" {
-		t.Fatalf("detail = %q, want unsupported proxy uri", response.Detail)
+	if response.Detail != "unsupported proxy uri" {
+		t.Fatalf("detail = %q, want an error without URI credentials", response.Detail)
 	}
 }
 

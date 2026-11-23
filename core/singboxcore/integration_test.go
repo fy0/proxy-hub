@@ -219,6 +219,34 @@ func TestBoxContextRegistersSelectorOutbound(t *testing.T) {
 	}
 }
 
+func TestCoreCreatesAnyTLSOutbound(t *testing.T) {
+	core, err := NewCore(Config{
+		Context: context.Background(),
+		Options: option.Options{
+			Log:       &option.LogOptions{Disabled: true},
+			Outbounds: BaseOutbounds(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = core.Close() })
+	if err := core.Start(); err != nil {
+		t.Fatal(err)
+	}
+	outbound, err := OutboundFromURI("anytls://secret@127.0.0.1:8443?sni=localhost", "anytls-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := core.CreateOutbound(outbound); err != nil {
+		t.Fatal(err)
+	}
+	registered, ok := core.Box().Outbound().Outbound(outbound.Tag)
+	if !ok || registered.Type() != C.TypeAnyTLS {
+		t.Fatalf("registered outbound = %v, want AnyTLS", registered)
+	}
+}
+
 func TestRemoveGroupReleasesExclusiveOutbound(t *testing.T) {
 	core, err := NewCore(Config{
 		Context: context.Background(),

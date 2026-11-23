@@ -22,6 +22,7 @@ const (
 	ProtocolShadowsocks = "shadowsocks"
 	ProtocolHysteria    = "hysteria"
 	ProtocolHysteria2   = "hysteria2"
+	ProtocolAnyTLS      = "anytls"
 	ProtocolTUIC        = "tuic"
 	ProtocolSSH         = "ssh"
 	ProtocolUnknown     = "unknown"
@@ -54,6 +55,13 @@ func ParseURI(rawURI string) (*ParsedURI, error) {
 	if rawURI == "" {
 		return nil, ErrUnsupportedURI
 	}
+	normalized, err := normalizeBareSOCKS5URI(rawURI)
+	if err != nil {
+		return nil, err
+	}
+	if normalized != "" {
+		rawURI = normalized
+	}
 
 	scheme := uriScheme(rawURI)
 	if scheme == ProtocolVMess {
@@ -73,7 +81,7 @@ func ParseURI(rawURI string) (*ParsedURI, error) {
 func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 	parsed, err := url.Parse(rawURI)
 	if err != nil || parsed.Scheme == "" {
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedURI, rawURI)
+		return nil, ErrUnsupportedURI
 	}
 
 	protocol := NormalizeProtocol(parsed.Scheme)
@@ -84,6 +92,9 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 	server := strings.TrimSpace(parsed.Hostname())
 	if server == "" {
 		return nil, fmt.Errorf("%w: missing server", ErrUnsupportedURI)
+	}
+	if (protocol == ProtocolSOCKS5 || protocol == ProtocolSSH) && strings.Contains(server, ":") && !strings.HasPrefix(parsed.Host, "[") {
+		return nil, ErrUnsupportedURI
 	}
 	port, err := parseURLPortWithDefault(parsed, protocol)
 	if err != nil {
@@ -96,11 +107,26 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 	}
 
 	username := parsed.User.Username()
-	password, _ := parsed.User.Password()
+	password, hasPassword := parsed.User.Password()
 	switch protocol {
 	case ProtocolTrojan, ProtocolHysteria, ProtocolHysteria2:
 		password = username
 		username = ""
+	case ProtocolAnyTLS:
+		if hasPassword || username == "" {
+			return nil, fmt.Errorf("%w: AnyTLS requires the password in the URI user field", ErrUnsupportedURI)
+		}
+		password, username = username, ""
+		switch securityMode(query) {
+		case "none":
+			return nil, fmt.Errorf("%w: AnyTLS requires TLS", ErrUnsupportedURI)
+		case "":
+			query.Set("security", "tls")
+		}
+	case ProtocolSOCKS5, ProtocolSSH:
+		if query.Has("username") || query.Has("user") || query.Has("password") || query.Has("pass") {
+			return nil, fmt.Errorf("%w: credentials must precede @", ErrUnsupportedURI)
+		}
 	case ProtocolShadowsocks:
 		if password == "" {
 			return nil, fmt.Errorf("%w: missing shadowsocks password", ErrUnsupportedURI)
@@ -150,6 +176,49 @@ func parseURLNodeURI(rawURI string) (*ParsedURI, error) {
 		VMessSecurity:       vmessSecurity,
 		VMessPacketEncoding: vmessPacketEncoding,
 	}, nil
+}
+
+func normalizeBareSOCKS5URI(rawURI string) (string, error) {
+	if strings.Contains(rawURI, "://") {
+		return "", nil
+	}
+
+	authority, suffix := rawURI, ""
+	if index := strings.IndexAny(rawURI, "/?#"); index >= 0 {
+		authority, suffix = rawURI[:index], rawURI[index:]
+	}
+	if strings.Contains(authority, "@") {
+		return "", nil
+	}
+	var host, fields string
+	if strings.HasPrefix(authority, "[") {
+		bracketedHost, rest, ok := strings.Cut(authority, "]:")
+		if !ok {
+			return "", nil
+		}
+		host, fields = strings.TrimPrefix(bracketedHost, "["), rest
+	} else {
+		host, fields, _ = strings.Cut(authority, ":")
+	}
+	parts := strings.SplitN(fields, ":", 3)
+	if len(parts) != 3 || host == "" {
+		return "", nil
+	}
+	port, err := parsePortString(parts[0])
+	if err != nil {
+		return "", err
+	}
+	username, userErr := url.PathUnescape(parts[1])
+	password, passErr := url.PathUnescape(parts[2])
+	if userErr != nil || passErr != nil || username == "" || password == "" {
+		return "", ErrUnsupportedURI
+	}
+	value := url.URL{
+		Scheme: ProtocolSOCKS5,
+		User:   url.UserPassword(username, password),
+		Host:   net.JoinHostPort(host, strconv.Itoa(int(port))),
+	}
+	return value.String() + suffix, nil
 }
 
 func parseShadowsocksURI(rawURI string) (*ParsedURI, error) {
@@ -302,7 +371,7 @@ func parseURLPortWithDefault(parsed *url.URL, protocol string) (uint16, error) {
 
 	var port uint16
 	switch protocol {
-	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHysteria, ProtocolHysteria2, ProtocolTUIC:
+	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHysteria, ProtocolHysteria2, ProtocolAnyTLS, ProtocolTUIC:
 		port = 443
 	case ProtocolSSH:
 		port = 22
@@ -394,7 +463,7 @@ func NormalizeProtocol(protocol string) string {
 	case "https":
 		return ProtocolHTTP
 	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolHTTP,
-		ProtocolHysteria, ProtocolTUIC, ProtocolSSH:
+		ProtocolHysteria, ProtocolAnyTLS, ProtocolTUIC, ProtocolSSH:
 		return protocol
 	default:
 		return ProtocolUnknown
@@ -420,7 +489,7 @@ func normalizeTransportType(value string) string {
 func isSupportedProtocol(protocol string) bool {
 	switch protocol {
 	case ProtocolVLESS, ProtocolVMess, ProtocolTrojan, ProtocolSOCKS5, ProtocolHTTP,
-		ProtocolShadowsocks, ProtocolHysteria, ProtocolHysteria2, ProtocolTUIC, ProtocolSSH:
+		ProtocolShadowsocks, ProtocolHysteria, ProtocolHysteria2, ProtocolAnyTLS, ProtocolTUIC, ProtocolSSH:
 		return true
 	default:
 		return false
@@ -626,6 +695,8 @@ func ClashProxyToURI(proxy map[string]any) string {
 		return clashHysteriaURI(proxy)
 	case ProtocolHysteria2:
 		return clashHysteria2URI(proxy)
+	case ProtocolAnyTLS:
+		return clashAnyTLSURI(proxy)
 	case ProtocolTUIC:
 		return clashTUICURI(proxy)
 	case ProtocolSSH:
@@ -808,6 +879,40 @@ func clashHysteria2URI(proxy map[string]any) string {
 		Fragment: stringFromMap(proxy, "name"),
 	}
 	return u.String()
+}
+
+func clashAnyTLSURI(proxy map[string]any) string {
+	server, port := clashServerPort(proxy)
+	password, ok := proxy["password"].(string)
+	if !ok {
+		password = stringFromMap(proxy, "password")
+	}
+	if server == "" || port == "" || password == "" {
+		return ""
+	}
+	query := url.Values{}
+	copyClashString(query, proxy, "sni", "sni", "servername")
+	copyClashBool(query, proxy, "insecure", "skip-cert-verify")
+	for _, key := range []string{"idle-session-check-interval", "idle-session-timeout"} {
+		if value := stringFromMap(proxy, key); value != "" {
+			if _, err := strconv.Atoi(value); err == nil {
+				value += "s"
+			}
+			query.Set(key, value)
+		}
+	}
+	copyClashString(query, proxy, "min_idle_session", "min-idle-session")
+	if alpn := stringListFromMap(proxy, "alpn"); alpn != "" {
+		query.Set("alpn", alpn)
+	}
+	value := url.URL{
+		Scheme:   ProtocolAnyTLS,
+		User:     url.User(password),
+		Host:     net.JoinHostPort(server, port),
+		RawQuery: query.Encode(),
+		Fragment: stringFromMap(proxy, "name"),
+	}
+	return value.String()
 }
 
 func clashTUICURI(proxy map[string]any) string {

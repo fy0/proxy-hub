@@ -140,6 +140,26 @@ func OutboundFromURIWithOptions(rawURI string, tag string, options OutboundOptio
 		return buildHysteriaOutbound(parsed, serverOptions, tag)
 	case ProtocolHysteria2:
 		return buildHysteria2Outbound(parsed, serverOptions, tag)
+	case ProtocolAnyTLS:
+		if options.RequireUTLSSupport && requiresUTLS(parsed.Query) && !options.UTLSAvailable {
+			return option.Outbound{}, ErrUTLSRequired
+		}
+		tlsOptions, err := buildTLSOptions(parsed.Query, serverOptions.Server, true)
+		if err != nil {
+			return option.Outbound{}, err
+		}
+		return option.Outbound{
+			Type: constant.TypeAnyTLS,
+			Tag:  tag,
+			Options: &option.AnyTLSOutboundOptions{
+				ServerOptions:               serverOptions,
+				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: tlsOptions},
+				Password:                    parsed.Password,
+				IdleSessionCheckInterval:    durationFromQuery(parsed.Query, "idle_session_check_interval", "idle-session-check-interval"),
+				IdleSessionTimeout:          durationFromQuery(parsed.Query, "idle_session_timeout", "idle-session-timeout"),
+				MinIdleSession:              intFromQuery(parsed.Query, "min_idle_session", "min-idle-session"),
+			},
+		}, nil
 	case ProtocolTUIC:
 		return buildTUICOutbound(parsed, serverOptions, tag)
 	case ProtocolSSH:

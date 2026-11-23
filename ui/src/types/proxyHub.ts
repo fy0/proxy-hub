@@ -7,6 +7,7 @@ export type ProxyProtocol =
   | 'shadowsocks'
   | 'hysteria'
   | 'hysteria2'
+  | 'anytls'
   | 'tuic'
   | 'ssh'
   | 'chain'

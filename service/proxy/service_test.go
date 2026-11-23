@@ -211,14 +211,19 @@ func TestNodeImportExpandsClashYAMLWithAdditionalProtocols(t *testing.T) {
     port: 22
     user: root
     password: admin
+  - name: anytls
+    type: anytls
+    server: anytls.example.com
+    port: 443
+    password: secret
 `
 
 	result, err := NodeImport(context.Background(), nil, NodeImportRequest{Raw: raw})
 	if err != nil {
 		t.Fatalf("NodeImport() error = %v", err)
 	}
-	if result.Imported != 5 || result.Failed != 0 {
-		t.Fatalf("NodeImport() result = %+v, want 5 imported and 0 failed", result)
+	if result.Imported != 6 || result.Failed != 0 {
+		t.Fatalf("NodeImport() result = %+v, want 6 imported and 0 failed", result)
 	}
 
 	wantTypes := map[string]string{
@@ -227,6 +232,7 @@ func TestNodeImportExpandsClashYAMLWithAdditionalProtocols(t *testing.T) {
 		ProtocolHysteria2:   constant.TypeHysteria2,
 		ProtocolTUIC:        constant.TypeTUIC,
 		ProtocolSSH:         constant.TypeSSH,
+		ProtocolAnyTLS:      constant.TypeAnyTLS,
 	}
 	seen := map[string]bool{}
 	for _, item := range result.Items {
@@ -247,6 +253,27 @@ func TestNodeImportExpandsClashYAMLWithAdditionalProtocols(t *testing.T) {
 		if !seen[protocol] {
 			t.Fatalf("protocol %q not imported; items = %+v", protocol, result.Items)
 		}
+	}
+}
+
+func TestStructuredAnyTLSNode(t *testing.T) {
+	initProxyInMemoryDB(t)
+	node, err := NodeCreate(context.Background(), nil, NodeUpsertRequest{
+		Protocol: ProtocolAnyTLS,
+		Server:   "anytls.example.com",
+		Port:     uint16Ptr(8443),
+		Password: " test password ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbound, err := buildNodeOutbound(node, "anytls-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, ok := outbound.Options.(*option.AnyTLSOutboundOptions)
+	if !ok || options.ServerPort != 8443 || options.Password != " test password " || options.TLS == nil || !options.TLS.Enabled || options.TLS.Insecure || options.TLS.ServerName != "anytls.example.com" {
+		t.Fatalf("unexpected structured AnyTLS options: %+v", options)
 	}
 }
 

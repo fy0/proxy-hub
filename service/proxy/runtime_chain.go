@@ -610,6 +610,19 @@ func buildNodeOutbound(node *tables.ProxyNodeTable, tag string) (option.Outbound
 				Password:      node.Password,
 			},
 		}, nil
+	case ProtocolAnyTLS:
+		if node.Password == "" {
+			return option.Outbound{}, fmt.Errorf("%w: missing AnyTLS password", ErrUnsupportedURI)
+		}
+		return option.Outbound{
+			Type: constant.TypeAnyTLS,
+			Tag:  tag,
+			Options: &option.AnyTLSOutboundOptions{
+				ServerOptions:               serverOptions,
+				Password:                    node.Password,
+				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: defaultOutboundTLSOptions(serverOptions.Server)},
+			},
+		}, nil
 	case ProtocolTUIC:
 		tlsOptions := defaultOutboundTLSOptions(serverOptions.Server)
 		return option.Outbound{

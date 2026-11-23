@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	ProtocolAnyTLS      = proxyuri.ProtocolAnyTLS
 	ProtocolHTTP        = proxyuri.ProtocolHTTP
 	ProtocolSOCKS5      = proxyuri.ProtocolSOCKS5
 	ProtocolShadowsocks = proxyuri.ProtocolShadowsocks

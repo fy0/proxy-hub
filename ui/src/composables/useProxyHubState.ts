@@ -174,7 +174,7 @@ function normalizeProtocol(value: string | null | undefined): ProxyProtocol {
   const protocol = value?.toLowerCase().replace(':', '') ?? 'unknown';
 
   if (protocol === 'https') return 'http';
-  if (protocol === 'socks') return 'socks5';
+  if (protocol === 'socks' || protocol === 'socks5h') return 'socks5';
   if (protocol === 'ss') return 'shadowsocks';
   if (protocol === 'hy2') return 'hysteria2';
   if (
@@ -186,6 +186,7 @@ function normalizeProtocol(value: string | null | undefined): ProxyProtocol {
     protocol === 'shadowsocks' ||
     protocol === 'hysteria' ||
     protocol === 'hysteria2' ||
+    protocol === 'anytls' ||
     protocol === 'tuic' ||
     protocol === 'ssh' ||
     protocol === 'chain'
@@ -310,7 +311,9 @@ function uriTags(protocol: ProxyProtocol, searchParams: URLSearchParams): string
   const security = (searchParams.get('security') || '').trim().toLowerCase();
   const tls = (searchParams.get('tls') || '').trim().toLowerCase();
   if (security === 'tls' || security === 'reality') tags.push(security);
-  if (!security && ['1', 'true', 'yes', 'y', 'tls'].includes(tls)) tags.push('tls');
+  if (!security && (protocol === 'anytls' || ['1', 'true', 'yes', 'y', 'tls'].includes(tls))) {
+    tags.push('tls');
+  }
 
   return Array.from(new Set(tags));
 }
@@ -348,7 +351,6 @@ function parseVmessUri(rawUri: string): NodeInput | null {
 
 function parseProxyUri(rawValue: string): NodeInput {
   const rawUri = rawValue.trim();
-  const fallbackName = rawUri ? rawUri.slice(0, 32) : t('state.node.unnamed');
   const vmessInput = parseVmessUri(rawUri);
 
   if (vmessInput) {
@@ -359,11 +361,16 @@ function parseProxyUri(rawValue: string): NodeInput {
     const parsed = new URL(rawUri);
     const protocol = normalizeProtocol(parsed.protocol);
     const nameFromHash = decodeURIComponent(parsed.hash.replace(/^#/, '')).trim();
-    const name = nameFromHash || `${protocol.toUpperCase()} ${parsed.hostname || fallbackName}`;
-    const username = decodeURIComponent(parsed.username || '').trim();
+    const name =
+      nameFromHash || (parsed.hostname ? `${protocol.toUpperCase()} ${parsed.hostname}` : '');
+    const userInfo = decodeURIComponent(parsed.username || '');
+    const username = protocol === 'anytls' ? userInfo : userInfo.trim();
     const password = decodeURIComponent(parsed.password || '').trim();
     const passwordOnlyProtocol =
-      protocol === 'trojan' || protocol === 'hysteria' || protocol === 'hysteria2';
+      protocol === 'trojan' ||
+      protocol === 'hysteria' ||
+      protocol === 'hysteria2' ||
+      protocol === 'anytls';
     const queryPassword = parsed.searchParams.get('password')?.trim() ?? '';
 
     return {
@@ -387,7 +394,7 @@ function parseProxyUri(rawValue: string): NodeInput {
     const protocol = normalizeProtocol(rawUri.match(/^([a-z0-9+.-]+):\/\//i)?.[1]);
 
     return {
-      name: fallbackName,
+      name: '',
       protocol,
       server: '',
       port: null,
@@ -399,7 +406,7 @@ function parseProxyUri(rawValue: string): NodeInput {
       chainMembers: [],
       groupId: '',
       groupIds: [],
-      remark: t('state.node.unsupportedRemark'),
+      remark: '',
     };
   }
 }
@@ -823,14 +830,15 @@ function upsertMapping(mapping: PortMapping): void {
 }
 
 function nodeToRequest(input: NodeInput): NodeUpsertRequestWritable {
+  const rawUri = input.rawUri.trim();
   return {
-    name: input.name.trim() || t('state.node.unnamed'),
+    name: input.name.trim() || (rawUri ? undefined : t('state.node.unnamed')),
     protocol: input.protocol,
     server: input.server.trim(),
     port: toRequestPort(input.port),
     username: input.username.trim(),
-    password: input.password.trim(),
-    rawUri: input.rawUri.trim(),
+    password: input.protocol === 'anytls' ? input.password : input.password.trim(),
+    rawUri,
     tags: input.tags.map(tag => tag.trim()).filter(Boolean),
     chainNodeIds: chainNodeIdsFromMembers(input.chainMembers, input.chainNodeIds),
     chainMembers: normalizeChainMembers(input.chainMembers),

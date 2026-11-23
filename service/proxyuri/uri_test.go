@@ -2,7 +2,9 @@ package proxyuri
 
 import (
 	"encoding/base64"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
@@ -111,6 +113,128 @@ func TestParseURICoversCommonProtocols(t *testing.T) {
 				t.Fatalf("https security = %q, want tls", parsed.Query.Get("security"))
 			}
 		})
+	}
+}
+
+func TestAnyTLSURI(t *testing.T) {
+	raw := "anytls://s%40fe%3Apass@example.com/?sni=edge.example.com&insecure=1#Test%20AnyTLS"
+	parsed, err := ParseURI(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Protocol != ProtocolAnyTLS || parsed.Port != 443 || parsed.Username != "" || parsed.Password != "s@fe:pass" || parsed.Name != "Test AnyTLS" {
+		t.Fatalf("unexpected parsed AnyTLS node: %+v", parsed)
+	}
+	outbound, err := OutboundFromURI(raw, "anytls-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, ok := outbound.Options.(*option.AnyTLSOutboundOptions)
+	if !ok || outbound.Type != constant.TypeAnyTLS || options.Password != parsed.Password || options.TLS == nil || !options.TLS.Enabled || !options.TLS.Insecure || options.TLS.ServerName != "edge.example.com" {
+		t.Fatalf("unexpected AnyTLS outbound: %+v, options: %+v", outbound, options)
+	}
+	for _, raw := range []string{
+		"anytls://example.com",
+		"anytls://user:pass@example.com",
+		"anytls://secret@example.com?security=none",
+	} {
+		if _, err := ParseURI(raw); !errors.Is(err, ErrUnsupportedURI) {
+			t.Errorf("ParseURI(%q) error = %v, want ErrUnsupportedURI", raw, err)
+		}
+	}
+}
+
+func TestClashAnyTLSOutbound(t *testing.T) {
+	uris := ClashProxyURIs(`proxies:
+  - name: AnyTLS edge
+    type: anytls
+    server: example.com
+    port: 8443
+    password: ' test:password '
+    sni: edge.example.com
+    alpn: [h2, http/1.1]
+    idle-session-check-interval: 15
+    idle-session-timeout: 45
+    min-idle-session: 2
+`)
+	if len(uris) != 1 {
+		t.Fatalf("ClashProxyURIs() = %v, want one URI", uris)
+	}
+	outbound, err := OutboundFromURI(uris[0], "anytls-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, ok := outbound.Options.(*option.AnyTLSOutboundOptions)
+	if !ok || options.ServerPort != 8443 || options.Password != " test:password " || options.TLS == nil || !options.TLS.Enabled || options.TLS.Insecure || options.TLS.ServerName != "edge.example.com" || len(options.TLS.ALPN) != 2 {
+		t.Fatalf("unexpected AnyTLS options: %+v", options)
+	}
+	if options.IdleSessionCheckInterval.Build() != 15*time.Second || options.IdleSessionTimeout.Build() != 45*time.Second || options.MinIdleSession != 2 {
+		t.Fatalf("unexpected AnyTLS session options: %+v", options)
+	}
+}
+
+func TestCredentialProxyURIs(t *testing.T) {
+	tests := []struct {
+		raw      string
+		protocol string
+		server   string
+		port     uint16
+	}{
+		{"socks5://user:p%40ss%3Aword@example.com:1080", ProtocolSOCKS5, "example.com", 1080},
+		{"example.com:1080:user:p%40ss:word#SOCKS", ProtocolSOCKS5, "example.com", 1080},
+		{"[2001:db8::1]:1080:user:p%40ss:word", ProtocolSOCKS5, "2001:db8::1", 1080},
+		{"ssh://user:p%40ss%3Aword@example.com:2222?host_key=test", ProtocolSSH, "example.com", 2222},
+		{"socks5h://user:p%40ss%3Aword@example.com", ProtocolSOCKS5, "example.com", 1080},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.raw, func(t *testing.T) {
+			parsed, err := ParseURI(testCase.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Protocol != testCase.protocol || parsed.Server != testCase.server || parsed.Port != testCase.port || parsed.Username != "user" || parsed.Password != "p@ss:word" {
+				t.Fatalf("unexpected parsed credentials or address: %+v", parsed)
+			}
+			reparsed, err := ParseURI(parsed.RawURI)
+			if err != nil || reparsed.Username != parsed.Username || reparsed.Password != parsed.Password || reparsed.Name != parsed.Name {
+				t.Fatalf("round trip = %+v, %v", reparsed, err)
+			}
+			outbound, err := OutboundFromURI(parsed.RawURI, "credential-node")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch options := outbound.Options.(type) {
+			case *option.SOCKSOutboundOptions:
+				if testCase.protocol != ProtocolSOCKS5 || options.Version != "5" || options.Username != parsed.Username || options.Password != parsed.Password {
+					t.Fatalf("unexpected SOCKS5 options: %+v", options)
+				}
+			case *option.SSHOutboundOptions:
+				if testCase.protocol != ProtocolSSH || options.User != parsed.Username || options.Password != parsed.Password {
+					t.Fatalf("unexpected SSH options: %+v", options)
+				}
+				if parsed.Query.Has("host_key") && (len(options.HostKey) != 1 || options.HostKey[0] != "test") {
+					t.Fatalf("unexpected SSH host keys: %v", options.HostKey)
+				}
+			default:
+				t.Fatalf("unexpected outbound type %T", options)
+			}
+		})
+	}
+	if _, err := ParseURI("example.com:70000:user:1234"); !errors.Is(err, ErrInvalidPort) {
+		t.Fatalf("invalid shorthand port error = %v, want ErrInvalidPort", err)
+	}
+}
+
+func TestRejectsUnsupportedCredentialFormats(t *testing.T) {
+	for _, raw := range []string{
+		"socks5://example.com:1080:user:1234",
+		"ssh://example.com:22:user:1234",
+		"socks5://example.com:1080?username=user&password=secret",
+		"ssh://example.com:22?user=user&pass=secret",
+	} {
+		if _, err := ParseURI(raw); !errors.Is(err, ErrUnsupportedURI) {
+			t.Errorf("ParseURI(%q) error = %v, want ErrUnsupportedURI", raw, err)
+		}
 	}
 }
 
